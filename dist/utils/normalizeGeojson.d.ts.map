@@ -1,1 +1,0 @@
-{"version":3,"file":"normalizeGeojson.d.ts","sourceRoot":"","sources":["../../src/utils/normalizeGeojson.ts"],"names":[],"mappings":"AAEA,MAAM,MAAM,cAAc,GAAG;IAC3B,IAAI,EAAE,SAAS,CAAC;IAChB,WAAW,EAAE,MAAM,EAAE,EAAE,EAAE,CAAC;CAC3B,CAAC;AAaF,0EAA0E;AAC1E,wBAAgB,gBAAgB,CAAC,KAAK,EAAE,OAAO,GAAG,cAAc,CA2B/D;AAED,wBAAgB,mBAAmB,CAAC,KAAK,EAAE,OAAO,GAAG,cAAc,GAAG,IAAI,CAMzE"}
