@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import { healthRouter } from './routes/health.routes.js';
 import { authRouter } from './routes/auth.routes.js';
 import { syncBaseRouter } from './routes/syncBase.routes.js';
+import { syncMonitoringRouter } from './routes/syncMonitoring.routes.js';
 import { windowsBaseRouter } from './routes/windowsBase.routes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
@@ -16,6 +17,7 @@ export function createApp(): express.Application {
   app.use(healthRouter);
   app.use(authRouter);
   app.use(syncBaseRouter);
+  app.use(syncMonitoringRouter);
   app.use(windowsBaseRouter);
 
   app.use(errorHandler);
