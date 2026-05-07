@@ -97,7 +97,7 @@ async function loadMonitoringTimeline(
       FROM monitoring_reports mr
       LEFT JOIN monitoring_points mp ON mp.monitoring_report_id = mr.id AND mp.deleted_at IS NULL
       LEFT JOIN monitoring_occurrences mo ON mo.monitoring_point_id = mp.id AND mo.deleted_at IS NULL
-      LEFT JOIN monitoring_recommendations mrp ON mrp.monitoring_occurrence_id = mo.id
+      LEFT JOIN monitoring_recommendations mrp ON mrp.occurrence_id = mo.id
       LEFT JOIN monitoring_images mi ON mi.occurrence_id = mo.id OR (mi.occurrence_id IS NULL AND mi.monitoring_point_id = mp.id)
       WHERE mr.farm_id = $1 AND mr.deleted_at IS NULL
       GROUP BY mr.id, mp.id, mo.id, mrp.id

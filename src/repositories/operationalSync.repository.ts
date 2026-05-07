@@ -473,7 +473,7 @@ async function upsertMonitoringRecommendation(
       {
         local_id: local,
         farm_id: farmId,
-        monitoring_occurrence_id: occurrenceId,
+        occurrence_id: occurrenceId,
         source: str(recommendation, 'source'),
         simple_text: simpleText,
         priority: str(recommendation, 'priority'),

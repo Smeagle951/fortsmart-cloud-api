@@ -98,7 +98,7 @@ async function ensureOperationalCompatibilityColumns(
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       local_id TEXT NOT NULL,
       farm_id UUID NOT NULL REFERENCES farms (id) ON DELETE CASCADE,
-      monitoring_occurrence_id UUID REFERENCES monitoring_occurrences (id) ON DELETE CASCADE,
+      occurrence_id UUID REFERENCES monitoring_occurrences (id) ON DELETE CASCADE,
       source TEXT,
       simple_text TEXT,
       priority TEXT,
@@ -109,6 +109,10 @@ async function ensureOperationalCompatibilityColumns(
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       CONSTRAINT monitoring_recommendations_farm_local_unique UNIQUE (farm_id, local_id)
     );
+    ALTER TABLE monitoring_recommendations
+      ADD COLUMN IF NOT EXISTS occurrence_id UUID REFERENCES monitoring_occurrences (id) ON DELETE CASCADE;
+    CREATE INDEX IF NOT EXISTS idx_monitoring_recommendations_occurrence_id
+      ON monitoring_recommendations (occurrence_id);
     CREATE TABLE IF NOT EXISTS monitoring_images (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       local_id TEXT NOT NULL,
