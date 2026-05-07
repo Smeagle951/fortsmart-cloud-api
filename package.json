@@ -9,9 +9,9 @@
   },
   "scripts": {
     "build": "tsc",
-    "start": "node dist/server.js",
+    "start": "node scripts/run-migrations.mjs && node dist/server.js",
     "dev": "node --import tsx src/server.ts",
-    "migrate": "node --import tsx src/db/migrate.ts",
+    "migrate": "node scripts/run-migrations.mjs",
     "hash-api-key": "node scripts/generate-api-key-hash.js"
   },
   "dependencies": {
