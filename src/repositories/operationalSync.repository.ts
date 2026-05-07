@@ -7,7 +7,7 @@ export type ItemFailure = {
 };
 
 export type OperationalUpsertResult = {
-  mapping: Record<string, string>;
+  mapping: Record<string, unknown>;
   failed: ItemFailure[];
 };
 
@@ -85,13 +85,19 @@ const specs: Record<OperationalModule, ModuleSpec> = {
     buildValues(record, farmId) {
       return {
         ...baseLinked(record, farmId),
+        plot_name: str(record, 'plot_name'),
+        subarea_name: str(record, 'subarea_name'),
         season_local_id: str(record, 'season_local_id'),
+        season_cloud_id: uuid(record, 'season_cloud_id'),
         crop_local_id: str(record, 'crop_local_id'),
-        report_date: iso(record.date ?? record.evaluation_date),
+        crop_cloud_id: uuid(record, 'crop_cloud_id'),
+        crop_name: str(record, 'crop_name'),
+        report_date: iso(record.monitoring_date ?? record.date ?? record.evaluation_date),
         phenological_stage: str(record, 'phenological_stage'),
         technician_name: str(record, 'technician_name'),
-        observations: str(record, 'observations') ?? str(record, 'notes'),
+        observations: str(record, 'general_observations') ?? str(record, 'observations') ?? str(record, 'notes'),
         status: str(record, 'status'),
+        summary: json(record.summary, {}),
       };
     },
   },
@@ -233,7 +239,7 @@ export async function upsertOperationalRecords(
   deviceId: string,
 ): Promise<OperationalUpsertResult> {
   const spec = getOperationalSpec(module);
-  const mapping: Record<string, string> = {};
+  const mapping: Record<string, unknown> = {};
   const failed: ItemFailure[] = [];
 
   for (const record of records) {
@@ -251,6 +257,29 @@ export async function upsertOperationalRecords(
     }
 
     try {
+      if (module === 'monitoring-report') {
+        const result = await upsertMonitoringReport(client, farmId, record, deviceId);
+        const reports = (mapping.reports as Record<string, string> | undefined) ?? {};
+        const points = (mapping.points as Record<string, string> | undefined) ?? {};
+        const occurrences = (mapping.occurrences as Record<string, string> | undefined) ?? {};
+        const recommendations = (mapping.recommendations as Record<string, string> | undefined) ?? {};
+        const images = (mapping.images as Record<string, string> | undefined) ?? {};
+        mapping.reports = { ...reports, ...result.mapping.reports };
+        mapping.points = { ...points, ...result.mapping.points };
+        mapping.occurrences = { ...occurrences, ...result.mapping.occurrences };
+        mapping.recommendations = { ...recommendations, ...result.mapping.recommendations };
+        mapping.images = { ...images, ...result.mapping.images };
+        await logSync(client, farmId, {
+          module,
+          entity: spec.entity,
+          local_id: lid,
+          cloud_id: result.reportId,
+          action: 'push',
+          status: 'ok',
+          device_id: deviceId,
+        });
+        continue;
+      }
       const values = spec.buildValues(record, farmId);
       const keys = Object.keys(values);
       const columns = keys.join(', ');
@@ -288,9 +317,6 @@ export async function upsertOperationalRecords(
         status: 'ok',
         device_id: deviceId,
       });
-      if (module === 'monitoring-report') {
-        await upsertMonitoringChildren(client, farmId, id, lid, record, deviceId);
-      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       failed.push({ local_id: lid, error: message });
@@ -309,74 +335,211 @@ export async function upsertOperationalRecords(
   return { mapping, failed };
 }
 
-async function upsertMonitoringChildren(
+type MonitoringMapping = {
+  reports: Record<string, string>;
+  points: Record<string, string>;
+  occurrences: Record<string, string>;
+  recommendations: Record<string, string>;
+  images: Record<string, string>;
+};
+
+async function upsertMonitoringReport(
   client: PoolClient,
   farmId: string,
-  reportId: string,
-  reportLocalId: string,
   record: Record<string, unknown>,
   deviceId: string,
-): Promise<void> {
-  await upsertChildArray(client, farmId, reportId, reportLocalId, 'points', 'monitoring_points', record.points, deviceId);
-  await upsertChildArray(client, farmId, reportId, reportLocalId, 'pests', 'monitoring_pests', record.pests, deviceId);
-  await upsertChildArray(client, farmId, reportId, reportLocalId, 'diseases', 'monitoring_diseases', record.diseases, deviceId);
-  await upsertChildArray(client, farmId, reportId, reportLocalId, 'weeds', 'monitoring_weeds', record.weeds, deviceId);
+): Promise<{ reportId: string; mapping: MonitoringMapping }> {
+  const spec = getOperationalSpec('monitoring-report');
+  const values = spec.buildValues(record, farmId);
+  const reportId = await upsertGeneric(client, spec.table, values, ['raw_payload', 'summary']);
+  const reportLocalId = localId(record);
+  const mapping: MonitoringMapping = {
+    reports: { [reportLocalId]: reportId },
+    points: {},
+    occurrences: {},
+    recommendations: {},
+    images: {},
+  };
+
+  const points = Array.isArray(record.points) ? record.points : [];
+  for (let i = 0; i < points.length; i += 1) {
+    const rawPoint = points[i];
+    if (typeof rawPoint !== 'object' || rawPoint === null || Array.isArray(rawPoint)) continue;
+    const point = rawPoint as Record<string, unknown>;
+    const pointLocalId = localId(point) || `${reportLocalId}:point:${i}`;
+    try {
+      const pointId = await upsertGeneric(
+        client,
+        'monitoring_points',
+        {
+          local_id: pointLocalId,
+          farm_id: farmId,
+          monitoring_report_id: reportId,
+          point_code: str(point, 'point_code'),
+          latitude: num(point, 'latitude'),
+          longitude: num(point, 'longitude'),
+          accuracy_m: num(point, 'accuracy_m'),
+          collected_at: iso(point.collected_at),
+          notes: str(point, 'notes') ?? str(point, 'observations'),
+          observations: str(point, 'observations'),
+          raw_payload: point,
+        },
+        ['raw_payload'],
+      );
+      mapping.points[pointLocalId] = pointId;
+      await upsertMonitoringImages(client, farmId, reportId, pointId, null, point.images, `${pointLocalId}:image`, mapping, deviceId);
+
+      const occurrences = Array.isArray(point.occurrences) ? point.occurrences : [];
+      for (let j = 0; j < occurrences.length; j += 1) {
+        const rawOccurrence = occurrences[j];
+        if (typeof rawOccurrence !== 'object' || rawOccurrence === null || Array.isArray(rawOccurrence)) continue;
+        const occurrence = rawOccurrence as Record<string, unknown>;
+        const occurrenceLocalId = localId(occurrence) || `${pointLocalId}:occurrence:${j}`;
+        try {
+          const occurrenceId = await upsertGeneric(
+            client,
+            'monitoring_occurrences',
+            {
+              local_id: occurrenceLocalId,
+              farm_id: farmId,
+              monitoring_report_id: reportId,
+              monitoring_point_id: pointId,
+              type: str(occurrence, 'type'),
+              name: str(occurrence, 'name'),
+              scientific_name: str(occurrence, 'scientific_name'),
+              class_name: str(occurrence, 'class_name'),
+              infestation_level: str(occurrence, 'infestation_level'),
+              infestation_score: num(occurrence, 'infestation_score'),
+              incidence_percent: num(occurrence, 'incidence_percent'),
+              severity_percent: num(occurrence, 'severity_percent'),
+              plants_affected: num(occurrence, 'plants_affected'),
+              sample_size: num(occurrence, 'sample_size'),
+              risk_level: str(occurrence, 'risk_level'),
+              requires_action: Boolean(occurrence.requires_action),
+              observations: str(occurrence, 'observations'),
+              raw_payload: occurrence,
+            },
+            ['raw_payload'],
+          );
+          mapping.occurrences[occurrenceLocalId] = occurrenceId;
+          await upsertMonitoringRecommendation(client, farmId, occurrenceId, occurrenceLocalId, occurrence.recommendation, mapping, deviceId);
+          await upsertMonitoringImages(client, farmId, reportId, pointId, occurrenceId, occurrence.images, `${occurrenceLocalId}:image`, mapping, deviceId);
+        } catch (error) {
+          await logSync(client, farmId, {
+            module: 'monitoring-report',
+            entity: 'occurrences',
+            local_id: occurrenceLocalId,
+            action: 'push',
+            status: 'error',
+            error_message: error instanceof Error ? error.message : String(error),
+            device_id: deviceId,
+          });
+        }
+      }
+    } catch (error) {
+      await logSync(client, farmId, {
+        module: 'monitoring-report',
+        entity: 'points',
+        local_id: pointLocalId,
+        action: 'push',
+        status: 'error',
+        error_message: error instanceof Error ? error.message : String(error),
+        device_id: deviceId,
+      });
+    }
+  }
+
+  return { reportId, mapping };
 }
 
-async function upsertChildArray(
+async function upsertMonitoringRecommendation(
+  client: PoolClient,
+  farmId: string,
+  occurrenceId: string,
+  occurrenceLocalId: string,
+  raw: unknown,
+  mapping: MonitoringMapping,
+  deviceId: string,
+): Promise<void> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return;
+  const recommendation = raw as Record<string, unknown>;
+  const simpleText = str(recommendation, 'simple_text');
+  if (!simpleText) return;
+  const local = localId(recommendation) || `${occurrenceLocalId}:recommendation`;
+  try {
+    const id = await upsertGeneric(
+      client,
+      'monitoring_recommendations',
+      {
+        local_id: local,
+        farm_id: farmId,
+        monitoring_occurrence_id: occurrenceId,
+        source: str(recommendation, 'source'),
+        simple_text: simpleText,
+        priority: str(recommendation, 'priority'),
+        action_type: str(recommendation, 'action_type'),
+        generated_at: iso(recommendation.generated_at),
+        raw_payload: recommendation,
+      },
+      ['raw_payload'],
+    );
+    mapping.recommendations[local] = id;
+  } catch (error) {
+    await logSync(client, farmId, {
+      module: 'monitoring-report',
+      entity: 'recommendations',
+      local_id: local,
+      action: 'push',
+      status: 'error',
+      error_message: error instanceof Error ? error.message : String(error),
+      device_id: deviceId,
+    });
+  }
+}
+
+async function upsertMonitoringImages(
   client: PoolClient,
   farmId: string,
   reportId: string,
-  reportLocalId: string,
-  entity: 'points' | 'pests' | 'diseases' | 'weeds',
-  table: 'monitoring_points' | 'monitoring_pests' | 'monitoring_diseases' | 'monitoring_weeds',
+  pointId: string | null,
+  occurrenceId: string | null,
   raw: unknown,
+  fallbackPrefix: string,
+  mapping: MonitoringMapping,
   deviceId: string,
 ): Promise<void> {
   if (!Array.isArray(raw)) return;
   for (let i = 0; i < raw.length; i += 1) {
     const item = raw[i];
     if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
-    const row = item as Record<string, unknown>;
-    const lid = localId(row) || `${reportLocalId}:${entity}:${i}`;
+    const image = item as Record<string, unknown>;
+    const lid = localId(image) || `${fallbackPrefix}:${i}`;
     try {
-      if (table === 'monitoring_points') {
-        await client.query(
-          `INSERT INTO monitoring_points (local_id, farm_id, monitoring_report_id, latitude, longitude, notes, raw_payload)
-           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-           ON CONFLICT (farm_id, local_id) DO UPDATE SET
-             monitoring_report_id = EXCLUDED.monitoring_report_id,
-             latitude = EXCLUDED.latitude,
-             longitude = EXCLUDED.longitude,
-             notes = EXCLUDED.notes,
-             raw_payload = EXCLUDED.raw_payload,
-             updated_at = NOW()`,
-          [lid, farmId, reportId, num(row, 'latitude'), num(row, 'longitude'), str(row, 'notes'), JSON.stringify(row)],
-        );
-      } else {
-        await client.query(
-          `INSERT INTO ${table} (local_id, farm_id, monitoring_report_id, name, severity, raw_payload)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-           ON CONFLICT (farm_id, local_id) DO UPDATE SET
-             monitoring_report_id = EXCLUDED.monitoring_report_id,
-             name = EXCLUDED.name,
-             severity = EXCLUDED.severity,
-             raw_payload = EXCLUDED.raw_payload,
-             updated_at = NOW()`,
-          [
-            lid,
-            farmId,
-            reportId,
-            str(row, 'name') ?? str(row, 'nome') ?? str(row, 'organism_name'),
-            str(row, 'severity') ?? str(row, 'severity_level'),
-            JSON.stringify(row),
-          ],
-        );
-      }
+      const id = await upsertGeneric(
+        client,
+        'monitoring_images',
+        {
+          local_id: lid,
+          farm_id: farmId,
+          monitoring_report_id: reportId,
+          monitoring_point_id: pointId,
+          occurrence_id: occurrenceId,
+          file_name: str(image, 'file_name'),
+          local_path: str(image, 'local_path'),
+          cloud_url: str(image, 'cloud_url'),
+          caption: str(image, 'caption'),
+          taken_at: iso(image.taken_at),
+          latitude: num(image, 'latitude'),
+          longitude: num(image, 'longitude'),
+          raw_payload: image,
+        },
+        ['raw_payload'],
+      );
+      mapping.images[lid] = id;
     } catch (error) {
       await logSync(client, farmId, {
         module: 'monitoring-report',
-        entity,
+        entity: 'images',
         local_id: lid,
         action: 'push',
         status: 'error',
@@ -385,6 +548,37 @@ async function upsertChildArray(
       });
     }
   }
+}
+
+async function upsertGeneric(
+  client: PoolClient,
+  table: string,
+  values: Record<string, unknown>,
+  jsonColumns: string[],
+): Promise<string> {
+  const keys = Object.keys(values);
+  const columns = keys.join(', ');
+  const placeholders = keys.map((_, i) => `$${i + 1}`).join(', ');
+  const updateColumns = keys
+    .filter((key) => key !== 'id' && key !== 'farm_id' && key !== 'local_id' && key !== 'created_at')
+    .map((key) => `${key} = EXCLUDED.${key}`)
+    .join(', ');
+  const params = keys.map((key) => {
+    const value = values[key];
+    return jsonColumns.includes(key) && value != null ? JSON.stringify(value) : value;
+  });
+  const { rows } = await client.query<{ id: string }>(
+    `INSERT INTO ${table} (${columns})
+     VALUES (${placeholders})
+     ON CONFLICT (farm_id, local_id) DO UPDATE SET
+       ${updateColumns},
+       updated_at = NOW()
+     RETURNING id`,
+    params,
+  );
+  const id = rows[0]?.id;
+  if (!id) throw new Error(`${table} upsert returned no id`);
+  return id;
 }
 
 export async function loadOperationalRows(

@@ -15,7 +15,7 @@ export type OperationalPushBody = {
 };
 
 const payloadKeys: Record<OperationalModule, string> = {
-  'monitoring-report': 'monitoring_reports',
+  'monitoring-report': 'reports',
   planting: 'planting_records',
   'plant-stand': 'plant_stand_records',
   phenology: 'phenology_records',
@@ -38,7 +38,10 @@ export function parseOperationalPushBody(
   }
   const o = raw as Record<string, unknown>;
   const payloadKey = payloadKeys[module];
-  const records = o[payloadKey] ?? [];
+  const records =
+    o[payloadKey] ??
+    (module === 'monitoring-report' ? o.monitoring_reports : undefined) ??
+    [];
   if (!Array.isArray(records)) {
     throw new HttpError(`${payloadKey} must be an array`, 400);
   }
