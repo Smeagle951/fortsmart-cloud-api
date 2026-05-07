@@ -36,6 +36,29 @@ async function validateFarmLink(
   return linkedFarmId;
 }
 
+async function ensureOperationalCompatibilityColumns(
+  client: import('pg').PoolClient,
+): Promise<void> {
+  await client.query(`
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS material_name TEXT;
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS crop_name TEXT;
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS plot_name TEXT;
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS subarea_name TEXT;
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS emergence_date DATE;
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS evaluation_date TIMESTAMPTZ;
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS dap INTEGER;
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS dae INTEGER;
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS population_per_meter NUMERIC;
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS spacing_cm NUMERIC;
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS stand_cv_percent NUMERIC;
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS stand_classification TEXT;
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS plants_counted NUMERIC;
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS meters_evaluated NUMERIC;
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS plot_geojson JSONB;
+    ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS subarea_geojson JSONB;
+  `);
+}
+
 export async function pushOperationalSync(
   pool: Pool,
   apiKeyId: string,
@@ -45,6 +68,7 @@ export async function pushOperationalSync(
   const synced_at = new Date().toISOString();
   const client = await pool.connect();
   try {
+    await ensureOperationalCompatibilityColumns(client);
     await client.query('BEGIN');
     const farmId = await validateFarmLink(client, apiKeyId, body);
     const result = await upsertOperationalRecords(
