@@ -1,35 +1,71 @@
 import { Router } from 'express';
 import { getPool } from '../db/pool.js';
-import { HttpError } from '../middleware/errorHandler.js';
-import { requireApiKey } from '../middleware/apiKeyAuth.js';
-import { loadWindowsOperational } from '../services/windowsOperational.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { jsonOk } from '../utils/response.js';
+import { requireApiKey } from '../middleware/apiKeyAuth.js';
+import { loadWindowsOperational } from '../services/windowsOperational.service.js';
 import type { OperationalModule } from '../validators/operationalSync.validator.js';
+import { assertWindowsFarmScope } from '../lib/windowsFarmScope.js';
 
 export const windowsOperationalRouter = Router();
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i;
+/** Contrato unificado para planting + monitoring-report (desktop / curl). */
+function normalizeOperationalWindowsData(
+  module: OperationalModule,
+  farmId: string,
+  payload: Awaited<ReturnType<typeof loadWindowsOperational>>,
+): Record<string, unknown> {
+  if (module === 'planting') {
+    const p = payload as {
+      records?: Record<string, unknown>[];
+      summary?: Record<string, unknown>;
+    };
+    const plots = p.records ?? [];
+    return {
+      farm_id: farmId,
+      summary: plots.length === 0 ? {} : (p.summary ?? {}),
+      plots,
+    };
+  }
+
+  if (module === 'monitoring-report') {
+    const p = payload as {
+      plots?: unknown[];
+      summary?: Record<string, unknown>;
+      diagnostics?: Record<string, unknown>;
+      records?: unknown[];
+      module?: string;
+      farm_id?: string;
+    };
+    const plots = p.plots ?? [];
+    const summaryFilled = {
+      ...(typeof p.summary === 'object' && p.summary ? p.summary : {}),
+      ...(p.diagnostics ? { diagnostics: p.diagnostics } : {}),
+    };
+    return {
+      farm_id: farmId,
+      summary: plots.length === 0 ? {} : summaryFilled,
+      plots,
+    };
+  }
+
+  return payload as Record<string, unknown>;
+}
 
 function registerWindowGet(path: string, module: OperationalModule): void {
   windowsOperationalRouter.get(
     path,
     requireApiKey,
     asyncHandler(async (req, res) => {
-      const farmId = req.params.farmId?.trim() ?? '';
-      if (!UUID_RE.test(farmId)) {
-        throw new HttpError('farmId must be the cloud farm UUID', 400);
+      const farmId = assertWindowsFarmScope(req);
+      const payload = await loadWindowsOperational(getPool(), module, farmId);
+
+      if (module === 'planting' || module === 'monitoring-report') {
+        jsonOk(res, { data: normalizeOperationalWindowsData(module, farmId, payload) });
+        return;
       }
-      const auth = req.cloudAuth;
-      if (!auth?.farmId) {
-        throw new HttpError('API key not linked to a farm yet', 403);
-      }
-      if (auth.farmId.toLowerCase() !== farmId.toLowerCase()) {
-        throw new HttpError('Forbidden', 403);
-      }
-      const data = await loadWindowsOperational(getPool(), module, farmId);
-      jsonOk(res, { data });
+
+      jsonOk(res, { data: payload });
     }),
   );
 }
