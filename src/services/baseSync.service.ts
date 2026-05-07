@@ -67,6 +67,17 @@ async function logSync(
   );
 }
 
+async function ensureBaseSyncCompatibilityColumns(
+  client: import('pg').PoolClient,
+): Promise<void> {
+  await client.query(`
+    ALTER TABLE crops ADD COLUMN IF NOT EXISTS family TEXT;
+    ALTER TABLE crops ADD COLUMN IF NOT EXISTS description TEXT;
+    ALTER TABLE seasons ADD COLUMN IF NOT EXISTS start_date DATE;
+    ALTER TABLE seasons ADD COLUMN IF NOT EXISTS end_date DATE;
+  `);
+}
+
 export async function pushBaseSync(
   pool: Pool,
   apiKeyId: string,
@@ -83,6 +94,7 @@ export async function pushBaseSync(
   const synced_at = new Date().toISOString();
   const client = await pool.connect();
   try {
+    await ensureBaseSyncCompatibilityColumns(client);
     await client.query('BEGIN');
 
     const { rows: keyRows } = await client.query<{ farm_id: string | null }>(
