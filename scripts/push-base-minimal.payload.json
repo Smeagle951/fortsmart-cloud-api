@@ -1,0 +1,27 @@
+{
+  "device_id": "test",
+  "farm_local_id": "farm-test",
+  "farm": {
+    "local_id": "farm-test",
+    "name": "Fazenda Teste"
+  },
+  "plots": [
+    {
+      "local_id": "plot-test-1",
+      "name": "Talhão Teste",
+      "area_ha": 10,
+      "geojson": null
+    }
+  ],
+  "subareas": [
+    {
+      "local_id": "subarea-test-1",
+      "plot_local_id": "plot-test-1",
+      "name": "Subárea Teste",
+      "area_ha": 2,
+      "geojson": null
+    }
+  ],
+  "seasons": [],
+  "crops": []
+}
