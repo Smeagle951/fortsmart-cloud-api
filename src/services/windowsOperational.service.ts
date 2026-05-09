@@ -110,7 +110,7 @@ async function loadMonitoringTimeline(
       LEFT JOIN monitoring_recommendations mrp ON mrp.occurrence_id = mo.id
       LEFT JOIN monitoring_images mi ON mi.occurrence_id = mo.id OR (mi.occurrence_id IS NULL AND mi.monitoring_point_id = mp.id)
       WHERE mr.farm_id = $1 AND mr.deleted_at IS NULL
-      GROUP BY mr.id, mp.id, mo.id, mrp.id
+      GROUP BY mr.id, mp.id, mo.id, mrp.id, p.id
       ORDER BY mr.plot_name NULLS LAST, mr.report_date DESC NULLS LAST, mp.point_code NULLS LAST, mo.name NULLS LAST
     `,
     [farmId],
