@@ -56,7 +56,10 @@ async function loadMonitoringTimeline(
         mr.local_id AS report_local_id,
         mr.plot_local_id,
         mr.plot_cloud_id,
-        mr.plot_name,
+        p.id AS resolved_plot_id,
+        p.local_id AS resolved_plot_local_id,
+        COALESCE(NULLIF(TRIM(mr.plot_name), ''), NULLIF(TRIM(p.name), '')) AS resolved_plot_name,
+        p.name AS resolved_plot_name_from_base,
         mr.subarea_local_id,
         mr.subarea_name,
         mr.crop_name,
@@ -95,6 +98,13 @@ async function loadMonitoringTimeline(
           '[]'::jsonb
         ) AS images
       FROM monitoring_reports mr
+      LEFT JOIN plots p
+        ON p.farm_id = mr.farm_id
+       AND p.deleted_at IS NULL
+       AND (
+         p.id = mr.plot_cloud_id
+         OR (mr.plot_local_id IS NOT NULL AND p.local_id = mr.plot_local_id)
+       )
       LEFT JOIN monitoring_points mp ON mp.monitoring_report_id = mr.id AND mp.deleted_at IS NULL
       LEFT JOIN monitoring_occurrences mo ON mo.monitoring_point_id = mp.id AND mo.deleted_at IS NULL
       LEFT JOIN monitoring_recommendations mrp ON mrp.occurrence_id = mo.id
@@ -107,18 +117,24 @@ async function loadMonitoringTimeline(
   );
 
   const plots = new Map<string, Record<string, unknown>>();
-  let reports = 0;
-  let points = 0;
-  let occurrences = 0;
-  let images = 0;
+  const unresolvedPlotRefs = new Set<string>();
 
   for (const row of rows) {
-    const plotKey = String(row.plot_cloud_id ?? row.plot_local_id ?? 'sem-talhao');
+    const resolvedPlotId = row.resolved_plot_id ?? row.plot_cloud_id ?? null;
+    const resolvedPlotLocalId = row.plot_local_id ?? row.resolved_plot_local_id ?? null;
+    const resolvedPlotName =
+      row.resolved_plot_name ??
+      row.resolved_plot_name_from_base ??
+      (resolvedPlotLocalId ? `Talhao ${String(resolvedPlotLocalId)}` : 'Talhao sem nome');
+    if (!resolvedPlotId && resolvedPlotLocalId) {
+      unresolvedPlotRefs.add(String(resolvedPlotLocalId));
+    }
+    const plotKey = String(resolvedPlotId ?? resolvedPlotLocalId ?? 'sem-talhao');
     if (!plots.has(plotKey)) {
       plots.set(plotKey, {
-        plot_id: row.plot_cloud_id ?? null,
-        plot_local_id: row.plot_local_id ?? null,
-        plot_name: row.plot_name ?? 'Talhao sem nome',
+        plot_id: resolvedPlotId,
+        plot_local_id: resolvedPlotLocalId,
+        plot_name: resolvedPlotName,
         timeline: [],
       });
     }
@@ -126,7 +142,6 @@ async function loadMonitoringTimeline(
     const timeline = plot.timeline as Array<Record<string, unknown>>;
     let report = timeline.find((item) => item.report_id === row.report_id);
     if (!report) {
-      reports += 1;
       report = {
         monitoring_date: row.monitoring_date,
         report_id: row.report_id,
@@ -144,7 +159,6 @@ async function loadMonitoringTimeline(
     const reportPoints = report.points as Array<Record<string, unknown>>;
     let point = reportPoints.find((item) => item.point_id === row.point_id);
     if (!point) {
-      points += 1;
       point = {
         point_id: row.point_id,
         point_local_id: row.point_local_id,
@@ -156,33 +170,72 @@ async function loadMonitoringTimeline(
       reportPoints.push(point);
     }
     if (!row.occurrence_id) continue;
-    occurrences += 1;
     const rowImages = Array.isArray(row.images) ? row.images : [];
-    images += rowImages.length;
-    (point.occurrences as Array<Record<string, unknown>>).push({
-      occurrence_id: row.occurrence_id,
-      occurrence_local_id: row.occurrence_local_id,
-      type: row.type,
-      name: row.name,
-      infestation_level: row.infestation_level,
-      risk_level: row.risk_level,
-      observations: row.observations,
-      images: rowImages,
-      recommendation: row.simple_text
-        ? {
-            simple_text: row.simple_text,
-            priority: row.priority,
-            action_type: row.action_type,
-          }
-        : null,
-    });
+    const pointOccurrences = point.occurrences as Array<Record<string, unknown>>;
+    let occurrence = pointOccurrences.find((item) => item.occurrence_id === row.occurrence_id);
+    if (!occurrence) {
+      occurrence = {
+        occurrence_id: row.occurrence_id,
+        occurrence_local_id: row.occurrence_local_id,
+        type: row.type,
+        name: row.name,
+        infestation_level: row.infestation_level,
+        risk_level: row.risk_level,
+        observations: row.observations,
+        images: rowImages,
+        recommendation: null,
+      };
+      pointOccurrences.push(occurrence);
+    }
+    if (row.simple_text) {
+      occurrence.recommendation = {
+        simple_text: row.simple_text,
+        priority: row.priority,
+        action_type: row.action_type,
+      };
+    }
+  }
+
+  if (unresolvedPlotRefs.size > 0) {
+    console.warn(
+      `[windows/monitoring] plot_id nao resolvido para ${unresolvedPlotRefs.size} plot_local_id(s): ${Array.from(unresolvedPlotRefs).join(', ')}`,
+    );
+  }
+
+  const nonEmptyObject = (value: unknown): boolean =>
+    !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value as object).length > 0;
+  const normalizedPlots = Array.from(plots.values())
+    .map((plot) => {
+      const timeline = (plot.timeline as Array<Record<string, unknown>>).filter((report) => {
+        const reportPoints = report.points as Array<Record<string, unknown>>;
+        return reportPoints.length > 0 || nonEmptyObject(report.summary);
+      });
+      return { ...plot, timeline };
+    })
+    .filter((plot) => (plot.timeline as Array<unknown>).length > 0);
+
+  let reports = 0;
+  let points = 0;
+  let occurrences = 0;
+  let images = 0;
+  for (const plot of normalizedPlots) {
+    for (const report of plot.timeline as Array<Record<string, unknown>>) {
+      reports += 1;
+      for (const point of report.points as Array<Record<string, unknown>>) {
+        points += 1;
+        for (const occurrence of point.occurrences as Array<Record<string, unknown>>) {
+          occurrences += 1;
+          images += Array.isArray(occurrence.images) ? occurrence.images.length : 0;
+        }
+      }
+    }
   }
 
   return {
-    plots: Array.from(plots.values()),
+    plots: normalizedPlots,
     diagnostics: {
       reports_loaded: reports,
-      plots_with_occurrence: Array.from(plots.values()).filter((plot) =>
+      plots_with_occurrence: normalizedPlots.filter((plot) =>
         (plot.timeline as Array<Record<string, unknown>>).some((report) =>
           (report.points as Array<Record<string, unknown>>).some(
             (point) => (point.occurrences as Array<unknown>).length > 0,

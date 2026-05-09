@@ -143,6 +143,48 @@ export async function pushOperationalSync(
   body: OperationalPushBody,
 ): Promise<OperationalPushResult> {
   const synced_at = new Date().toISOString();
+  if (module === 'monitoring-report') {
+    let points = 0;
+    let occurrences = 0;
+    let images = 0;
+    let recommendations = 0;
+    for (const report of body.records) {
+      const pointList = Array.isArray(report.points) ? report.points : [];
+      points += pointList.length;
+      for (const point of pointList) {
+        if (!point || typeof point !== 'object') continue;
+        const p = point as Record<string, unknown>;
+        const pImages = Array.isArray(p.images) ? p.images : [];
+        images += pImages.length;
+        const occList = Array.isArray(p.occurrences) ? p.occurrences : [];
+        occurrences += occList.length;
+        for (const occ of occList) {
+          if (!occ || typeof occ !== 'object') continue;
+          const o = occ as Record<string, unknown>;
+          const oImages = Array.isArray(o.images) ? o.images : [];
+          images += oImages.length;
+          const rec = o.recommendation;
+          if (rec && typeof rec === 'object') {
+            const t = (rec as Record<string, unknown>).simple_text;
+            if (typeof t === 'string' && t.trim() !== '') {
+              recommendations += 1;
+            }
+          }
+        }
+      }
+    }
+    console.info(
+      '[sync/monitoring-report/push] incoming',
+      JSON.stringify({
+        records: body.records.length,
+        points,
+        occurrences,
+        images,
+        recommendations,
+        farm_local_id: body.farm_local_id,
+      }),
+    );
+  }
   const client = await pool.connect();
   try {
     await ensureOperationalCompatibilityColumns(client);
@@ -164,6 +206,24 @@ export async function pushOperationalSync(
       device_id: body.device_id,
     });
     await client.query('COMMIT');
+    if (module === 'monitoring-report') {
+      const root = result.mapping as Record<string, unknown>;
+      const count = (k: string) =>
+        root[k] && typeof root[k] === 'object'
+          ? Object.keys(root[k] as Record<string, unknown>).length
+          : 0;
+      console.info(
+        '[sync/monitoring-report/push] persisted',
+        JSON.stringify({
+          reports: count('reports'),
+          points: count('points'),
+          occurrences: count('occurrences'),
+          images: count('images'),
+          recommendations: count('recommendations'),
+          failed: result.failed.length,
+        }),
+      );
+    }
     return {
       farm_cloud_id: farmId,
       mapping: result.mapping,

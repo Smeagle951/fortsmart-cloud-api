@@ -39,12 +39,16 @@ function normalizeOperationalWindowsData(
     };
     const plots = p.plots ?? [];
     const summaryFilled = {
+      total_reports: 0,
+      total_points: 0,
+      total_occurrences: 0,
+      critical_occurrences: 0,
       ...(typeof p.summary === 'object' && p.summary ? p.summary : {}),
       ...(p.diagnostics ? { diagnostics: p.diagnostics } : {}),
     };
     return {
       farm_id: farmId,
-      summary: plots.length === 0 ? {} : summaryFilled,
+      summary: summaryFilled,
       plots,
     };
   }
