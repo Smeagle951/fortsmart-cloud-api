@@ -1,0 +1,15 @@
+# Fallback se o serviço Railway usar Nixpacks em vez de Dockerfile.
+# No painel: Settings → Build → Builder = Dockerfile (recomendado).
+
+[variables]
+NIXPACKS_NODE_VERSION = "20"
+NIXPACKS_INSTALL_DEV_DEPS = "true"
+
+[phases.install]
+cmds = ["npm ci"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npm run migrate:prod && npm start"
