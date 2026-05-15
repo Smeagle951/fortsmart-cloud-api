@@ -1,14 +1,17 @@
 import type { Pool } from 'pg';
 import { loadOperationalRows } from '../repositories/operationalSync.repository.js';
+import { loadPlantingWindowsPayload } from '../repositories/plantingSync.repository.js';
 import type { OperationalModule } from '../validators/operationalSync.validator.js';
 
 export type WindowsOperationalPayload = {
   farm_id: string;
   module: OperationalModule;
   records: Record<string, unknown>[];
-  summary: {
-    total: number;
-  };
+  /** Resumo agregado (plantio/monitoramento usam chaves diferentes). */
+  summary: Record<string, unknown> & { total?: number };
+  /** Presente em `/windows/planting` e `/windows/monitoring`. */
+  plots?: Array<Record<string, unknown>>;
+  diagnostics?: Record<string, unknown>;
 };
 
 export async function loadWindowsOperational(
@@ -26,6 +29,18 @@ export async function loadWindowsOperational(
         records: [],
         ...data,
       } as WindowsOperationalPayload & typeof data;
+    }
+    if (module === 'planting') {
+      const data = await loadPlantingWindowsPayload(client, farmId);
+      const summary = (data.summary as Record<string, unknown>) ?? {};
+      const total = Number(summary.total_plantings ?? summary.total ?? 0);
+      return {
+        farm_id: farmId,
+        module,
+        records: [],
+        plots: (data.plots as Array<Record<string, unknown>>) ?? [],
+        summary: { ...summary, total },
+      };
     }
     const records = await loadOperationalRows(client, module, farmId);
     return {
@@ -85,10 +100,14 @@ async function loadMonitoringTimeline(
           jsonb_agg(
             DISTINCT jsonb_build_object(
               'image_id', mi.id,
+              'occurrence_id', mo.id,
+              'monitoring_point_id', mp.id,
               'local_id', mi.local_id,
               'file_name', mi.file_name,
               'local_path', mi.local_path,
               'cloud_url', mi.cloud_url,
+              'cloud_storage_key', mi.cloud_storage_key,
+              'cloud_expires_at', mi.cloud_expires_at,
               'caption', mi.caption,
               'taken_at', mi.taken_at,
               'latitude', mi.latitude,

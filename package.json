@@ -9,21 +9,24 @@
   },
   "scripts": {
     "build": "tsc",
-    "start": "node scripts/run-migrations.mjs && node dist/server.js",
+    "start": "node dist/server.js",
     "dev": "node --import tsx src/server.ts",
-    "migrate": "node scripts/run-migrations.mjs",
+    "migrate": "node --import tsx src/db/migrate.ts",
     "hash-api-key": "node scripts/generate-api-key-hash.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.758.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
     "helmet": "^7.1.0",
+    "multer": "^1.4.5-lts.1",
     "pg": "^8.13.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
+    "@types/multer": "^1.4.12",
     "@types/node": "^22.10.1",
     "@types/pg": "^8.11.10",
     "tsx": "^4.19.2",

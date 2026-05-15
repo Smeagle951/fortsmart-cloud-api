@@ -5,10 +5,12 @@ import {
   upsertOperationalRecords,
   type ItemFailure,
 } from '../repositories/operationalSync.repository.js';
+import { upsertPlantingBundle } from '../repositories/plantingSync.repository.js';
 import type {
   OperationalModule,
   OperationalPushBody,
 } from '../validators/operationalSync.validator.js';
+import { ensurePlantingModuleTables } from '../db/ensurePlantingSchema.js';
 
 export type OperationalPushResult = {
   farm_cloud_id: string;
@@ -39,6 +41,7 @@ async function validateFarmLink(
 async function ensureOperationalCompatibilityColumns(
   client: import('pg').PoolClient,
 ): Promise<void> {
+  await ensurePlantingModuleTables(client);
   await client.query(`
     ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS material_name TEXT;
     ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS crop_name TEXT;
@@ -133,6 +136,8 @@ async function ensureOperationalCompatibilityColumns(
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       CONSTRAINT monitoring_images_farm_local_unique UNIQUE (farm_id, local_id)
     );
+    ALTER TABLE monitoring_images ADD COLUMN IF NOT EXISTS cloud_storage_key TEXT;
+    ALTER TABLE monitoring_images ADD COLUMN IF NOT EXISTS cloud_expires_at TIMESTAMPTZ;
   `);
 }
 
@@ -190,13 +195,16 @@ export async function pushOperationalSync(
     await ensureOperationalCompatibilityColumns(client);
     await client.query('BEGIN');
     const farmId = await validateFarmLink(client, apiKeyId, body);
-    const result = await upsertOperationalRecords(
-      client,
-      module,
-      farmId,
-      body.records,
-      body.device_id,
-    );
+    const result =
+      module === 'planting'
+        ? await upsertPlantingBundle(client, farmId, body.records, body, body.device_id)
+        : await upsertOperationalRecords(
+            client,
+            module,
+            farmId,
+            body.records,
+            body.device_id,
+          );
     await logSync(client, farmId, {
       module,
       action: 'push',
@@ -206,6 +214,26 @@ export async function pushOperationalSync(
       device_id: body.device_id,
     });
     await client.query('COMMIT');
+    if (module === 'planting') {
+      const root = result.mapping as Record<string, unknown>;
+      const count = (k: string) =>
+        root[k] && typeof root[k] === 'object'
+          ? Object.keys(root[k] as Record<string, unknown>).length
+          : 0;
+      console.info(
+        '[sync/planting/push] persisted',
+        JSON.stringify({
+          planting_records: count('planting_records'),
+          stand_evaluations: count('stand_evaluations'),
+          cv_records: count('cv_records'),
+          calibration_records: count('calibration_records'),
+          phenology_records: count('phenology_records'),
+          geo_exports: count('geo_exports'),
+          images: count('images'),
+          failed: result.failed.length,
+        }),
+      );
+    }
     if (module === 'monitoring-report') {
       const root = result.mapping as Record<string, unknown>;
       const count = (k: string) =>

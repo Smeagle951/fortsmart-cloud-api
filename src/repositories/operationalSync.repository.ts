@@ -527,6 +527,8 @@ async function upsertMonitoringImages(
           file_name: str(image, 'file_name'),
           local_path: str(image, 'local_path'),
           cloud_url: str(image, 'cloud_url'),
+          cloud_storage_key: str(image, 'cloud_storage_key'),
+          cloud_expires_at: iso(image.cloud_expires_at),
           caption: str(image, 'caption'),
           taken_at: iso(image.taken_at),
           latitude: num(image, 'latitude'),
@@ -550,7 +552,7 @@ async function upsertMonitoringImages(
   }
 }
 
-async function upsertGeneric(
+export async function upsertGeneric(
   client: PoolClient,
   table: string,
   values: Record<string, unknown>,

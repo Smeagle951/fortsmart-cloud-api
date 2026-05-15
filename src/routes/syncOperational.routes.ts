@@ -9,6 +9,8 @@ import {
   parseOperationalPushBody,
   type OperationalModule,
 } from '../validators/operationalSync.validator.js';
+import { monitoringMediaRouter } from './monitoringMedia.routes.js';
+import { plantingMediaRouter } from './plantingMedia.routes.js';
 
 export const syncOperationalRouter = Router();
 
@@ -36,3 +38,8 @@ registerPush('/sync/planting/push', 'planting');
 registerPush('/sync/plant-stand/push', 'plant-stand');
 registerPush('/sync/phenology/push', 'phenology');
 registerPush('/sync/geo-export/push', 'geo-export');
+
+// Upload multipart de imagens (monitoramento / plantio) no mesmo router que os `push`,
+// para instâncias que montam apenas `syncOperationalRouter` sem `monitoringMediaRouter`.
+syncOperationalRouter.use(monitoringMediaRouter);
+syncOperationalRouter.use(plantingMediaRouter);

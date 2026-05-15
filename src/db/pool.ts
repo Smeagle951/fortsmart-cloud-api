@@ -4,24 +4,12 @@ const { Pool } = pg;
 
 let pool: pg.Pool | null = null;
 
-function readConnectionString(): string {
-  const raw =
-    process.env.DATABASE_URL ??
-    process.env.URL_DO_BANCO_DE_DADOS ??
-    process.env.POSTGRES_URL ??
-    '';
-  const trimmed = raw.trim().replace(/^['"]|['"]$/g, '');
-  if (!trimmed) {
-    throw new Error(
-      'DATABASE_URL is required. Também aceito URL_DO_BANCO_DE_DADOS como fallback.',
-    );
-  }
-  return trimmed;
-}
-
 export function getPool(): pg.Pool {
   if (pool) return pool;
-  const connectionString = readConnectionString();
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error('DATABASE_URL is required');
+  }
   pool = new Pool({
     connectionString,
     max: 20,
