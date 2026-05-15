@@ -56,6 +56,81 @@ export async function touchLastUsed(apiKeyId: string, client?: PoolClient): Prom
   await pool.query(q, [apiKeyId]);
 }
 
+export async function regenerateRawApiKeyForFarm(input: {
+  rawKey: string;
+  farmIdOrCloudId?: string;
+  name?: string;
+}): Promise<{
+  key_id: string;
+  farm_id: string | null;
+  key_prefix: string;
+  created_at: string;
+}> {
+  const rawKey = input.rawKey.trim();
+  const farmIdOrCloudId = input.farmIdOrCloudId?.trim() || '';
+  if (!rawKey.startsWith('fs_live_')) {
+    throw new HttpError('API Key deve iniciar com fs_live_.', 400);
+  }
+
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let linkedFarmId: string | null = null;
+    if (farmIdOrCloudId) {
+      const farm = await client.query<{ id: string }>(
+        `SELECT id FROM farms
+         WHERE (id::text = $1 OR local_id = $1) AND deleted_at IS NULL
+         LIMIT 1`,
+        [farmIdOrCloudId],
+      );
+      linkedFarmId = farm.rows[0]?.id ?? null;
+    }
+
+    if (linkedFarmId) {
+      await client.query(
+        `UPDATE api_keys
+         SET is_active = false
+         WHERE farm_id = $1 AND is_active = true`,
+        [linkedFarmId],
+      );
+    }
+
+    const keyHash = hashRawApiKey(rawKey);
+    const keyPrefix = displayKeyPrefix(rawKey);
+    const inserted = await client.query<{
+      id: string;
+      farm_id: string | null;
+      key_prefix: string;
+      created_at: Date;
+    }>(
+      `INSERT INTO api_keys (farm_id, key_hash, key_prefix, name, is_active)
+       VALUES ($1, $2, $3, $4, true)
+       ON CONFLICT (key_hash) DO UPDATE SET
+        farm_id = COALESCE(EXCLUDED.farm_id, api_keys.farm_id),
+        key_prefix = EXCLUDED.key_prefix,
+        name = COALESCE(EXCLUDED.name, api_keys.name),
+        is_active = true
+       RETURNING id, farm_id, key_prefix, created_at`,
+      [linkedFarmId, keyHash, keyPrefix, input.name?.trim() || 'FortSmart Desktop Sync'],
+    );
+
+    await client.query('COMMIT');
+    const row = inserted.rows[0];
+    return {
+      key_id: row.id,
+      farm_id: row.farm_id,
+      key_prefix: row.key_prefix,
+      created_at: row.created_at.toISOString(),
+    };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 /** Documentação: use o mesmo pepper do servidor ao gerar key_hash para INSERT. */
 export function hashKeyForInsert(rawKey: string): { key_hash: string; key_prefix: string } {
   return {
