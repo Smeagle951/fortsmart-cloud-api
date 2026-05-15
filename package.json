@@ -8,10 +8,11 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-migrations.mjs",
     "start": "node dist/server.js",
     "dev": "node --import tsx src/server.ts",
     "migrate": "node --import tsx src/db/migrate.ts",
+    "migrate:prod": "node dist/db/migrate.js",
     "hash-api-key": "node scripts/generate-api-key-hash.js"
   },
   "dependencies": {
