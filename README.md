@@ -4,12 +4,22 @@ API Node/Express para sincronização mobile/desktop → PostgreSQL (Neon) + obj
 
 ## Deploy Railway (`api.fortsmart-agro.com.br`)
 
-1. No projeto Railway, defina o **Root Directory** do serviço como:
-   ```
-   backend/fortsmart-cloud-api
-   ```
-2. Variáveis obrigatórias: `DATABASE_URL`, `API_KEY_PEPPER`, credenciais R2/S3 se usar upload de imagens (ver `.env.example`).
-3. **Redeploy** após qualquer alteração em rotas de sync/imagem.
+### Repositório correto (recomendado)
+
+Ligue o serviço Railway ao repositório **standalone**:
+
+- **GitHub:** https://github.com/Smeagle951/fortsmart-cloud-api  
+- **Branch:** `main`  
+- **Root Directory:** *(vazio — raiz do repo)*  
+- **Builder:** Dockerfile (definido em `railway.json`)
+
+Não use o monorepo `FortSmart-Agro` para este serviço, a menos que o submodule `backend/fortsmart-cloud-api` esteja atualizado (ver abaixo).
+
+### Passos
+
+1. Variáveis obrigatórias: `DATABASE_URL`, `API_KEY_PEPPER`, credenciais R2/S3 se usar upload de imagens (ver `.env.example`).
+2. **Settings → Build:** Builder = **Dockerfile**; apague comandos customizados antigos (`npm ci` só).
+3. **Redeploy** após push em `fortsmart-cloud-api`.
 4. Confirme a versão publicada:
 
 ```bash
@@ -22,11 +32,11 @@ Resposta esperada (versão nova):
 {
   "success": true,
   "status": "ok",
-  "service": "fortsmart-cloud-api",
   "capabilities_version": 2,
   "routes": {
     "monitoring_report_image": "POST /sync/monitoring-report/image",
-    "planting_image": "POST /sync/planting/image"
+    "planting_image": "POST /sync/planting/image",
+    "sync_diagnostics": "GET /sync/diagnostics/:farmId"
   }
 }
 ```
