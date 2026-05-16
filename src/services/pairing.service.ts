@@ -107,18 +107,24 @@ export async function createPairingSession(input: {
   }
   const farmCloudId = input.farmCloudId.trim();
   const desktopInstallationId = input.desktopInstallationId.trim();
-  if (!farmCloudId) throw new HttpError('farm_cloud_id is required', 400);
   if (!desktopInstallationId) throw new HttpError('desktop_installation_id is required', 400);
 
   const pool = getPool();
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const farmLookup = farmCloudId || input.apiKeyFarmId;
+    if (!farmLookup) throw new HttpError('farm_cloud_id is required', 400);
     const farmResult = await client.query<{ id: string; name: string }>(
       `SELECT id, name FROM farms
-       WHERE id::text = $1 AND deleted_at IS NULL
+       WHERE (
+          id::text = $1
+          OR farm_cloud_id = $1
+          OR local_id = $1
+        )
+        AND deleted_at IS NULL
        LIMIT 1`,
-      [farmCloudId],
+      [farmLookup],
     );
     const farm = farmResult.rows[0];
     if (!farm) throw new HttpError('Farm not found', 404);
