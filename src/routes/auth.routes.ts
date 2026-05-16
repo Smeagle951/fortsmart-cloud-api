@@ -1,7 +1,18 @@
 import { Router } from 'express';
+import type { Request } from 'express';
 import { HttpError } from '../middleware/errorHandler.js';
 import { authenticateBearer, DEFAULT_MODULES, regenerateRawApiKeyForFarm, touchLastUsed } from '../services/apiKey.service.js';
+import {
+  consumePairingSession,
+  createPairingSession,
+  getPairingSessionStatus,
+  listTrustedDevices,
+  revokePairingSession,
+  revokeTrustedDevice,
+  validateDeviceBinding,
+} from '../services/pairing.service.js';
 import { getPool } from '../db/pool.js';
+import { requireApiKey } from '../middleware/apiKeyAuth.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { jsonOk } from '../utils/response.js';
 
@@ -9,6 +20,18 @@ export const authRouter = Router();
 
 const NOT_LINKED_MSG =
   'API Key válida. Primeira sincronização ainda não vinculou uma fazenda.';
+
+function clientIp(req: Request): string | null {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.ip || null;
+}
+
+function userAgent(req: Request): string | null {
+  return typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null;
+}
 
 authRouter.post(
   '/auth/api-key/regenerate',
@@ -46,9 +69,18 @@ authRouter.post(
   '/auth/api-key/validate',
   asyncHandler(async (req, res) => {
     const row = await authenticateBearer(req.headers.authorization);
-    await touchLastUsed(row.id);
 
     const body = req.body as Record<string, unknown> | undefined;
+    const deviceId =
+      String(req.headers['x-fortsmart-device-id'] ?? '').trim() ||
+      (typeof body?.device_id === 'string' ? body.device_id.trim() : '');
+    await validateDeviceBinding({
+      apiKeyHash: row.key_hash,
+      farmId: row.farm_id,
+      deviceId,
+    });
+    await touchLastUsed(row.id);
+
     const farmIdParam =
       typeof body?.farm_id === 'string'
         ? body.farm_id.trim()
@@ -98,5 +130,98 @@ authRouter.post(
       },
       modules,
     });
+  }),
+);
+
+authRouter.post(
+  '/auth/pairing/create',
+  requireApiKey,
+  asyncHandler(async (req, res) => {
+    const body = req.body as Record<string, unknown> | undefined;
+    const farmCloudId =
+      typeof body?.farm_cloud_id === 'string' ? body.farm_cloud_id.trim() : req.cloudAuth?.farmId ?? '';
+    const desktopInstallationId =
+      typeof body?.desktop_installation_id === 'string' ? body.desktop_installation_id.trim() : '';
+    const result = await createPairingSession({
+      apiKeyFarmId: req.cloudAuth?.farmId ?? null,
+      farmCloudId,
+      desktopInstallationId,
+      ip: clientIp(req),
+      userAgent: userAgent(req),
+    });
+    jsonOk(res, result);
+  }),
+);
+
+authRouter.post(
+  '/auth/pairing/consume',
+  asyncHandler(async (req, res) => {
+    const body = req.body as Record<string, unknown> | undefined;
+    const result = await consumePairingSession({
+      pairingToken: typeof body?.pairing_token === 'string' ? body.pairing_token : undefined,
+      pairingCode: typeof body?.pairing_code === 'string' ? body.pairing_code : undefined,
+      deviceId: typeof body?.device_id === 'string' ? body.device_id : '',
+      appVersion: typeof body?.app_version === 'string' ? body.app_version : null,
+      platform: typeof body?.platform === 'string' ? body.platform : null,
+      deviceName: typeof body?.device_name === 'string' ? body.device_name : null,
+      ip: clientIp(req),
+      userAgent: userAgent(req),
+    });
+    jsonOk(res, result);
+  }),
+);
+
+authRouter.get(
+  '/auth/pairing/session/:id',
+  requireApiKey,
+  asyncHandler(async (req, res) => {
+    const result = await getPairingSessionStatus({
+      apiKeyFarmId: req.cloudAuth?.farmId ?? null,
+      sessionId: req.params.id,
+    });
+    jsonOk(res, result);
+  }),
+);
+
+authRouter.post(
+  '/auth/pairing/revoke',
+  requireApiKey,
+  asyncHandler(async (req, res) => {
+    const body = req.body as Record<string, unknown> | undefined;
+    const sessionId = typeof body?.pairing_session_id === 'string' ? body.pairing_session_id.trim() : '';
+    if (!sessionId) throw new HttpError('pairing_session_id is required', 400);
+    await revokePairingSession({
+      apiKeyFarmId: req.cloudAuth?.farmId ?? null,
+      sessionId,
+      ip: clientIp(req),
+      userAgent: userAgent(req),
+    });
+    jsonOk(res, { revoked: true });
+  }),
+);
+
+authRouter.get(
+  '/auth/trusted-devices',
+  requireApiKey,
+  asyncHandler(async (req, res) => {
+    const devices = await listTrustedDevices(req.cloudAuth?.farmId ?? null);
+    jsonOk(res, { devices });
+  }),
+);
+
+authRouter.post(
+  '/auth/trusted-devices/revoke',
+  requireApiKey,
+  asyncHandler(async (req, res) => {
+    const body = req.body as Record<string, unknown> | undefined;
+    const deviceId = typeof body?.device_id === 'string' ? body.device_id.trim() : '';
+    if (!deviceId) throw new HttpError('device_id is required', 400);
+    await revokeTrustedDevice({
+      apiKeyFarmId: req.cloudAuth?.farmId ?? null,
+      deviceId,
+      ip: clientIp(req),
+      userAgent: userAgent(req),
+    });
+    jsonOk(res, { revoked: true });
   }),
 );

@@ -12,4 +12,4 @@ cmds = ["npm ci"]
 cmds = ["npm run build"]
 
 [start]
-cmd = "npm run migrate:prod || echo '[startup] migrations failed; starting API for health/diagnostics'; npm start"
+cmd = "npm run start"

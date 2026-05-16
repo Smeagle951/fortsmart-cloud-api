@@ -25,4 +25,4 @@ COPY --from=build /app/dist ./dist
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "node dist/db/migrate.js || echo '[startup] migrations failed; starting API for health/diagnostics'; node dist/server.js"]
+CMD ["npm", "run", "start"]

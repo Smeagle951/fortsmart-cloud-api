@@ -6,6 +6,8 @@ declare global {
       cloudAuth?: {
         apiKeyId: string;
         farmId: string | null;
+        apiKeyHash: string;
+        deviceId?: string;
       };
     }
   }

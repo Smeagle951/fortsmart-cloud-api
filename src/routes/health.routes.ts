@@ -16,6 +16,8 @@ healthRouter.get('/health', (_req, res) => {
       monitoring_report_image: 'POST /sync/monitoring-report/image',
       planting_image: 'POST /sync/planting/image',
       sync_diagnostics: 'GET /sync/diagnostics/:farmId',
+      pairing_create: 'POST /auth/pairing/create',
+      pairing_consume: 'POST /auth/pairing/consume',
     },
   });
 });
