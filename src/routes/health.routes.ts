@@ -1,4 +1,9 @@
 import { Router } from 'express';
+import {
+  getObjectStorageMissingConfig,
+  getObjectStoragePublicBaseUrl,
+  isObjectStorageConfigured,
+} from '../services/objectStorage.service.js';
 import { jsonOk } from '../utils/response.js';
 
 /** Versão de capacidades — subir quando expor novas rotas (ex.: upload de imagens). */
@@ -11,6 +16,9 @@ healthRouter.get('/health', (_req, res) => {
   jsonOk(res, {
     status: 'ok',
     capabilities_version: API_CAPABILITIES_VERSION,
+    object_storage_configured: isObjectStorageConfigured(),
+    object_storage_missing: getObjectStorageMissingConfig(),
+    object_storage_public_base: getObjectStoragePublicBaseUrl(),
     ...(railwaySha ? { deploy_git_sha: railwaySha.slice(0, 7) } : {}),
     routes: {
       monitoring_report_image: 'POST /sync/monitoring-report/image',
