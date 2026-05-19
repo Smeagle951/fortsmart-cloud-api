@@ -94,6 +94,25 @@ function flattenMonitoringWindowsPayload(plots: unknown[]): Record<string, unkno
   const points: Record<string, unknown>[] = [];
   const occurrences: Record<string, unknown>[] = [];
   const images: Record<string, unknown>[] = [];
+  const organismsDetected: Record<string, unknown>[] = [];
+  const recommendations: Record<string, unknown>[] = [];
+  const integratedManagement: Record<string, unknown>[] = [];
+  const economicImpacts: Record<string, unknown>[] = [];
+  const standContexts: Record<string, unknown>[] = [];
+  const environmentContexts: Record<string, unknown>[] = [];
+  const plantingContexts: Record<string, unknown>[] = [];
+
+  const pushUnique = (
+    target: Record<string, unknown>[],
+    items: unknown,
+    enrich: Record<string, unknown>,
+  ) => {
+    if (!Array.isArray(items)) return;
+    for (const raw of items) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      target.push({ ...(raw as Record<string, unknown>), ...enrich });
+    }
+  };
 
   for (const plot of asArray(plots)) {
     const plotId = plot.plot_id ?? plot.id ?? null;
@@ -109,6 +128,49 @@ function flattenMonitoringWindowsPayload(plots: unknown[]): Record<string, unkno
         plot_name: report.plot_name ?? plotName,
       };
       reports.push(enrichedReport);
+      const reportEnrich = {
+        report_cloud_id: reportId,
+        report_local_id: reportLocalId,
+        plot_cloud_id: enrichedReport.plot_cloud_id,
+        plot_local_id: enrichedReport.plot_local_id,
+        plot_name: enrichedReport.plot_name,
+      };
+      pushUnique(organismsDetected, report.organisms_detected, reportEnrich);
+      pushUnique(recommendations, report.recommendations, reportEnrich);
+      pushUnique(integratedManagement, report.integrated_management, reportEnrich);
+      pushUnique(economicImpacts, report.economic_impacts, reportEnrich);
+      if (report.stand_context && typeof report.stand_context === 'object' && !Array.isArray(report.stand_context)) {
+        const keys = Object.keys(report.stand_context as object);
+        if (keys.length > 0) {
+          standContexts.push({ ...(report.stand_context as Record<string, unknown>), ...reportEnrich });
+        }
+      }
+      if (
+        report.environment_context &&
+        typeof report.environment_context === 'object' &&
+        !Array.isArray(report.environment_context)
+      ) {
+        const keys = Object.keys(report.environment_context as object);
+        if (keys.length > 0) {
+          environmentContexts.push({
+            ...(report.environment_context as Record<string, unknown>),
+            ...reportEnrich,
+          });
+        }
+      }
+      if (
+        report.planting_context &&
+        typeof report.planting_context === 'object' &&
+        !Array.isArray(report.planting_context)
+      ) {
+        const keys = Object.keys(report.planting_context as object);
+        if (keys.length > 0) {
+          plantingContexts.push({
+            ...(report.planting_context as Record<string, unknown>),
+            ...reportEnrich,
+          });
+        }
+      }
       for (const point of asArray(report.points)) {
         const pointId = point.point_id ?? point.id ?? null;
         const pointLocalId = point.point_local_id ?? point.local_id ?? null;
@@ -153,7 +215,25 @@ function flattenMonitoringWindowsPayload(plots: unknown[]): Record<string, unkno
     }
   }
 
-  return { reports, points, occurrences, images };
+  const dashboardSummary =
+    reports.length === 0
+      ? {}
+      : (reports[reports.length - 1]?.dashboard_summary as Record<string, unknown>) ?? {};
+
+  return {
+    reports,
+    points,
+    occurrences,
+    images,
+    organisms_detected: organismsDetected,
+    recommendations,
+    integrated_management: integratedManagement,
+    economic_impacts: economicImpacts,
+    stand_context: standContexts,
+    environment_context: environmentContexts,
+    planting_context: plantingContexts,
+    dashboard_summary: dashboardSummary,
+  };
 }
 
 /** Contrato unificado para planting + monitoring-report (desktop / curl). */
@@ -206,10 +286,16 @@ function normalizeOperationalWindowsData(
       critical_occurrences: 0,
       ...(typeof p.summary === 'object' && p.summary ? p.summary : {}),
       ...(p.diagnostics ? { diagnostics: p.diagnostics } : {}),
+      ...(typeof flat.dashboard_summary === 'object' && flat.dashboard_summary
+        ? flat.dashboard_summary
+        : {}),
     };
     return {
       farm_id: farmId,
       farm_cloud_id: farmId,
+      schema_version:
+        (flat.reports as Record<string, unknown>[] | undefined)?.find((r) => r.schema_version)
+          ?.schema_version ?? null,
       summary: summaryFilled,
       plots,
       ...flat,
@@ -260,6 +346,15 @@ windowsOperationalRouter.get(
       }
     };
 
+    const safeScalar = async (sql: string, params: unknown[] = []): Promise<number> => {
+      try {
+        const { rows } = await pool.query<{ value: string }>(sql, params);
+        return Number(rows[0]?.value ?? 0);
+      } catch {
+        return 0;
+      }
+    };
+
     const [
       plantings,
       stand,
@@ -271,6 +366,8 @@ windowsOperationalRouter.get(
       occurrences,
       images,
       subareas,
+      reportsV2,
+      reportsWithOrganisms,
     ] = await Promise.all([
       safeCount('planting_records'),
       safeCount('plant_stand_records'),
@@ -282,6 +379,18 @@ windowsOperationalRouter.get(
       safeCount('monitoring_occurrences'),
       safeCount('monitoring_images'),
       safeCount('subareas'),
+      safeScalar(
+        `SELECT COUNT(*)::text AS value FROM monitoring_reports
+         WHERE farm_id = $1::uuid AND deleted_at IS NULL
+           AND schema_version = 'monitoring_report_v2'`,
+        [farmId],
+      ),
+      safeScalar(
+        `SELECT COUNT(*)::text AS value FROM monitoring_reports
+         WHERE farm_id = $1::uuid AND deleted_at IS NULL
+           AND jsonb_array_length(COALESCE(organisms_detected, '[]'::jsonb)) > 0`,
+        [farmId],
+      ),
     ]);
 
     jsonOk(res, {
@@ -297,6 +406,11 @@ windowsOperationalRouter.get(
       occurrences,
       images,
       geojson,
+      monitoring_v2: {
+        schema_version: 'monitoring_report_v2',
+        reports_v2: reportsV2,
+        reports_with_organisms: reportsWithOrganisms,
+      },
       checked_at: new Date().toISOString(),
     });
   }),

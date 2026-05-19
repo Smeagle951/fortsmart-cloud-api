@@ -160,6 +160,7 @@ authRouter.post(
     const result = await consumePairingSession({
       pairingToken: typeof body?.pairing_token === 'string' ? body.pairing_token : undefined,
       pairingCode: typeof body?.pairing_code === 'string' ? body.pairing_code : undefined,
+      farmLocalId: typeof body?.farm_local_id === 'string' ? body.farm_local_id : undefined,
       deviceId: typeof body?.device_id === 'string' ? body.device_id : '',
       appVersion: typeof body?.app_version === 'string' ? body.app_version : null,
       platform: typeof body?.platform === 'string' ? body.platform : null,

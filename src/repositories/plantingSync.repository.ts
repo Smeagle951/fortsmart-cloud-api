@@ -1,11 +1,66 @@
 import type { PoolClient } from 'pg';
 import type { OperationalPushBody } from '../validators/operationalSync.validator.js';
+import { ensurePlantingModuleTables } from '../db/ensurePlantingSchema.js';
 import {
   getOperationalSpec,
   logSync,
   upsertGeneric,
   type ItemFailure,
 } from './operationalSync.repository.js';
+
+async function tableHasColumn(
+  client: PoolClient,
+  table: string,
+  column: string,
+): Promise<boolean> {
+  const { rows } = await client.query<{ ok: number }>(
+    `SELECT 1 AS ok FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+     LIMIT 1`,
+    [table, column],
+  );
+  return rows.length > 0;
+}
+
+async function loadPlantingChildRows(
+  client: PoolClient,
+  table: string,
+  farmId: string,
+  plantingIds: string[],
+  plantingLocalIds: string[],
+): Promise<Record<string, unknown>[]> {
+  const hasRecordFk = await tableHasColumn(client, table, 'planting_record_id');
+  if (hasRecordFk && plantingIds.length > 0) {
+    const { rows } = await client.query<Record<string, unknown>>(
+      `SELECT * FROM ${table}
+       WHERE farm_id = $1::uuid AND deleted_at IS NULL
+         AND planting_record_id = ANY($2::uuid[])`,
+      [farmId, plantingIds],
+    );
+    return rows;
+  }
+  const hasLocalFk = await tableHasColumn(client, table, 'planting_local_id');
+  if (hasLocalFk && plantingLocalIds.length > 0) {
+    const { rows } = await client.query<Record<string, unknown>>(
+      `SELECT * FROM ${table}
+       WHERE farm_id = $1::uuid AND deleted_at IS NULL
+         AND planting_local_id = ANY($2::text[])`,
+      [farmId, plantingLocalIds],
+    );
+    return rows;
+  }
+  const { rows } = await client.query<Record<string, unknown>>(
+    `SELECT * FROM ${table} WHERE farm_id = $1::uuid AND deleted_at IS NULL`,
+    [farmId],
+  );
+  const idSet = new Set(plantingIds);
+  const localSet = new Set(plantingLocalIds);
+  return rows.filter((row) => {
+    const rid = row.planting_record_id != null ? String(row.planting_record_id) : '';
+    const lid = row.planting_local_id != null ? String(row.planting_local_id) : '';
+    return (rid && idSet.has(rid)) || (lid && localSet.has(lid));
+  });
+}
 
 function str(record: Record<string, unknown>, key: string): string | null {
   const value = record[key];
@@ -677,6 +732,8 @@ export async function loadPlantingWindowsPayload(
   client: PoolClient,
   farmId: string,
 ): Promise<Record<string, unknown>> {
+  await ensurePlantingModuleTables(client);
+
   const { rows: plantings } = await client.query<Record<string, unknown>>(
     `SELECT pr.*,
             p.id::text AS resolved_plot_id,
@@ -710,43 +767,22 @@ export async function loadPlantingWindowsPayload(
   }
 
   const ids = plantings.map((r) => String(r.id));
+  const localIds = plantings
+    .map((r) => (r.local_id != null ? String(r.local_id) : ''))
+    .filter((v) => v.length > 0);
 
-  const { rows: stands } = await client.query<Record<string, unknown>>(
-    `SELECT * FROM plant_stand_records
-     WHERE farm_id = $1::uuid AND deleted_at IS NULL
-       AND planting_record_id = ANY($2::uuid[])`,
-    [farmId, ids],
+  const stands = await loadPlantingChildRows(client, 'plant_stand_records', farmId, ids, localIds);
+  const cvs = await loadPlantingChildRows(client, 'planting_cv_records', farmId, ids, localIds);
+  const calibs = await loadPlantingChildRows(
+    client,
+    'planting_calibration_records',
+    farmId,
+    ids,
+    localIds,
   );
-  const { rows: cvs } = await client.query<Record<string, unknown>>(
-    `SELECT * FROM planting_cv_records
-     WHERE farm_id = $1::uuid AND deleted_at IS NULL
-       AND planting_record_id = ANY($2::uuid[])`,
-    [farmId, ids],
-  );
-  const { rows: calibs } = await client.query<Record<string, unknown>>(
-    `SELECT * FROM planting_calibration_records
-     WHERE farm_id = $1::uuid AND deleted_at IS NULL
-       AND planting_record_id = ANY($2::uuid[])`,
-    [farmId, ids],
-  );
-  const { rows: phens } = await client.query<Record<string, unknown>>(
-    `SELECT * FROM phenology_records
-     WHERE farm_id = $1::uuid AND deleted_at IS NULL
-       AND planting_record_id = ANY($2::uuid[])`,
-    [farmId, ids],
-  );
-  const { rows: geos } = await client.query<Record<string, unknown>>(
-    `SELECT * FROM geo_exports
-     WHERE farm_id = $1::uuid AND deleted_at IS NULL
-       AND planting_record_id = ANY($2::uuid[])`,
-    [farmId, ids],
-  );
-  const { rows: imgs } = await client.query<Record<string, unknown>>(
-    `SELECT * FROM planting_images
-     WHERE farm_id = $1::uuid AND deleted_at IS NULL
-       AND planting_record_id = ANY($2::uuid[])`,
-    [farmId, ids],
-  );
+  const phens = await loadPlantingChildRows(client, 'phenology_records', farmId, ids, localIds);
+  const geos = await loadPlantingChildRows(client, 'geo_exports', farmId, ids, localIds);
+  const imgs = await loadPlantingChildRows(client, 'planting_images', farmId, ids, localIds);
 
   const byPlanting = (pid: string) => ({
     stand: stands.filter((x) => String(x.planting_record_id) === pid),

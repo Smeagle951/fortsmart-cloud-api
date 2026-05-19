@@ -81,6 +81,16 @@ async function loadMonitoringTimeline(
         mr.report_date AS monitoring_date,
         mr.phenological_stage,
         mr.summary,
+        mr.schema_version,
+        mr.plot_geojson,
+        mr.organisms_detected,
+        mr.recommendations AS report_recommendations,
+        mr.integrated_management,
+        mr.economic_impacts,
+        mr.stand_context,
+        mr.environment_context,
+        mr.planting_context,
+        mr.dashboard_summary,
         mp.id AS point_id,
         mp.local_id AS point_local_id,
         mp.point_code,
@@ -90,6 +100,7 @@ async function loadMonitoringTimeline(
         mo.local_id AS occurrence_local_id,
         mo.type,
         mo.name,
+        mo.scientific_name,
         mo.infestation_level,
         mo.risk_level,
         mo.observations,
@@ -129,7 +140,11 @@ async function loadMonitoringTimeline(
       LEFT JOIN monitoring_recommendations mrp ON mrp.occurrence_id = mo.id
       LEFT JOIN monitoring_images mi ON mi.occurrence_id = mo.id OR (mi.occurrence_id IS NULL AND mi.monitoring_point_id = mp.id)
       WHERE mr.farm_id = $1 AND mr.deleted_at IS NULL
-      GROUP BY mr.id, mp.id, mo.id, mrp.id, p.id
+      GROUP BY
+        mr.id, mp.id, mo.id, mrp.id, p.id,
+        mr.schema_version, mr.plot_geojson, mr.organisms_detected,
+        mr.recommendations, mr.integrated_management, mr.economic_impacts,
+        mr.stand_context, mr.environment_context, mr.planting_context, mr.dashboard_summary
       ORDER BY mr.plot_name NULLS LAST, mr.report_date DESC NULLS LAST, mp.point_code NULLS LAST, mo.name NULLS LAST
     `,
     [farmId],
@@ -154,6 +169,7 @@ async function loadMonitoringTimeline(
         plot_id: resolvedPlotId,
         plot_local_id: resolvedPlotLocalId,
         plot_name: resolvedPlotName,
+        plot_geojson: row.plot_geojson ?? null,
         timeline: [],
       });
     }
@@ -170,6 +186,16 @@ async function loadMonitoringTimeline(
         subarea_local_id: row.subarea_local_id,
         subarea_name: row.subarea_name,
         summary: row.summary ?? {},
+        schema_version: row.schema_version ?? null,
+        plot_geojson: row.plot_geojson ?? null,
+        organisms_detected: row.organisms_detected ?? [],
+        recommendations: row.report_recommendations ?? [],
+        integrated_management: row.integrated_management ?? [],
+        economic_impacts: row.economic_impacts ?? [],
+        stand_context: row.stand_context ?? {},
+        environment_context: row.environment_context ?? {},
+        planting_context: row.planting_context ?? {},
+        dashboard_summary: row.dashboard_summary ?? {},
         points: [],
       };
       timeline.push(report);
@@ -198,6 +224,7 @@ async function loadMonitoringTimeline(
         occurrence_local_id: row.occurrence_local_id,
         type: row.type,
         name: row.name,
+        scientific_name: row.scientific_name,
         infestation_level: row.infestation_level,
         risk_level: row.risk_level,
         observations: row.observations,

@@ -4,7 +4,7 @@ import { getPool } from '../db/pool.js';
 import { HttpError } from '../middleware/errorHandler.js';
 import { displayKeyPrefix, getApiKeyPepper, hashRawApiKey } from '../utils/hashApiKey.js';
 
-const PAIRING_TTL_MS = 10 * 60 * 1000;
+const PAIRING_TTL_MS = 30 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_ATTEMPTS = 5;
 const RATE_WINDOW_MS = 60 * 1000;
@@ -31,6 +31,13 @@ function randomCode(): string {
   let out = '';
   for (const byte of bytes) out += alphabet[byte % alphabet.length];
   return `${out.slice(0, 4)}-${out.slice(4, 8)}`;
+}
+
+/** Mesmo formato do app mobile (`ABCD-2345` ou `abcd2345`). */
+function normalizePairingCode(raw: string): string {
+  const cleaned = raw.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (cleaned.length === 8) return `${cleaned.slice(0, 4)}-${cleaned.slice(4)}`;
+  return raw.trim().toUpperCase();
 }
 
 function generateApiKey(): string {
@@ -188,6 +195,7 @@ export async function createPairingSession(input: {
 export async function consumePairingSession(input: {
   pairingToken?: string;
   pairingCode?: string;
+  farmLocalId?: string | null;
   deviceId: string;
   appVersion?: string | null;
   platform?: string | null;
@@ -204,7 +212,8 @@ export async function consumePairingSession(input: {
 }> {
   assertRateLimit(input.ip);
   const token = input.pairingToken?.trim() || '';
-  const code = input.pairingCode?.trim().toUpperCase() || '';
+  const code = input.pairingCode?.trim() ? normalizePairingCode(input.pairingCode) : '';
+  const farmLocalId = input.farmLocalId?.trim() || '';
   const deviceId = input.deviceId.trim();
   if (!token && !code) throw new HttpError('pairing_token or pairing_code is required', 400);
   if (!deviceId) throw new HttpError('device_id is required', 400);
@@ -320,6 +329,12 @@ export async function consumePairingSession(input: {
        WHERE id = $1`,
       [session.id, deviceId, input.userAgent ?? null],
     );
+    if (farmLocalId) {
+      await client.query(`UPDATE farms SET local_id = $1 WHERE id = $2::uuid`, [
+        farmLocalId,
+        session.farm_id,
+      ]);
+    }
     await logSecurityEvent(client, {
       farmId: session.farm_id,
       deviceId,

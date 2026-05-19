@@ -98,6 +98,16 @@ const specs: Record<OperationalModule, ModuleSpec> = {
         observations: str(record, 'general_observations') ?? str(record, 'observations') ?? str(record, 'notes'),
         status: str(record, 'status'),
         summary: json(record.summary, {}),
+        schema_version: str(record, 'schema_version'),
+        plot_geojson: record.plot_geojson ?? null,
+        organisms_detected: json(record.organisms_detected, []),
+        recommendations: json(record.recommendations, []),
+        integrated_management: json(record.integrated_management, []),
+        economic_impacts: json(record.economic_impacts, []),
+        stand_context: json(record.stand_context, {}),
+        environment_context: json(record.environment_context, {}),
+        planting_context: json(record.planting_context, {}),
+        dashboard_summary: json(record.dashboard_summary, {}),
       };
     },
   },
@@ -351,7 +361,19 @@ async function upsertMonitoringReport(
 ): Promise<{ reportId: string; mapping: MonitoringMapping }> {
   const spec = getOperationalSpec('monitoring-report');
   const values = spec.buildValues(record, farmId);
-  const reportId = await upsertGeneric(client, spec.table, values, ['raw_payload', 'summary']);
+  const reportId = await upsertGeneric(client, spec.table, values, [
+    'raw_payload',
+    'summary',
+    'plot_geojson',
+    'organisms_detected',
+    'recommendations',
+    'integrated_management',
+    'economic_impacts',
+    'stand_context',
+    'environment_context',
+    'planting_context',
+    'dashboard_summary',
+  ]);
   const reportLocalId = localId(record);
   const mapping: MonitoringMapping = {
     reports: { [reportLocalId]: reportId },
