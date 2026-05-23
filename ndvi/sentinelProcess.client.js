@@ -108,7 +108,6 @@ function evaluatePixel(sample) {
         };
       }
 
-      // PNG binário — sem URL pública imediata; manter metadata_only no MVP cloud.
       return {
         preview_url: null,
         tile_url: null,
@@ -138,4 +137,4 @@ function evaluatePixel(sample) {
   }
 }
 
-module.exports = SentinelProcessClient;
+export default SentinelProcessClient;

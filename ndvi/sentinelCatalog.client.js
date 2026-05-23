@@ -1,4 +1,4 @@
-const NdviResponseMapper = require('./ndviResponse.mapper');
+import * as NdviResponseMapper from './ndviResponse.mapper.js';
 
 /**
  * Busca cenas Sentinel-2 L2A via catálogo Copernicus (servidor → CDSE).
@@ -153,4 +153,4 @@ class SentinelCatalogClient {
   }
 }
 
-module.exports = SentinelCatalogClient;
+export default SentinelCatalogClient;

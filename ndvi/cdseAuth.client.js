@@ -86,4 +86,4 @@ class CdseAuthClient {
   }
 }
 
-module.exports = CdseAuthClient;
+export default CdseAuthClient;

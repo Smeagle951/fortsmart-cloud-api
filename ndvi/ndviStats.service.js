@@ -22,4 +22,4 @@ class NdviStatsService {
   }
 }
 
-module.exports = NdviStatsService;
+export default NdviStatsService;

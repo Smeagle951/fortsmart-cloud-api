@@ -83,9 +83,4 @@ function mapScenes(list) {
   return list.map(mapScene).filter(Boolean);
 }
 
-module.exports = {
-  mapScene,
-  mapLayer,
-  mapScenes,
-  toIsoDate,
-};
+export { mapScene, mapLayer, mapScenes, toIsoDate };

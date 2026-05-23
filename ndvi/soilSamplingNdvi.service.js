@@ -1,5 +1,5 @@
-const NdviStatsService = require('./ndviStats.service');
-const NdviResponseMapper = require('./ndviResponse.mapper');
+import NdviStatsService from './ndviStats.service.js';
+import * as NdviResponseMapper from './ndviResponse.mapper.js';
 
 class SoilSamplingNdviService {
   constructor({ repository, catalogClient, processClient }) {
@@ -275,4 +275,4 @@ class SoilSamplingNdviService {
   }
 }
 
-module.exports = SoilSamplingNdviService;
+export default SoilSamplingNdviService;

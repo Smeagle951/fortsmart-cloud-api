@@ -48,7 +48,6 @@ class SoilSamplingNdviController {
         campaign_id: campaignId,
         start_date: startDate,
         end_date: endDate,
-        max_cloud: maxCloud,
       } = req.query;
 
       if (!farmId || !startDate || !endDate) {
@@ -206,4 +205,4 @@ class SoilSamplingNdviController {
   }
 }
 
-module.exports = SoilSamplingNdviController;
+export default SoilSamplingNdviController;

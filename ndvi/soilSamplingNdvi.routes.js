@@ -1,11 +1,10 @@
-const express = require('express');
-
-const SoilSamplingNdviRepository = require('./soilSamplingNdvi.repository');
-const SoilSamplingNdviService = require('./soilSamplingNdvi.service');
-const SoilSamplingNdviController = require('./soilSamplingNdvi.controller');
-const CdseAuthClient = require('./cdseAuth.client');
-const SentinelCatalogClient = require('./sentinelCatalog.client');
-const SentinelProcessClient = require('./sentinelProcess.client');
+import express from 'express';
+import SoilSamplingNdviRepository from './soilSamplingNdvi.repository.js';
+import SoilSamplingNdviService from './soilSamplingNdvi.service.js';
+import SoilSamplingNdviController from './soilSamplingNdvi.controller.js';
+import CdseAuthClient from './cdseAuth.client.js';
+import SentinelCatalogClient from './sentinelCatalog.client.js';
+import SentinelProcessClient from './sentinelProcess.client.js';
 
 function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
   const router = express.Router();
@@ -50,4 +49,4 @@ function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
   return router;
 }
 
-module.exports = createSoilSamplingNdviRouter;
+export default createSoilSamplingNdviRouter;

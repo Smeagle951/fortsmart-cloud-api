@@ -1,4 +1,4 @@
-const { randomUUID } = require('crypto');
+import { randomUUID } from 'node:crypto';
 
 class SoilSamplingNdviRepository {
   constructor(pool) {
@@ -189,4 +189,4 @@ class SoilSamplingNdviRepository {
   }
 }
 
-module.exports = SoilSamplingNdviRepository;
+export default SoilSamplingNdviRepository;

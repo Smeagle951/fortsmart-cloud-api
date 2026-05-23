@@ -18,7 +18,7 @@ class CopernicusStacClient {
         image_date: imageDate.toISOString().slice(0, 10),
         cloud_coverage: Math.min(maxCloud ?? 20, 5 + idx * 3),
         resolution_m: 10,
-        ndvi_mean: 0.55 + (idx * 0.015),
+        ndvi_mean: 0.55 + idx * 0.015,
         ndvi_min: 0.14,
         ndvi_max: 0.92,
       };
@@ -33,4 +33,4 @@ class CopernicusStacClient {
   }
 }
 
-module.exports = CopernicusStacClient;
+export default CopernicusStacClient;
