@@ -9,6 +9,7 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY scripts ./scripts
 COPY src ./src
+COPY ndvi ./ndvi
 
 RUN npm run build
 
@@ -22,6 +23,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/ndvi ./ndvi
 
 EXPOSE 3000
 
