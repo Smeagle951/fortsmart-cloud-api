@@ -62,54 +62,66 @@ class SentinelCatalogClient {
     const datetime = `${startDate}T00:00:00Z/${endDate}T23:59:59Z`;
 
     const cloudLimit = Number(maxCloud);
-    const body = {
+    const baseBody = {
       collections: ['sentinel-2-l2a'],
       datetime,
+      bbox,
       limit: 50,
-      // CQL2 texto (Catalog API CDSE) — ver documentação Filter extension
-      filter: Number.isFinite(cloudLimit)
-        ? `eo:cloud_cover < ${cloudLimit}`
-        : undefined,
     };
-
-    if (polygon?.type === 'Polygon' && polygon.coordinates) {
-      body.intersects = polygon;
-    } else {
-      body.bbox = bbox;
-    }
 
     const started = Date.now();
     let response;
-    try {
-      response = await this.fetchImpl(this.catalogUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(45_000),
+    let json = {};
+    const attempts = [];
+
+    if (Number.isFinite(cloudLimit)) {
+      attempts.push({
+        ...baseBody,
+        filter: `eo:cloud_cover < ${cloudLimit}`,
+        'filter-lang': 'cql2-text',
       });
-    } catch (error) {
-      const err = new Error('Timeout ao consultar catálogo Sentinel');
-      err.code = 'copernicus_timeout';
-      err.status = 504;
-      err.cause = error;
-      throw err;
+    }
+    attempts.push(baseBody);
+
+    for (let i = 0; i < attempts.length; i++) {
+      const body = attempts[i];
+      try {
+        response = await this._catalogPost(token, body);
+      } catch (error) {
+        const err = new Error('Timeout ao consultar catálogo Sentinel');
+        err.code = 'copernicus_timeout';
+        err.status = 504;
+        err.cause = error;
+        throw err;
+      }
+
+      json = await response.json().catch(() => ({}));
+      if (response.ok) break;
+
+      const retryable =
+        i < attempts.length - 1 && (response.status === 400 || response.status === 422);
+      console.warn(
+        `⚠️ [NDVI][Catalog] tentativa ${i + 1} status=${response.status} ` +
+          `filter=${Boolean(body.filter)} body=${JSON.stringify(json).slice(0, 300)}`,
+      );
+      if (!retryable) break;
     }
 
     const elapsedMs = Date.now() - started;
-    const json = await response.json().catch(() => ({}));
-
     console.log(
       `ℹ️ [NDVI][Catalog] status=${response.status} elapsedMs=${elapsedMs} ` +
         `bbox=${bbox.join(',')}`,
     );
 
     if (!response.ok) {
+      const detailText =
+        typeof json?.description === 'string'
+          ? json.description
+          : typeof json?.message === 'string'
+            ? json.message
+            : JSON.stringify(json).slice(0, 200);
       console.error(
-        `❌ [NDVI][Catalog] erro status=${response.status} body=${JSON.stringify(json).slice(0, 500)}`,
+        `❌ [NDVI][Catalog] erro status=${response.status} url=${this.catalogUrl} ${detailText}`,
       );
       const err = new Error('Erro ao consultar imagens Sentinel no Copernicus');
       err.code = 'copernicus_error';
@@ -137,6 +149,20 @@ class SentinelCatalogClient {
 
     console.log(`✅ [NDVI][Catalog] scenes=${scenes.length}`);
     return scenes;
+  }
+
+  async _catalogPost(token, body) {
+    return this.fetchImpl(this.catalogUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        // Catalog STAC CDSE exige geo+json na resposta (não só application/json).
+        Accept: 'application/geo+json',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(45_000),
+    });
   }
 
   _mockScenes({ startDate, endDate, maxCloud }) {

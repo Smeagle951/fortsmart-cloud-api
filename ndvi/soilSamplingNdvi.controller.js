@@ -197,11 +197,15 @@ class SoilSamplingNdviController {
     if (code === 'plot_polygon_missing') status = 400;
     if (code === 'empty_scenes' || code === 'ndvi_not_found') status = 404;
 
-    res.status(status).json({
+    const payload = {
       success: false,
       message: error.message || 'Erro interno no módulo NDVI',
       code,
-    });
+    };
+    if (error.details && typeof error.details === 'object') {
+      payload.copernicus_details = error.details;
+    }
+    res.status(status).json(payload);
   }
 }
 
