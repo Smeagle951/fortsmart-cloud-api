@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import NdviStatsService from './ndviStats.service.js';
 import * as NdviResponseMapper from './ndviResponse.mapper.js';
 
@@ -126,6 +127,7 @@ class SoilSamplingNdviService {
       farmId,
       plotId,
       imageDate: targetDate,
+      sceneId: targetSceneId,
       maxCloud,
     });
     if (cached) {
@@ -140,29 +142,55 @@ class SoilSamplingNdviService {
       plotId,
     });
 
-    const stats = NdviStatsService.buildStats({
-      ndviMean: null,
-      ndviMin: null,
-      ndviMax: null,
-    });
+    const layerStatus =
+      assets.status ||
+      (assets.preview_url || assets.tile_url ? 'generated' : 'metadata_only');
 
-    const layerId = String(targetSceneId);
-    const saved = await this.repository.upsertLayer({
-      id: layerId,
-      farm_id: farmId,
-      plot_id: plotId,
-      campaign_id: campaignId,
-      source: 'sentinel_2_l2a',
-      image_date: targetDate,
-      cloud_coverage: targetCloud,
-      resolution_m: 10,
-      ...stats,
-      preview_url: assets.preview_url,
-      tile_url: assets.tile_url,
-      raster_url: assets.raster_url,
-      is_active: false,
-      status: assets.status || 'metadata_only',
-    });
+    const stats =
+      layerStatus === 'generated'
+        ? NdviStatsService.buildStats({
+            ndviMean: assets.ndvi_mean ?? null,
+            ndviMin: assets.ndvi_min ?? null,
+            ndviMax: assets.ndvi_max ?? null,
+          })
+        : {
+            ndvi_mean: null,
+            ndvi_min: null,
+            ndvi_max: null,
+            very_low_percent: null,
+            low_percent: null,
+            medium_percent: null,
+            high_percent: null,
+          };
+
+    const layerId = randomUUID();
+    let saved;
+    try {
+      saved = await this.repository.upsertLayer({
+        id: layerId,
+        scene_id: String(targetSceneId),
+        farm_id: farmId,
+        plot_id: plotId,
+        campaign_id: campaignId,
+        source: 'sentinel_2_l2a',
+        image_date: targetDate,
+        cloud_coverage: targetCloud,
+        resolution_m: 10,
+        ...stats,
+        preview_url: assets.preview_url,
+        tile_url: assets.tile_url,
+        raster_url: assets.raster_url,
+        is_active: false,
+        status: layerStatus,
+      });
+    } catch (error) {
+      console.error(`❌ [NDVI] upsertLayer falhou: ${error.message}`);
+      throw this._error(
+        'Não foi possível salvar a camada NDVI',
+        'layer_persist_failed',
+        500,
+      );
+    }
 
     return NdviResponseMapper.mapLayer(saved);
   }

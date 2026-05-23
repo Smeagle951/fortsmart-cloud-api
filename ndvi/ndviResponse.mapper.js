@@ -55,6 +55,7 @@ function mapLayer(row) {
   return {
     layer_id: layerId,
     id: layerId,
+    scene_id: row.scene_id ?? null,
     farm_id: row.farm_id,
     plot_id: row.plot_id,
     campaign_id: row.campaign_id,

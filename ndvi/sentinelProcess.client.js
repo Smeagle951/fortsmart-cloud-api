@@ -1,17 +1,32 @@
 /**
  * Processamento NDVI via Copernicus Process API (somente servidor).
  */
+import { storeNdviPreviewPng } from './ndviPreviewStorage.js';
+
+const DEFAULT_PROCESS_URL = 'https://sh.dataspace.copernicus.eu/api/v1/process';
+
+function resolveProcessUrl(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return DEFAULT_PROCESS_URL;
+  if (value.includes('/process/v1') && !value.includes('/api/v1/process')) {
+    console.warn(
+      `⚠️ [NDVI] SENTINEL_PROCESS_URL legado (${value}) — usando ${DEFAULT_PROCESS_URL}`,
+    );
+    return DEFAULT_PROCESS_URL;
+  }
+  return value;
+}
+
 class SentinelProcessClient {
   constructor({
     authClient,
-    processUrl = process.env.SENTINEL_PROCESS_URL ||
-      'https://sh.dataspace.copernicus.eu/process/v1',
+    processUrl = process.env.SENTINEL_PROCESS_URL,
     enableDevMock = false,
     publicBaseUrl = '',
     fetchImpl = global.fetch,
   } = {}) {
     this.authClient = authClient;
-    this.processUrl = processUrl;
+    this.processUrl = resolveProcessUrl(processUrl);
     this.enableDevMock = enableDevMock;
     this.publicBaseUrl = publicBaseUrl;
     this.fetchImpl = fetchImpl;
@@ -95,11 +110,17 @@ function evaluatePixel(sample) {
       });
 
       const elapsedMs = Date.now() - started;
+      const contentType = response.headers.get('content-type') || '';
       console.log(
-        `ℹ️ [NDVI][Process] sceneId=${sceneId} status=${response.status} elapsedMs=${elapsedMs}`,
+        `ℹ️ [NDVI][Process] sceneId=${sceneId} status=${response.status} ` +
+          `elapsedMs=${elapsedMs} contentType=${contentType}`,
       );
 
       if (!response.ok) {
+        const errText = await response.text().catch(() => '');
+        console.warn(
+          `⚠️ [NDVI][Process] HTTP ${response.status} body=${errText.slice(0, 200)}`,
+        );
         return {
           preview_url: null,
           tile_url: null,
@@ -108,11 +129,29 @@ function evaluatePixel(sample) {
         };
       }
 
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (!buffer.length) {
+        return {
+          preview_url: null,
+          tile_url: null,
+          raster_url: null,
+          status: 'metadata_only',
+        };
+      }
+
+      const preview_url = await storeNdviPreviewPng({
+        farmId,
+        plotId,
+        sceneId,
+        imageDate: date,
+        buffer,
+      });
+
       return {
-        preview_url: null,
+        preview_url,
         tile_url: null,
         raster_url: null,
-        status: 'metadata_only',
+        status: preview_url ? 'generated' : 'metadata_only',
       };
     } catch (error) {
       console.warn(`⚠️ [NDVI][Process] falha sceneId=${sceneId}: ${error.message}`);

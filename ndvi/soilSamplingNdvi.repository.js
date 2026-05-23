@@ -8,10 +8,11 @@ class SoilSamplingNdviRepository {
   async ensureSchema() {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS soil_ndvi_layers (
-        id UUID PRIMARY KEY,
-        farm_id UUID NOT NULL,
-        plot_id UUID NOT NULL,
-        campaign_id UUID,
+        id TEXT PRIMARY KEY,
+        scene_id TEXT,
+        farm_id TEXT NOT NULL,
+        plot_id TEXT NOT NULL,
+        campaign_id TEXT,
         source TEXT NOT NULL,
         image_date TIMESTAMP NOT NULL,
         cloud_coverage NUMERIC,
@@ -26,11 +27,14 @@ class SoilSamplingNdviRepository {
         preview_url TEXT,
         tile_url TEXT,
         raster_url TEXT,
+        status TEXT DEFAULT 'available',
         is_active BOOLEAN DEFAULT false,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       )
     `);
+
+    await this._migrateLegacyColumns();
 
     await this.pool.query(
       'CREATE INDEX IF NOT EXISTS idx_soil_ndvi_layers_farm_id ON soil_ndvi_layers(farm_id)',
@@ -45,8 +49,38 @@ class SoilSamplingNdviRepository {
       'CREATE INDEX IF NOT EXISTS idx_soil_ndvi_layers_image_date ON soil_ndvi_layers(image_date)',
     );
     await this.pool.query(
+      'CREATE INDEX IF NOT EXISTS idx_soil_ndvi_layers_scene_id ON soil_ndvi_layers(scene_id)',
+    );
+    await this.pool.query(
       'CREATE UNIQUE INDEX IF NOT EXISTS uq_soil_ndvi_campaign_active ON soil_ndvi_layers(campaign_id) WHERE is_active = true',
     );
+  }
+
+  async _migrateLegacyColumns() {
+    const alters = [
+      'ALTER TABLE soil_ndvi_layers ADD COLUMN IF NOT EXISTS scene_id TEXT',
+      'ALTER TABLE soil_ndvi_layers ADD COLUMN IF NOT EXISTS status TEXT DEFAULT \'available\'',
+      `ALTER TABLE soil_ndvi_layers ALTER COLUMN id TYPE TEXT USING id::text`,
+      `ALTER TABLE soil_ndvi_layers ALTER COLUMN farm_id TYPE TEXT USING farm_id::text`,
+      `ALTER TABLE soil_ndvi_layers ALTER COLUMN plot_id TYPE TEXT USING plot_id::text`,
+      `ALTER TABLE soil_ndvi_layers ALTER COLUMN campaign_id TYPE TEXT USING campaign_id::text`,
+    ];
+
+    for (const sql of alters) {
+      try {
+        await this.pool.query(sql);
+      } catch (error) {
+        const msg = String(error.message || '');
+        if (
+          msg.includes('does not exist') ||
+          msg.includes('already exists') ||
+          msg.includes('cannot cast')
+        ) {
+          continue;
+        }
+        console.warn(`⚠️ [NDVI] migrate skip: ${msg.slice(0, 120)}`);
+      }
+    }
   }
 
   async listByPlot({ farmId, plotId }) {
@@ -56,12 +90,26 @@ class SoilSamplingNdviRepository {
         WHERE farm_id = $1
           AND plot_id = $2
         ORDER BY image_date DESC`,
-      [farmId, plotId],
+      [String(farmId), String(plotId)],
     );
     return result.rows;
   }
 
-  async findRecentCache({ farmId, plotId, imageDate, maxCloud }) {
+  async findRecentCache({ farmId, plotId, imageDate, sceneId, maxCloud }) {
+    if (sceneId) {
+      const byScene = await this.pool.query(
+        `SELECT *
+           FROM soil_ndvi_layers
+          WHERE farm_id = $1
+            AND plot_id = $2
+            AND scene_id = $3
+          ORDER BY updated_at DESC
+          LIMIT 1`,
+        [String(farmId), String(plotId), String(sceneId)],
+      );
+      if (byScene.rows[0]) return byScene.rows[0];
+    }
+
     const result = await this.pool.query(
       `SELECT *
          FROM soil_ndvi_layers
@@ -71,7 +119,7 @@ class SoilSamplingNdviRepository {
           AND ($4::numeric IS NULL OR cloud_coverage <= $4::numeric)
         ORDER BY updated_at DESC
         LIMIT 1`,
-      [farmId, plotId, imageDate, maxCloud ?? null],
+      [String(farmId), String(plotId), imageDate, maxCloud ?? null],
     );
     return result.rows[0] || null;
   }
@@ -79,18 +127,19 @@ class SoilSamplingNdviRepository {
   async getById(layerId) {
     const result = await this.pool.query(
       'SELECT * FROM soil_ndvi_layers WHERE id = $1 LIMIT 1',
-      [layerId],
+      [String(layerId)],
     );
     return result.rows[0] || null;
   }
 
   async upsertLayer(data) {
-    const id = data.id || randomUUID();
+    const id = data.id ? String(data.id) : randomUUID();
     const values = [
       id,
-      data.farm_id,
-      data.plot_id,
-      data.campaign_id || null,
+      data.scene_id ? String(data.scene_id) : null,
+      String(data.farm_id),
+      String(data.plot_id),
+      data.campaign_id != null ? String(data.campaign_id) : null,
       data.source,
       data.image_date,
       data.cloud_coverage ?? null,
@@ -105,22 +154,24 @@ class SoilSamplingNdviRepository {
       data.preview_url ?? null,
       data.tile_url ?? null,
       data.raster_url ?? null,
+      data.status ?? null,
       !!data.is_active,
     ];
 
     const result = await this.pool.query(
       `INSERT INTO soil_ndvi_layers (
-          id, farm_id, plot_id, campaign_id, source, image_date,
+          id, scene_id, farm_id, plot_id, campaign_id, source, image_date,
           cloud_coverage, resolution_m, ndvi_mean, ndvi_min, ndvi_max,
           very_low_percent, low_percent, medium_percent, high_percent,
-          preview_url, tile_url, raster_url, is_active, created_at, updated_at
+          preview_url, tile_url, raster_url, status, is_active, created_at, updated_at
         ) VALUES (
-          $1, $2, $3, $4, $5, $6,
-          $7, $8, $9, $10, $11,
-          $12, $13, $14, $15,
-          $16, $17, $18, $19, NOW(), NOW()
+          $1, $2, $3, $4, $5, $6, $7,
+          $8, $9, $10, $11, $12,
+          $13, $14, $15, $16,
+          $17, $18, $19, $20, $21, NOW(), NOW()
         )
         ON CONFLICT (id) DO UPDATE SET
+          scene_id = EXCLUDED.scene_id,
           farm_id = EXCLUDED.farm_id,
           plot_id = EXCLUDED.plot_id,
           campaign_id = EXCLUDED.campaign_id,
@@ -138,6 +189,7 @@ class SoilSamplingNdviRepository {
           preview_url = EXCLUDED.preview_url,
           tile_url = EXCLUDED.tile_url,
           raster_url = EXCLUDED.raster_url,
+          status = EXCLUDED.status,
           is_active = EXCLUDED.is_active,
           updated_at = NOW()
         RETURNING *`,
@@ -153,7 +205,7 @@ class SoilSamplingNdviRepository {
           SET is_active = false,
               updated_at = NOW()
         WHERE campaign_id = $1`,
-      [campaignId],
+      [String(campaignId)],
     );
   }
 
@@ -168,7 +220,7 @@ class SoilSamplingNdviRepository {
               updated_at = NOW()
         WHERE id = $4
         RETURNING *`,
-      [campaignId, farmId, plotId, layerId],
+      [String(campaignId), String(farmId), String(plotId), String(layerId)],
     );
     return result.rows[0] || null;
   }
@@ -183,7 +235,7 @@ class SoilSamplingNdviRepository {
           AND is_active = true
         ORDER BY updated_at DESC
         LIMIT 1`,
-      [campaignId, farmId, plotId],
+      [String(campaignId), String(farmId), String(plotId)],
     );
     return result.rows[0] || null;
   }
