@@ -5,7 +5,7 @@ class SentinelProcessClient {
   constructor({
     authClient,
     processUrl = process.env.SENTINEL_PROCESS_URL ||
-      'https://sh.dataspace.copernicus.eu/api/v1/process',
+      'https://sh.dataspace.copernicus.eu/process/v1',
     enableDevMock = false,
     publicBaseUrl = '',
     fetchImpl = global.fetch,

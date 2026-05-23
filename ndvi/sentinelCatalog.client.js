@@ -7,7 +7,7 @@ class SentinelCatalogClient {
   constructor({
     authClient,
     catalogUrl = process.env.SENTINEL_CATALOG_URL ||
-      'https://sh.dataspace.copernicus.eu/api/v1/catalog/search',
+      'https://sh.dataspace.copernicus.eu/catalog/v1/search',
     enableDevMock = false,
     fetchImpl = global.fetch,
   } = {}) {
@@ -61,19 +61,21 @@ class SentinelCatalogClient {
     const token = await this.authClient.getCdseAccessToken();
     const datetime = `${startDate}T00:00:00Z/${endDate}T23:59:59Z`;
 
+    const cloudLimit = Number(maxCloud);
     const body = {
       collections: ['sentinel-2-l2a'],
       datetime,
-      bbox,
       limit: 50,
-      filter: {
-        op: 'lt',
-        args: [{ property: 'eo:cloud_cover' }, Number(maxCloud)],
-      },
+      // CQL2 texto (Catalog API CDSE) — ver documentação Filter extension
+      filter: Number.isFinite(cloudLimit)
+        ? `eo:cloud_cover < ${cloudLimit}`
+        : undefined,
     };
 
     if (polygon?.type === 'Polygon' && polygon.coordinates) {
       body.intersects = polygon;
+    } else {
+      body.bbox = bbox;
     }
 
     const started = Date.now();
@@ -106,6 +108,9 @@ class SentinelCatalogClient {
     );
 
     if (!response.ok) {
+      console.error(
+        `❌ [NDVI][Catalog] erro status=${response.status} body=${JSON.stringify(json).slice(0, 500)}`,
+      );
       const err = new Error('Erro ao consultar imagens Sentinel no Copernicus');
       err.code = 'copernicus_error';
       err.status = 502;
@@ -114,7 +119,14 @@ class SentinelCatalogClient {
     }
 
     const features = json.features || json.results || [];
-    const scenes = NdviResponseMapper.mapScenes(features);
+    let scenes = NdviResponseMapper.mapScenes(features);
+
+    if (Number.isFinite(cloudLimit)) {
+      scenes = scenes.filter(
+        (s) =>
+          s.cloud_coverage == null || Number(s.cloud_coverage) < cloudLimit,
+      );
+    }
 
     scenes.sort((a, b) => {
       const cloudA = Number(a.cloud_coverage ?? 999);
