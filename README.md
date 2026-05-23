@@ -32,16 +32,27 @@ Resposta esperada (versão nova):
 {
   "success": true,
   "status": "ok",
-  "capabilities_version": 2,
+  "capabilities_version": 3,
   "routes": {
     "monitoring_report_image": "POST /sync/monitoring-report/image",
-    "planting_image": "POST /sync/planting/image",
-    "sync_diagnostics": "GET /sync/diagnostics/:farmId"
+    "ndvi_test_token": "GET /api/soil-sampling/ndvi/copernicus/test-token",
+    "ndvi_scenes_search": "POST /api/soil-sampling/ndvi/plots/:plotId/scenes/search"
   }
 }
 ```
 
-Se `capabilities_version` **não existir** ou for `< 2`, o host ainda está com build antigo.
+Se `capabilities_version` **não existir** ou for `< 2`, o host ainda está com build antigo.  
+Com **3**, as rotas NDVI estão no deploy.
+
+### NDVI (Copernicus via servidor)
+
+Variáveis Railway: `CDSE_CLIENT_ID`, `CDSE_CLIENT_SECRET`, `CDSE_TOKEN_URL`, `SENTINEL_CATALOG_URL`, `SENTINEL_PROCESS_URL` (ver `.env.example` se existir).
+
+```bash
+curl.exe -s "https://api.fortsmart-agro.com.br/api/soil-sampling/ndvi/copernicus/test-token"
+```
+
+Resposta esperada: `{"success":true,"configured":true}` (ou `configured:false` se CDSE não estiver no env).
 
 ## Testar rotas de imagem (após deploy)
 
