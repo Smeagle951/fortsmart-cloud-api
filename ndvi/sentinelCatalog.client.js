@@ -1,18 +1,39 @@
 import * as NdviResponseMapper from './ndviResponse.mapper.js';
 
+const DEFAULT_STAC_CATALOG_URL = 'https://stac.dataspace.copernicus.eu/v1/search';
+
+function normalizeCatalogUrl(rawUrl) {
+  const value = (rawUrl || DEFAULT_STAC_CATALOG_URL).trim();
+  // URLs legadas (SH catalog antigo ou path incorreto) → STAC CDSE (funciona com CDSE OAuth ou público).
+  if (
+    value.includes('/api/v1/catalog') ||
+    value.includes('sh.dataspace.copernicus.eu/catalog')
+  ) {
+    console.warn(
+      `⚠️ [NDVI] SENTINEL_CATALOG_URL legado (${value}) — usando STAC CDSE ${DEFAULT_STAC_CATALOG_URL}`,
+    );
+    return DEFAULT_STAC_CATALOG_URL;
+  }
+  return value;
+}
+
+function isPublicStacCatalog(url) {
+  return url.includes('stac.dataspace.copernicus.eu');
+}
+
 /**
- * Busca cenas Sentinel-2 L2A via catálogo Copernicus (servidor → CDSE).
+ * Busca cenas Sentinel-2 L2A via catálogo Copernicus (STAC CDSE ou Sentinel Hub Catalog).
  */
 class SentinelCatalogClient {
   constructor({
     authClient,
-    catalogUrl = process.env.SENTINEL_CATALOG_URL ||
-      'https://sh.dataspace.copernicus.eu/catalog/v1/search',
+    catalogUrl = process.env.SENTINEL_CATALOG_URL,
     enableDevMock = false,
     fetchImpl = global.fetch,
   } = {}) {
     this.authClient = authClient;
-    this.catalogUrl = catalogUrl;
+    this.catalogUrl = normalizeCatalogUrl(catalogUrl);
+    this.isPublicStac = isPublicStacCatalog(this.catalogUrl);
     this.enableDevMock = enableDevMock;
     this.fetchImpl = fetchImpl;
   }
@@ -46,7 +67,11 @@ class SentinelCatalogClient {
     endDate,
     maxCloud = 20,
   }) {
-    if (this.enableDevMock || !this.authClient?.isConfigured()) {
+    const needsAuth = !this.isPublicStac;
+    if (
+      this.enableDevMock ||
+      (needsAuth && !this.authClient?.isConfigured())
+    ) {
       return this._mockScenes({ startDate, endDate, maxCloud });
     }
 
@@ -58,7 +83,7 @@ class SentinelCatalogClient {
       throw err;
     }
 
-    const token = await this.authClient.getCdseAccessToken();
+    const token = needsAuth ? await this.authClient.getCdseAccessToken() : null;
     const datetime = `${startDate}T00:00:00Z/${endDate}T23:59:59Z`;
 
     const cloudLimit = Number(maxCloud);
@@ -95,7 +120,12 @@ class SentinelCatalogClient {
         throw err;
       }
 
-      json = await response.json().catch(() => ({}));
+      const rawText = await response.text();
+      try {
+        json = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        json = { raw: rawText?.slice(0, 500) };
+      }
       if (response.ok) break;
 
       const retryable =
@@ -152,14 +182,16 @@ class SentinelCatalogClient {
   }
 
   async _catalogPost(token, body) {
+    const headers = {
+      'Content-Type': 'application/json',
+      Accept: 'application/geo+json, application/json',
+    };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
     return this.fetchImpl(this.catalogUrl, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        // Catalog STAC CDSE exige geo+json na resposta (não só application/json).
-        Accept: 'application/geo+json',
-      },
+      headers,
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(45_000),
     });
