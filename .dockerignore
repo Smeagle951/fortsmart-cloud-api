@@ -5,7 +5,8 @@ dist
 !.env.example
 .git
 .gitignore
-README.md
 npm-debug.log*
 .DS_Store
-*.md
+coverage
+*.log
+tests

@@ -2,6 +2,15 @@
 
 API Node/Express para sincronização mobile/desktop → PostgreSQL (Neon) + object storage (imagens).
 
+## Deploy Render (migração Railway → Render)
+
+Ver **`RENDER_DEPLOY.md`**, **`ENV_MIGRATION_CHECKLIST.md`**, `render.yaml` e `tests/render/smoke-test.sh`.
+
+```bash
+docker build -t fortsmart-api .
+bash tests/render/smoke-test.sh
+```
+
 ## Deploy Railway (`api.fortsmart-agro.com.br`)
 
 ### Repositório correto (recomendado)

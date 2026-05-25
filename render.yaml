@@ -1,0 +1,20 @@
+# Blueprint Render — FortSmart Cloud API (Docker)
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: fortsmart-cloud-api
+    env: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3000"
+      # Definir no painel Render (nunca commitar valores reais):
+      # - DATABASE_URL
+      # - DATABASE_SSL
+      # - API_KEY_PEPPER
+      # - R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET_NAME / R2_ENDPOINT / R2_PUBLIC_BASE_URL
+      # - PUBLIC_API_URL (opcional)
+      # - CDSE_* / SENTINEL_* (NDVI, opcional)
