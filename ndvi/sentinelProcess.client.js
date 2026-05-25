@@ -39,7 +39,20 @@ class SentinelProcessClient {
     farmId,
     plotId,
   }) {
-    if (this.enableDevMock || !this.authClient?.isConfigured()) {
+    const isProd = process.env.NODE_ENV === 'production';
+    if (!this.authClient?.isConfigured()) {
+      if (isProd && !this.enableDevMock) {
+        const err = new Error(
+          'Copernicus CDSE não configurado (CDSE_CLIENT_ID/SECRET)',
+        );
+        err.code = 'cdse_not_configured';
+        err.status = 503;
+        throw err;
+      }
+      return this._mockAssets({ farmId, plotId, imageDate });
+    }
+
+    if (this.enableDevMock) {
       return this._mockAssets({ farmId, plotId, imageDate });
     }
 
@@ -58,7 +71,7 @@ class SentinelProcessClient {
 function setup() {
   return {
     input: ["B04", "B08", "dataMask"],
-    output: { bands: 4 }
+    output: { bands: 4, sampleType: 'AUTO' }
   };
 }
 function evaluatePixel(sample) {

@@ -1,0 +1,16 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": [
+          "https://api.fortsmart-agro.com.br",
+          "https://fortsmart-agro.com.br"
+        ],
+        "methods": ["GET", "HEAD", "PUT", "POST"],
+        "headers": ["*"]
+      },
+      "exposeHeaders": ["ETag", "Content-Length", "Content-Type"],
+      "maxAgeSeconds": 3600
+    }
+  ]
+}

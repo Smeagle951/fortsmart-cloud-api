@@ -1,4 +1,4 @@
-# FortSmart Cloud API — produção (Render, Railway, Oracle ARM64).
+# FortSmart Cloud API — produção (Render, Oracle ARM64).
 # Build: docker build -t fortsmart-api .
 # Run:   docker run -d --name fortsmart-api --restart unless-stopped --env-file .env -p 3000:3000 fortsmart-api
 

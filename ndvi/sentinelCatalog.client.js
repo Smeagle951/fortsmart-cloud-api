@@ -170,14 +170,7 @@ class SentinelCatalogClient {
       );
     }
 
-    scenes.sort((a, b) => {
-      const cloudA = Number(a.cloud_coverage ?? 999);
-      const cloudB = Number(b.cloud_coverage ?? 999);
-      if (cloudA !== cloudB) return cloudA - cloudB;
-      return String(b.image_date).localeCompare(String(a.image_date));
-    });
-
-    console.log(`✅ [NDVI][Catalog] scenes=${scenes.length}`);
+    console.log(`✅ [NDVI][Catalog] scenes=${scenes.length} (raw)`);
     return scenes;
   }
 
@@ -210,7 +203,8 @@ class SentinelCatalogClient {
         cloud_coverage: Math.min(maxCloud ?? 20, 5 + idx * 3),
         resolution_m: 10,
         ndvi_mean: null,
-        status: 'available',
+        status: 'metadata_only',
+        thumbnail_url: null,
       };
     });
 

@@ -1,6 +1,6 @@
-# Checklist de variáveis — Railway → Render
+﻿# Checklist de variáveis — Render (produção)
 
-Use ao copiar variáveis do Railway para **Render → Environment**.
+Configure em **Render → fortsmart-cloud-api → Environment**.
 
 | Risco | Significado |
 |-------|-------------|
@@ -42,6 +42,7 @@ Use ao copiar variáveis do Railway para **Render → Environment**.
 
 ## Validação
 
-1. `GET /health` → `database: "ok"`, `r2: "ok"` (se imagens)
-2. Pepper e DB **idênticos** ao Railway
-3. `bash tests/render/smoke-test.sh`
+1. `GET /health` → `database: "ok"`, `capabilities_version: 4`, `r2: "ok"` (se imagens)
+2. `GET /api/soil-sampling/ndvi/status` → JSON com `database: "ok"`
+3. Pepper e DB **estáveis** entre deploys (não alterar `API_KEY_PEPPER` sem regenerar chaves)
+4. `bash tests/render/smoke-test.sh`

@@ -1,12 +1,34 @@
 import { randomUUID } from 'node:crypto';
 import NdviStatsService from './ndviStats.service.js';
 import * as NdviResponseMapper from './ndviResponse.mapper.js';
+import { assertCopernicusReady, getNdviProviderStatus } from './ndviEnv.js';
+import {
+  logGenerateFail,
+  logGenerateOk,
+  logGenerateStage,
+  logGenerateStart,
+} from './ndviGenerateLogger.js';
+import {
+  dedupeScenesByDate,
+  enrichScenesFromLayers,
+  formatSceneForApi,
+  logScenesSummary,
+  sortScenesForDisplay,
+} from './ndviScenePipeline.js';
+
+function normalizeImageDate(value) {
+  if (value == null) return null;
+  const text = String(value).trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  return text;
+}
 
 class SoilSamplingNdviService {
-  constructor({ repository, catalogClient, processClient }) {
+  constructor({ repository, catalogClient, processClient, authClient }) {
     this.repository = repository;
     this.catalogClient = catalogClient;
     this.processClient = processClient;
+    this.authClient = authClient;
   }
 
   _logRequest(meta) {
@@ -17,6 +39,51 @@ class SoilSamplingNdviService {
         `end=${meta.endDate || '-'} max_cloud=${meta.maxCloud ?? 20}` +
         (bbox ? ` bbox=${bbox.join(',')}` : ''),
     );
+  }
+
+  async _tryEnsureSchema(context = 'ndvi') {
+    try {
+      await this.repository.ensureSchema();
+      return true;
+    } catch (error) {
+      console.warn(`⚠️ [NDVI] ensureSchema indisponível (${context}): ${error.message}`);
+      return false;
+    }
+  }
+
+  _hasRenderableAssets(assets) {
+    return Boolean(assets?.preview_url || assets?.tile_url || assets?.raster_url);
+  }
+
+  _buildEphemeralLayerRow({
+    layerId,
+    farmId,
+    plotId,
+    campaignId,
+    targetSceneId,
+    targetDate,
+    targetCloud,
+    layerStatus,
+    stats,
+    assets,
+  }) {
+    return {
+      id: layerId,
+      scene_id: String(targetSceneId),
+      farm_id: String(farmId),
+      plot_id: String(plotId),
+      campaign_id: campaignId != null ? String(campaignId) : null,
+      source: 'sentinel_2_l2a',
+      image_date: targetDate,
+      cloud_coverage: targetCloud,
+      resolution_m: 10,
+      ...stats,
+      preview_url: assets.preview_url ?? null,
+      tile_url: assets.tile_url ?? null,
+      raster_url: assets.raster_url ?? null,
+      is_active: false,
+      status: layerStatus,
+    };
   }
 
   async searchScenes({
@@ -51,19 +118,52 @@ class SoilSamplingNdviService {
     });
 
     const started = Date.now();
-    const scenes = await this.catalogClient.searchSentinelScenes({
-      polygon,
-      startDate,
-      endDate,
-      maxCloud,
-    });
+    await this._tryEnsureSchema('searchScenes');
+
+    let rawScenes;
+    try {
+      rawScenes = await this.catalogClient.searchSentinelScenes({
+        polygon,
+        startDate,
+        endDate,
+        maxCloud,
+      });
+    } catch (error) {
+      throw this._providerError(error, 'Falha ao buscar cenas Sentinel no provedor NDVI');
+    }
+
+    let layers = [];
+    try {
+      layers = await this.repository.listByPlot({ farmId, plotId });
+    } catch (layerError) {
+      console.warn(
+        `⚠️ [NDVI] listByPlot ignorado plotId=${plotId}: ${layerError.message}`,
+      );
+    }
+
+    const deduped = dedupeScenesByDate(rawScenes);
+    const enriched = enrichScenesFromLayers(deduped, layers);
+    const sorted = sortScenesForDisplay(enriched);
+    const scenes = sorted.map((scene) => formatSceneForApi(scene));
+
+    logScenesSummary({ plotId, farmId, scenes });
+
     console.log(
-      `✅ [NDVI] searchScenes plotId=${plotId} count=${scenes.length} elapsedMs=${Date.now() - started}`,
+      `✅ [NDVI] searchScenes plotId=${plotId} raw=${rawScenes.length} ` +
+        `deduped=${scenes.length} elapsedMs=${Date.now() - started}`,
     );
     return scenes;
   }
 
-  /** Compatibilidade GET sem polygon — retorna vazio se polygon ausente. */
+  async listPlotLayers({ farmId, plotId }) {
+    this._requireScope({ farmId, plotId });
+    await this.repository.ensureSchema();
+    const rows = await this.repository.listByPlot({ farmId, plotId });
+    return rows
+      .map((row) => NdviResponseMapper.mapLayer(row))
+      .filter(Boolean);
+  }
+
   async listScenes({ farmId, plotId, startDate, endDate, maxCloud, polygon = null }) {
     if (!polygon) {
       console.warn(
@@ -94,105 +194,253 @@ class SoilSamplingNdviService {
     endDate = null,
     maxCloud = null,
   }) {
-    this._requireScope({ farmId, plotId });
-    if (!polygon || polygon.type !== 'Polygon') {
-      throw this._error('Talhão sem polígono válido', 'plot_polygon_missing', 400);
-    }
+    const meta = {
+      plotId,
+      farmId,
+      campaignId,
+      sceneId: sceneId || null,
+      imageDate: normalizeImageDate(imageDate),
+    };
+    let stage = 'init';
 
-    let targetSceneId = sceneId;
-    let targetDate = imageDate;
-    let targetCloud = cloudCoverage;
+    try {
+      logGenerateStart(meta);
+      stage = 'provider_check';
+      const providerStatus = getNdviProviderStatus();
+      logGenerateStage(meta, stage, `provider=${providerStatus.active_provider}`);
 
-    if (!targetSceneId) {
-      const scenes = await this.catalogClient.searchSentinelScenes({
-        polygon,
-        startDate: startDate || imageDate,
-        endDate: endDate || imageDate,
-        maxCloud: maxCloud ?? 20,
-      });
-      if (!scenes.length) {
+      if (process.env.NDVI_PROVIDER === 'gee' && !providerStatus.gee_configured) {
         throw this._error(
-          'Nenhuma imagem adequada foi encontrada para o período selecionado',
-          'empty_scenes',
-          404,
+          'Google Earth Engine não está configurado no servidor (GEE_PROJECT_ID, GEE_CLIENT_EMAIL, GEE_PRIVATE_KEY).',
+          'gee_not_configured',
+          503,
+          { provider: providerStatus },
         );
       }
-      const best = scenes[0];
-      targetSceneId = best.scene_id || best.id;
-      targetDate = best.image_date;
-      targetCloud = best.cloud_coverage;
-    }
 
-    const cached = await this.repository.findRecentCache({
-      farmId,
-      plotId,
-      imageDate: targetDate,
-      sceneId: targetSceneId,
-      maxCloud,
-    });
-    if (cached) {
-      return NdviResponseMapper.mapLayer(cached);
-    }
+      stage = 'validate';
+      this._requireScope({ farmId, plotId });
+      if (!polygon || polygon.type !== 'Polygon') {
+        throw this._error('Talhão sem polígono válido', 'plot_polygon_missing', 400);
+      }
+      if (!Array.isArray(polygon.coordinates?.[0]) || polygon.coordinates[0].length < 4) {
+        throw this._error(
+          'Polígono inválido (anel insuficiente)',
+          'invalid_polygon',
+          400,
+        );
+      }
 
-    const assets = await this.processClient.generateNdviLayer({
-      sceneId: targetSceneId,
-      polygon,
-      imageDate: targetDate,
-      farmId,
-      plotId,
-    });
+      assertCopernicusReady(this.authClient);
 
-    const layerStatus =
-      assets.status ||
-      (assets.preview_url || assets.tile_url ? 'generated' : 'metadata_only');
+      stage = 'ensure_schema';
+      const dbReady = await this._tryEnsureSchema('generateLayer');
+      logGenerateStage(meta, stage, `dbReady=${dbReady}`);
 
-    const stats =
-      layerStatus === 'generated'
-        ? NdviStatsService.buildStats({
-            ndviMean: assets.ndvi_mean ?? null,
-            ndviMin: assets.ndvi_min ?? null,
-            ndviMax: assets.ndvi_max ?? null,
-          })
-        : {
-            ndvi_mean: null,
-            ndvi_min: null,
-            ndvi_max: null,
-            very_low_percent: null,
-            low_percent: null,
-            medium_percent: null,
-            high_percent: null,
-          };
+      let targetSceneId = sceneId ? String(sceneId).trim() : null;
+      let targetDate = meta.imageDate;
+      let targetCloud = cloudCoverage;
 
-    const layerId = randomUUID();
-    let saved;
-    try {
-      saved = await this.repository.upsertLayer({
-        id: layerId,
-        scene_id: String(targetSceneId),
-        farm_id: farmId,
-        plot_id: plotId,
-        campaign_id: campaignId,
-        source: 'sentinel_2_l2a',
-        image_date: targetDate,
-        cloud_coverage: targetCloud,
-        resolution_m: 10,
-        ...stats,
-        preview_url: assets.preview_url,
-        tile_url: assets.tile_url,
-        raster_url: assets.raster_url,
-        is_active: false,
-        status: layerStatus,
-      });
+      if (!targetSceneId) {
+        stage = 'search_fallback';
+        logGenerateStage(meta, stage);
+        const scenes = await this.catalogClient.searchSentinelScenes({
+          polygon,
+          startDate: startDate || imageDate,
+          endDate: endDate || imageDate,
+          maxCloud: maxCloud ?? 20,
+        });
+        if (!scenes.length) {
+          throw this._error(
+            'Nenhuma imagem adequada foi encontrada para o período selecionado',
+            'empty_scenes',
+            404,
+          );
+        }
+        const best = scenes[0];
+        targetSceneId = String(best.scene_id || best.id);
+        targetDate = normalizeImageDate(best.image_date) || targetDate;
+        targetCloud = best.cloud_coverage ?? targetCloud;
+        meta.sceneId = targetSceneId;
+        meta.imageDate = targetDate;
+      }
+
+      if (!targetDate) {
+        throw this._error('image_date é obrigatório', 'invalid_image_date', 400);
+      }
+
+      stage = 'cache_lookup';
+      logGenerateStage(meta, stage, `sceneId=${targetSceneId} dbReady=${dbReady}`);
+      let cached = null;
+      if (dbReady) {
+        try {
+          cached = await this.repository.findRecentCache({
+            farmId,
+            plotId,
+            imageDate: targetDate,
+            sceneId: targetSceneId,
+            maxCloud,
+          });
+        } catch (cacheError) {
+          console.warn(
+            `⚠️ [NDVI] cache lookup ignorado plotId=${plotId}: ${cacheError.message}`,
+          );
+        }
+      }
+
+      if (cached) {
+        const mapped = NdviResponseMapper.mapLayer(cached);
+        if (mapped) {
+          logGenerateOk(meta, mapped);
+          return mapped;
+        }
+      }
+
+      stage = 'process';
+      logGenerateStage(meta, stage);
+      let assets;
+      try {
+        assets = await this.processClient.generateNdviLayer({
+          sceneId: targetSceneId,
+          polygon,
+          imageDate: targetDate,
+          farmId,
+          plotId,
+          campaignId,
+        });
+      } catch (processError) {
+        throw this._providerError(
+          processError,
+          'Não foi possível gerar NDVI no provedor de imagens',
+        );
+      }
+
+      const layerStatus =
+        assets.status ||
+        (assets.preview_url || assets.tile_url ? 'generated' : 'metadata_only');
+
+      const stats =
+        layerStatus === 'generated'
+          ? NdviStatsService.buildStats({
+              ndviMean: assets.ndvi_mean ?? null,
+              ndviMin: assets.ndvi_min ?? null,
+              ndviMax: assets.ndvi_max ?? null,
+            })
+          : {
+              ndvi_mean: null,
+              ndvi_min: null,
+              ndvi_max: null,
+              very_low_percent: null,
+              low_percent: null,
+              medium_percent: null,
+              high_percent: null,
+            };
+
+      stage = 'persist';
+      logGenerateStage(meta, stage, `status=${layerStatus} dbReady=${dbReady}`);
+      const layerId = randomUUID();
+      let saved = null;
+
+      if (dbReady) {
+        try {
+          saved = await this.repository.upsertLayer({
+            id: layerId,
+            scene_id: String(targetSceneId),
+            farm_id: farmId,
+            plot_id: plotId,
+            campaign_id: campaignId,
+            source: 'sentinel_2_l2a',
+            image_date: targetDate,
+            cloud_coverage: targetCloud,
+            resolution_m: 10,
+            ...stats,
+            preview_url: assets.preview_url,
+            tile_url: assets.tile_url,
+            raster_url: assets.raster_url,
+            is_active: false,
+            status: layerStatus,
+          });
+        } catch (persistError) {
+          console.error(
+            `❌ [NDVI] upsertLayer plotId=${plotId} sceneId=${targetSceneId}: ${persistError.message}`,
+          );
+          if (this._hasRenderableAssets(assets)) {
+            console.warn(
+              `⚠️ [NDVI] retornando camada efêmera (persist falhou) plotId=${plotId}`,
+            );
+            saved = this._buildEphemeralLayerRow({
+              layerId,
+              farmId,
+              plotId,
+              campaignId,
+              targetSceneId,
+              targetDate,
+              targetCloud,
+              layerStatus,
+              stats,
+              assets,
+            });
+          } else {
+            throw this._error(
+              'Não foi possível salvar a camada NDVI no banco',
+              'layer_persist_failed',
+              503,
+              {
+                stage,
+                pg_code: persistError.code,
+                hint: persistError.hint,
+              },
+            );
+          }
+        }
+      } else if (this._hasRenderableAssets(assets)) {
+        console.warn(
+          `⚠️ [NDVI] retornando camada efêmera (banco indisponível) plotId=${plotId}`,
+        );
+        saved = this._buildEphemeralLayerRow({
+          layerId,
+          farmId,
+          plotId,
+          campaignId,
+          targetSceneId,
+          targetDate,
+          targetCloud,
+          layerStatus,
+          stats,
+          assets,
+        });
+      } else {
+        throw this._error(
+          'Banco NDVI indisponível e nenhuma imagem foi gerada pelo provedor',
+          'ndvi_database_unavailable',
+          503,
+          { stage },
+        );
+      }
+
+      stage = 'map_response';
+      const mapped = NdviResponseMapper.mapLayer(saved);
+      if (!mapped) {
+        throw this._error(
+          'Camada NDVI salva mas resposta inválida',
+          'invalid_layer_response',
+          500,
+          { stage, layer_id: saved?.id },
+        );
+      }
+
+      logGenerateOk(meta, mapped);
+      return mapped;
     } catch (error) {
-      console.error(`❌ [NDVI] upsertLayer falhou: ${error.message}`);
+      logGenerateFail(meta, stage, error);
+      if (error?.code && error?.status) throw error;
       throw this._error(
-        'Não foi possível salvar a camada NDVI',
-        'layer_persist_failed',
+        'Falha ao gerar camada NDVI',
+        'generate_failed',
         500,
+        { stage, cause: error?.message },
       );
     }
-
-    return NdviResponseMapper.mapLayer(saved);
   }
 
   async attachLayer({ campaignId, farmId, plotId, layerId, payload = {} }) {
@@ -200,6 +448,7 @@ class SoilSamplingNdviService {
       throw this._error('campaign_id é obrigatório', 'campaign_required', 400);
     }
     this._requireScope({ farmId, plotId });
+    await this.repository.ensureSchema();
 
     const layerPayload = payload.layer || payload;
     const resolvedLayerId =
@@ -256,6 +505,7 @@ class SoilSamplingNdviService {
       throw this._error('campaign_id é obrigatório', 'campaign_required', 400);
     }
     this._requireScope({ farmId, plotId });
+    await this.repository.ensureSchema();
     const layer = await this.repository.getActiveByCampaign({ campaignId, farmId, plotId });
     return layer ? NdviResponseMapper.mapLayer(layer) : null;
   }
@@ -286,6 +536,10 @@ class SoilSamplingNdviService {
     };
   }
 
+  getProviderStatus() {
+    return getNdviProviderStatus();
+  }
+
   _requireScope({ farmId, plotId }) {
     if (!farmId || String(farmId).trim() === '') {
       throw this._error('farm_id é obrigatório', 'farm_scope_required', 400);
@@ -295,10 +549,30 @@ class SoilSamplingNdviService {
     }
   }
 
-  _error(message, code, status = 500) {
+  _providerError(error, fallbackMessage) {
+    if (error?.code && error?.status) {
+      const err = new Error(error.message || fallbackMessage);
+      err.code = 'NDVI_PROVIDER_ERROR';
+      err.status =
+        error.status === 504 ? 504 : error.status >= 500 ? 502 : error.status;
+      err.details = {
+        provider_code: error.code,
+        provider_message: error.message,
+      };
+      return err;
+    }
+    return this._error(fallbackMessage, 'NDVI_PROVIDER_ERROR', 502, {
+      cause: error?.message,
+    });
+  }
+
+  _error(message, code, status = 500, details = null) {
     const err = new Error(message);
     err.code = code;
     err.status = status;
+    if (details && typeof details === 'object') {
+      err.details = details;
+    }
     return err;
   }
 }

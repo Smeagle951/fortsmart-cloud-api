@@ -1,92 +1,119 @@
 # FortSmart Cloud API
 
-API Node/Express para sincronização mobile/desktop → PostgreSQL (Neon) + object storage (imagens).
+API Node/Express para sincronização mobile/desktop → PostgreSQL (Neon) + object storage (Cloudflare R2).
 
-## Deploy Render (migração Railway → Render)
+**Produção:** [Render](https://render.com) — `https://api.fortsmart-agro.com.br` (custom domain + Cloudflare).
 
-Ver **`RENDER_DEPLOY.md`**, **`ENV_MIGRATION_CHECKLIST.md`**, `render.yaml` e `tests/render/smoke-test.sh`.
+## Deploy Render
 
-```bash
-docker build -t fortsmart-api .
-bash tests/render/smoke-test.sh
-```
+| Recurso | Caminho |
+|---------|---------|
+| Guia passo a passo | `RENDER_DEPLOY.md` |
+| Variáveis de ambiente | `ENV_MIGRATION_CHECKLIST.md` |
+| Blueprint | `render.yaml` |
+| Smoke test | `tests/render/smoke-test.sh` |
 
-## Deploy Railway (`api.fortsmart-agro.com.br`)
-
-### Repositório correto (recomendado)
-
-Ligue o serviço Railway ao repositório **standalone**:
+### Repositório
 
 - **GitHub:** https://github.com/Smeagle951/fortsmart-cloud-api  
 - **Branch:** `main`  
 - **Root Directory:** *(vazio — raiz do repo)*  
-- **Builder:** Dockerfile (definido em `railway.json`)
+- **Environment:** Docker (`Dockerfile` na raiz)
 
-Não use o monorepo `FortSmart-Agro` para este serviço, a menos que o submodule `backend/fortsmart-cloud-api` esteja atualizado (ver abaixo).
+No monorepo `FortSmart-Agro`, use o submodule `backend/fortsmart-cloud-api` e faça bump após push no repo standalone.
 
 ### Passos
 
-1. Variáveis obrigatórias: `DATABASE_URL`, `API_KEY_PEPPER`, credenciais R2/S3 se usar upload de imagens (ver `.env.example`).
-2. **Settings → Build:** Builder = **Dockerfile**; apague comandos customizados antigos (`npm ci` só).
-3. **Redeploy** após push em `fortsmart-cloud-api`.
-4. Confirme a versão publicada:
+1. **Render** → Web Service → conectar o repositório acima.
+2. **Environment** = Docker; health check `GET /health`.
+3. Variáveis obrigatórias: `DATABASE_URL`, `DATABASE_SSL=1` (Neon), `API_KEY_PEPPER`, R2/S3 se usar imagens (ver `.env.example`).
+4. **Manual Deploy** após push em `main`.
+5. Validar:
 
 ```bash
 curl.exe -s https://api.fortsmart-agro.com.br/health
 ```
 
-Resposta esperada (versão nova):
+Resposta esperada (build atual):
 
 ```json
 {
   "success": true,
   "status": "ok",
-  "capabilities_version": 3,
-  "routes": {
-    "monitoring_report_image": "POST /sync/monitoring-report/image",
-    "ndvi_test_token": "GET /api/soil-sampling/ndvi/copernicus/test-token",
-    "ndvi_scenes_search": "POST /api/soil-sampling/ndvi/plots/:plotId/scenes/search"
-  }
+  "capabilities_version": 4,
+  "database": "ok",
+  "r2": "ok",
+  "ndvi_scenes_search": "POST /api/soil-sampling/ndvi/plots/:plotId/scenes/search",
+  "ndvi_layers": "GET /api/soil-sampling/ndvi/plots/:plotId/layers",
+  "ndvi_generate": "POST /api/soil-sampling/ndvi/plots/:plotId/generate",
+  "ndvi_status": "GET /api/soil-sampling/ndvi/status"
 }
 ```
 
-Se `capabilities_version` **não existir** ou for `< 2`, o host ainda está com build antigo.  
-Com **3**, as rotas NDVI estão no deploy.
+Se `capabilities_version` **&lt; 4** ou `database: "error"`, o deploy ou as variáveis no Render ainda estão incorretos.
+
+### Build local
+
+```bash
+docker build -t fortsmart-api .
+docker run --rm -p 3000:3000 --env-file .env fortsmart-api
+curl -s http://localhost:3000/health
+bash tests/render/smoke-test.sh
+```
 
 ### NDVI (Copernicus via servidor)
 
-Variáveis Railway: `CDSE_CLIENT_ID`, `CDSE_CLIENT_SECRET`, `CDSE_TOKEN_URL`, `SENTINEL_CATALOG_URL`, `SENTINEL_PROCESS_URL` (ver `.env.example` se existir).
+Variáveis no **Render** → Environment:
+
+`CDSE_CLIENT_ID`, `CDSE_CLIENT_SECRET`, `CDSE_TOKEN_URL`, `SENTINEL_CATALOG_URL`, `SENTINEL_PROCESS_URL` (ver `.env.example`).
 
 ```bash
+curl.exe -s "https://api.fortsmart-agro.com.br/api/soil-sampling/ndvi/status"
 curl.exe -s "https://api.fortsmart-agro.com.br/api/soil-sampling/ndvi/copernicus/test-token"
 ```
 
-Resposta esperada: `{"success":true,"configured":true}` (ou `configured:false` se CDSE não estiver no env).
+### Gerar camada NDVI (`generate`)
+
+O app mobile usa **POST** com polígono GeoJSON no corpo — igual ao `scenes/search`.
+
+```powershell
+curl.exe -s "https://api.fortsmart-agro.com.br/api/soil-sampling/ndvi/status"
+
+curl.exe -i -X POST "https://api.fortsmart-agro.com.br/api/soil-sampling/ndvi/plots/<PLOT_ID>/generate" ^
+  -H "Authorization: Bearer %API_KEY%" ^
+  -H "Content-Type: application/json" ^
+  -d "{\"farm_id\":\"<FARM_ID>\",\"campaign_id\":\"16\",\"scene_id\":\"<SCENE_ID>\",\"image_date\":\"2026-05-25\",\"polygon\":{\"type\":\"Polygon\",\"coordinates\":[[...]]}}"
+```
+
+Sucesso: **HTTP 200/201** + `{"success":true,"layer":{...}}`.
+
+**Nota:** `scenes/search` não exige Postgres; `generate` grava em `soil_ndvi_layers`. Com banco indisponível, o servidor pode retornar camada efêmera (sem persistência) se o processamento Copernicus tiver sucesso.
+
+Script: `scripts/curl-ndvi-generate.example.ps1`
+
+### R2 no Render
+
+```bash
+# Gera .local/render-r2-vars.txt para colar no painel Render
+$env:R2_ACCESS_KEY_ID = '...'
+$env:R2_SECRET_ACCESS_KEY = '...'
+node scripts/finalize-r2-render-vars.mjs
+```
 
 ## Testar rotas de imagem (após deploy)
-
-Sem ficheiro → **401** (sem API key) ou **400** (campo `file` obrigatório). **Não** deve ser `Cannot POST`.
 
 ```bash
 curl.exe -s -w "\nHTTP:%{http_code}\n" -X POST "https://api.fortsmart-agro.com.br/sync/monitoring-report/image"
 curl.exe -s -w "\nHTTP:%{http_code}\n" -X POST "https://api.fortsmart-agro.com.br/sync/planting/image"
 ```
 
-Push JSON (rota antiga — deve dar **401**, não 404):
-
-```bash
-curl.exe -s -w "\nHTTP:%{http_code}\n" -X POST "https://api.fortsmart-agro.com.br/sync/monitoring-report/push" -H "Content-Type: application/json" -d "{}"
-```
-
 ## App mobile
 
-URL base na integração: `https://api.fortsmart-agro.com.br` (sem `:8000`, sem `railway.internal`).
+URL base na integração: `https://api.fortsmart-agro.com.br` (sem `:8000`, sem hosts internos de PaaS).
 
-Se usar o domínio do site Next como base, configure na Vercel:
+Se o site Next fizer proxy, na Vercel:
 
 `FORTSMART_CLOUD_API_PROXY_TARGET=https://api.fortsmart-agro.com.br`
-
-e faça redeploy do `fortsmart_report`.
 
 ## Desenvolvimento local
 

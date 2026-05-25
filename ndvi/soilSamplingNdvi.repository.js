@@ -132,6 +132,24 @@ class SoilSamplingNdviRepository {
     return result.rows[0] || null;
   }
 
+  _sanitizePreviewUrl(url) {
+    if (url == null) return null;
+    const text = String(url);
+    if (!text.trim()) return null;
+    // Evita gravar data URLs enormes no Postgres (causa comum de falha no generate).
+    if (text.startsWith('data:') && text.length > 32_000) {
+      console.warn(
+        `⚠️ [NDVI] preview_url data URL omitida (${text.length} chars) — use R2/S3`,
+      );
+      return null;
+    }
+    if (text.length > 16_384) {
+      console.warn(`⚠️ [NDVI] preview_url truncada (${text.length} chars)`);
+      return `${text.slice(0, 16_384)}`;
+    }
+    return text;
+  }
+
   async upsertLayer(data) {
     const id = data.id ? String(data.id) : randomUUID();
     const values = [
@@ -151,7 +169,7 @@ class SoilSamplingNdviRepository {
       data.low_percent ?? null,
       data.medium_percent ?? null,
       data.high_percent ?? null,
-      data.preview_url ?? null,
+      this._sanitizePreviewUrl(data.preview_url),
       data.tile_url ?? null,
       data.raster_url ?? null,
       data.status ?? null,
@@ -196,7 +214,11 @@ class SoilSamplingNdviRepository {
       values,
     );
 
-    return result.rows[0];
+    const row = result.rows[0];
+    if (!row?.id) {
+      throw new Error('upsertLayer não retornou id');
+    }
+    return row;
   }
 
   async deactivateByCampaign(campaignId) {

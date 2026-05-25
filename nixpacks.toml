@@ -1,4 +1,4 @@
-# Fallback se o serviço Railway usar Nixpacks em vez de Dockerfile.
+# Fallback Nixpacks (preferir Dockerfile no Render).
 # No painel: Settings → Build → Builder = Dockerfile (recomendado).
 
 [variables]

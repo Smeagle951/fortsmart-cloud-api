@@ -5,7 +5,7 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { jsonOk } from '../utils/response.js';
 
 /** Versão de capacidades — subir quando expor novas rotas (ex.: upload de imagens). */
-export const API_CAPABILITIES_VERSION = 3;
+export const API_CAPABILITIES_VERSION = 4;
 
 export const healthRouter = Router();
 
@@ -44,6 +44,10 @@ healthRouter.get(
       image_routes: true,
       windows_routes: true,
       sync_routes: true,
+      ndvi_scenes_search: 'POST /api/soil-sampling/ndvi/plots/:plotId/scenes/search',
+      ndvi_layers: 'GET /api/soil-sampling/ndvi/plots/:plotId/layers',
+      ndvi_generate: 'POST /api/soil-sampling/ndvi/plots/:plotId/generate',
+      ndvi_status: 'GET /api/soil-sampling/ndvi/status',
     });
   }),
 );

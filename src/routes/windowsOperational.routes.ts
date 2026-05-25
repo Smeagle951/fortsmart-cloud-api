@@ -4,8 +4,10 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { jsonOk } from '../utils/response.js';
 import { requireApiKey } from '../middleware/apiKeyAuth.js';
 import { loadWindowsOperational } from '../services/windowsOperational.service.js';
+import { loadPlantingMapWindowsPayload } from '../services/windowsPlantingMap.service.js';
 import type { OperationalModule } from '../validators/operationalSync.validator.js';
 import { assertWindowsFarmScope } from '../lib/windowsFarmScope.js';
+import { loadWindowsDecisionInsights } from '../services/windowsDecisionInsights.service.js';
 
 export const windowsOperationalRouter = Router();
 
@@ -325,8 +327,29 @@ function registerWindowGet(path: string, module: OperationalModule): void {
 
 registerWindowGet('/windows/monitoring/:farmId', 'monitoring-report');
 registerWindowGet('/windows/planting/:farmId', 'planting');
+
+windowsOperationalRouter.get(
+  '/windows/planting-map/:farmId',
+  requireApiKey,
+  asyncHandler(async (req, res) => {
+    const farmId = assertWindowsFarmScope(req);
+    const data = await loadPlantingMapWindowsPayload(getPool(), farmId);
+    jsonOk(res, { data });
+  }),
+);
+
 registerWindowGet('/windows/phenology/:farmId', 'phenology');
 registerWindowGet('/windows/geo/:farmId', 'geo-export');
+
+windowsOperationalRouter.get(
+  '/windows/decision-insights/:farmId',
+  requireApiKey,
+  asyncHandler(async (req, res) => {
+    const farmId = assertWindowsFarmScope(req);
+    const data = await loadWindowsDecisionInsights(getPool(), farmId);
+    jsonOk(res, data);
+  }),
+);
 
 windowsOperationalRouter.get(
   '/sync/diagnostics/:farmId',
