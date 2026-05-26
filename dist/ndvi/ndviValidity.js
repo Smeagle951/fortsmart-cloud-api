@@ -1,0 +1,141 @@
+/**
+ * Regras de validade NDVI — sem stats nem status "ready" falsos.
+ */
+export function hasUrl(value) {
+  const text = value == null ? '' : String(value).trim();
+  return text.length > 0;
+}
+
+function toNum(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+export function isValidNdviMean(value, { hasRaster = false } = {}) {
+  if (value == null || value === '') return false;
+  const num = Number(value);
+  if (!Number.isFinite(num)) return false;
+  if (num < -1 || num > 1) return false;
+  if (Math.abs(num) < 1e-6) return false;
+  if (!hasRaster && num <= 0.01) return false;
+  return true;
+}
+
+export function isValidNdviStats(stats) {
+  if (!stats || typeof stats !== 'object') return false;
+
+  const mean = toNum(stats.ndvi_mean ?? stats.ndviMean);
+  let min = toNum(stats.ndvi_min ?? stats.ndviMin);
+  let max = toNum(stats.ndvi_max ?? stats.ndviMax);
+
+  if (mean == null) return false;
+  if (mean < -1 || mean > 1) return false;
+  if (Math.abs(mean) < 1e-6) return false;
+
+  if (min == null && mean != null) min = Math.max(-1, mean - 0.2);
+  if (max == null && mean != null) max = Math.min(1, mean + 0.2);
+  if (min == null || max == null) return false;
+  if (min < -1 || max > 1) return false;
+  if (min > mean || mean > max) return false;
+
+  const vl = toNum(stats.very_low_percent ?? stats.veryLowPercent);
+  const lo = toNum(stats.low_percent ?? stats.lowPercent);
+  const md = toNum(stats.medium_percent ?? stats.mediumPercent);
+  const hi = toNum(stats.high_percent ?? stats.highPercent);
+
+  const hasPerc = [vl, lo, md, hi].every((p) => p != null);
+  if (hasPerc) {
+    const sum = vl + lo + md + hi;
+    if (sum < 98.5 || sum > 101.5) return false;
+    const spread = Math.max(vl, lo, md, hi) - Math.min(vl, lo, md, hi);
+    if (spread > 1 && max - min < 0.02) return false;
+  }
+
+  return true;
+}
+
+export function layerHasRaster(row) {
+  if (!row) return false;
+  return (
+    hasUrl(row.preview_url) ||
+    hasUrl(row.tile_url) ||
+    hasUrl(row.raster_url)
+  );
+}
+
+export function invalidNdviStatsReason(stats) {
+  if (!stats || typeof stats !== 'object') return 'stats_null';
+  const mean = toNum(stats.ndvi_mean ?? stats.ndviMean);
+  const min = toNum(stats.ndvi_min ?? stats.ndviMin);
+  const max = toNum(stats.ndvi_max ?? stats.ndviMax);
+  if (mean == null && min == null && max == null) return 'stats_null';
+  if (
+    mean != null &&
+    min != null &&
+    max != null &&
+    Math.abs(mean) < 1e-6 &&
+    Math.abs(min) < 1e-6 &&
+    Math.abs(max) < 1e-6
+  ) {
+    return 'zero_stats';
+  }
+  if (!isValidNdviStats(stats)) return 'invalid_stats';
+  return null;
+}
+
+export function isValidNdviLayerRow(row) {
+  if (!row) return false;
+  if (!layerHasRaster(row)) return false;
+  return isValidNdviStats({
+    ndvi_mean: row.ndvi_mean,
+    ndvi_min: row.ndvi_min,
+    ndvi_max: row.ndvi_max,
+    very_low_percent: row.very_low_percent,
+    low_percent: row.low_percent,
+    medium_percent: row.medium_percent,
+    high_percent: row.high_percent,
+  });
+}
+
+export function resolveLayerStatus(row) {
+  const stored = String(row?.status || '').toLowerCase();
+  if (stored === 'failed') return 'failed';
+  const raster = layerHasRaster(row);
+  if (raster && isValidNdviLayerRow(row)) return 'ready';
+  if (stored === 'generated' || stored === 'metadata_only') return 'metadata_only';
+  return 'metadata_only';
+}
+
+export function buildStatsOrNull({
+  ndviMean,
+  ndviMin,
+  ndviMax,
+  hasRaster = false,
+  veryLowPercent = null,
+  lowPercent = null,
+  mediumPercent = null,
+  highPercent = null,
+} = {}) {
+  if (!isValidNdviMean(ndviMean, { hasRaster })) {
+    return { ndvi_mean: null, ndvi_min: null, ndvi_max: null,
+      very_low_percent: null, low_percent: null, medium_percent: null, high_percent: null };
+  }
+  const mean = Number(ndviMean);
+  const min = Number.isFinite(Number(ndviMin)) ? Number(ndviMin) : Math.max(-1, mean - 0.2);
+  const max = Number.isFinite(Number(ndviMax)) ? Number(ndviMax) : Math.min(1, mean + 0.2);
+  const row = {
+    ndvi_mean: Number(mean.toFixed(3)),
+    ndvi_min: Number(min.toFixed(3)),
+    ndvi_max: Number(max.toFixed(3)),
+    very_low_percent: veryLowPercent,
+    low_percent: lowPercent,
+    medium_percent: mediumPercent,
+    high_percent: highPercent,
+  };
+  if (!isValidNdviStats(row)) {
+    return { ndvi_mean: null, ndvi_min: null, ndvi_max: null,
+      very_low_percent: null, low_percent: null, medium_percent: null, high_percent: null };
+  }
+  return row;
+}
