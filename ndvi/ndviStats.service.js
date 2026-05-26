@@ -1,24 +1,26 @@
+import { buildStatsOrNull, layerHasRaster } from './ndviValidity.js';
+
 class NdviStatsService {
-  static buildStats({ ndviMean, ndviMin, ndviMax }) {
-    const mean = Number.isFinite(Number(ndviMean)) ? Number(ndviMean) : 0.55;
-    const min = Number.isFinite(Number(ndviMin)) ? Number(ndviMin) : Math.max(0, mean - 0.35);
-    const max = Number.isFinite(Number(ndviMax)) ? Number(ndviMax) : Math.min(1, mean + 0.3);
+  static buildStats({ ndviMean, ndviMin, ndviMax, hasRaster = false } = {}) {
+    return buildStatsOrNull({ ndviMean, ndviMin, ndviMax, hasRaster });
+  }
 
-    const veryLow = Math.max(0, Math.min(35, Math.round((0.35 - mean) * 40 + 8)));
-    const low = Math.max(0, Math.min(45, Math.round((0.5 - mean) * 35 + 18)));
-    const high = Math.max(0, Math.min(55, Math.round((mean - 0.45) * 40 + 24)));
-    let medium = 100 - veryLow - low - high;
-    if (medium < 0) medium = 0;
-
-    return {
-      ndvi_mean: Number(mean.toFixed(2)),
-      ndvi_min: Number(min.toFixed(2)),
-      ndvi_max: Number(max.toFixed(2)),
-      very_low_percent: veryLow,
-      low_percent: low,
-      medium_percent: medium,
-      high_percent: high,
-    };
+  static buildStatsForAssets(assets) {
+    const hasRaster = layerHasRaster({
+      preview_url: assets?.preview_url,
+      tile_url: assets?.tile_url,
+      raster_url: assets?.raster_url,
+    });
+    return buildStatsOrNull({
+      ndviMean: assets?.ndvi_mean ?? assets?.ndviMean,
+      ndviMin: assets?.ndvi_min ?? assets?.ndviMin,
+      ndviMax: assets?.ndvi_max ?? assets?.ndviMax,
+      hasRaster,
+      veryLowPercent: assets?.very_low_percent ?? assets?.veryLowPercent ?? null,
+      lowPercent: assets?.low_percent ?? assets?.lowPercent ?? null,
+      mediumPercent: assets?.medium_percent ?? assets?.mediumPercent ?? null,
+      highPercent: assets?.high_percent ?? assets?.highPercent ?? null,
+    });
   }
 }
 

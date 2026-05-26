@@ -1,9 +1,47 @@
 /**
  * Processamento NDVI via Copernicus Process API (somente servidor).
+ * Preview: PNG colorido. Stats: segundo PNG em escala de cinza (NDVI real B04/B08).
  */
+import { computeNdviStatsFromFloatEncodedPng } from './ndviGrayscaleStats.js';
 import { storeNdviPreviewPng } from './ndviPreviewStorage.js';
 
 const DEFAULT_PROCESS_URL = 'https://sh.dataspace.copernicus.eu/api/v1/process';
+
+const EVALSCRIPT_COLOR_PREVIEW = `//VERSION=3
+function setup() {
+  return {
+    input: ["B04", "B08", "dataMask"],
+    output: { bands: 4, sampleType: 'AUTO' }
+  };
+}
+function evaluatePixel(sample) {
+  if (sample.dataMask === 0) return [0, 0, 0, 0];
+  const ndvi = (sample.B08 - sample.B04) / (sample.B08 + sample.B04);
+  if (!isFinite(ndvi)) return [0, 0, 0, 0];
+  if (ndvi < 0.1) return [0.75, 0.05, 0.05, 1];
+  if (ndvi < 0.25) return [0.95, 0.35, 0.1, 1];
+  if (ndvi < 0.4) return [0.98, 0.75, 0.15, 1];
+  if (ndvi < 0.55) return [0.85, 0.9, 0.2, 1];
+  if (ndvi < 0.7) return [0.4, 0.75, 0.25, 1];
+  return [0.1, 0.55, 0.15, 1];
+}`;
+
+/** R=G=B = (clamp(ndvi,-1,1)+1)/2 — stats derivadas do NDVI float, não da paleta. */
+const EVALSCRIPT_FLOAT_GRAY = `//VERSION=3
+function setup() {
+  return {
+    input: ["B04", "B08", "dataMask"],
+    output: { bands: 4, sampleType: 'AUTO' }
+  };
+}
+function evaluatePixel(sample) {
+  if (sample.dataMask === 0) return [0, 0, 0, 0];
+  const ndvi = (sample.B08 - sample.B04) / (sample.B08 + sample.B04);
+  if (!isFinite(ndvi)) return [0, 0, 0, 0];
+  const clamped = Math.max(-1, Math.min(1, ndvi));
+  const v = (clamped + 1) / 2;
+  return [v, v, v, 1];
+}`;
 
 function resolveProcessUrl(raw) {
   const value = String(raw || '').trim();
@@ -30,6 +68,75 @@ class SentinelProcessClient {
     this.enableDevMock = enableDevMock;
     this.publicBaseUrl = publicBaseUrl;
     this.fetchImpl = fetchImpl;
+  }
+
+  async _postProcessPng({
+    token,
+    polygon,
+    date,
+    evalscript,
+    width,
+    height,
+    sceneId,
+    label,
+  }) {
+    const payload = {
+      input: {
+        bounds: {
+          geometry: polygon,
+          properties: { crs: 'http://www.opengis.net/def/crs/EPSG/0/4326' },
+        },
+        data: [
+          {
+            type: 'sentinel-2-l2a',
+            dataFilter: {
+              timeRange: {
+                from: `${date}T00:00:00Z`,
+                to: `${date}T23:59:59Z`,
+              },
+              mosaickingOrder: 'leastCC',
+            },
+          },
+        ],
+      },
+      output: {
+        width,
+        height,
+        responses: [{ identifier: 'default', format: { type: 'image/png' } }],
+      },
+      evalscript,
+    };
+
+    const started = Date.now();
+    const response = await this.fetchImpl(this.processUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'image/png',
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(90_000),
+    });
+
+    const elapsedMs = Date.now() - started;
+    const contentType = response.headers.get('content-type') || '';
+    console.log(
+      `ℹ️ [NDVI][Process][${label}] sceneId=${sceneId} status=${response.status} ` +
+        `elapsedMs=${elapsedMs} contentType=${contentType} size=${width}x${height}`,
+    );
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      console.warn(
+        `⚠️ [NDVI][Process][${label}] HTTP ${response.status} body=${errText.slice(0, 200)}`,
+      );
+      return null;
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (!buffer.length) return null;
+    return buffer;
   }
 
   async generateNdviLayer({
@@ -67,83 +174,19 @@ class SentinelProcessClient {
       };
     }
 
-    const evalscript = `//VERSION=3
-function setup() {
-  return {
-    input: ["B04", "B08", "dataMask"],
-    output: { bands: 4, sampleType: 'AUTO' }
-  };
-}
-function evaluatePixel(sample) {
-  if (sample.dataMask === 0) return [0, 0, 0, 0];
-  const ndvi = (sample.B08 - sample.B04) / (sample.B08 + sample.B04);
-  if (ndvi < 0.2) return [0.8, 0.1, 0.1, 1];
-  if (ndvi < 0.5) return [0.9, 0.8, 0.1, 1];
-  return [0.1, 0.6, 0.2, 1];
-}`;
-
-    const payload = {
-      input: {
-        bounds: {
-          geometry: polygon,
-          properties: { crs: 'http://www.opengis.net/def/crs/EPSG/0/4326' },
-        },
-        data: [
-          {
-            type: 'sentinel-2-l2a',
-            dataFilter: {
-              timeRange: {
-                from: `${date}T00:00:00Z`,
-                to: `${date}T23:59:59Z`,
-              },
-              mosaickingOrder: 'leastCC',
-            },
-          },
-        ],
-      },
-      output: {
+    try {
+      const colorBuf = await this._postProcessPng({
+        token,
+        polygon,
+        date,
+        evalscript: EVALSCRIPT_COLOR_PREVIEW,
         width: 512,
         height: 512,
-        responses: [{ identifier: 'default', format: { type: 'image/png' } }],
-      },
-      evalscript,
-    };
-
-    const started = Date.now();
-    try {
-      const response = await this.fetchImpl(this.processUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          Accept: 'image/png',
-        },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(90_000),
+        sceneId,
+        label: 'preview_color',
       });
 
-      const elapsedMs = Date.now() - started;
-      const contentType = response.headers.get('content-type') || '';
-      console.log(
-        `ℹ️ [NDVI][Process] sceneId=${sceneId} status=${response.status} ` +
-          `elapsedMs=${elapsedMs} contentType=${contentType}`,
-      );
-
-      if (!response.ok) {
-        const errText = await response.text().catch(() => '');
-        console.warn(
-          `⚠️ [NDVI][Process] HTTP ${response.status} body=${errText.slice(0, 200)}`,
-        );
-        return {
-          preview_url: null,
-          tile_url: null,
-          raster_url: null,
-          status: 'metadata_only',
-        };
-      }
-
-      const buffer = Buffer.from(await response.arrayBuffer());
-      if (!buffer.length) {
+      if (!colorBuf) {
         return {
           preview_url: null,
           tile_url: null,
@@ -157,14 +200,34 @@ function evaluatePixel(sample) {
         plotId,
         sceneId,
         imageDate: date,
-        buffer,
+        buffer: colorBuf,
       });
+
+      const statsBuf = await this._postProcessPng({
+        token,
+        polygon,
+        date,
+        evalscript: EVALSCRIPT_FLOAT_GRAY,
+        width: 256,
+        height: 256,
+        sceneId,
+        label: 'stats_float',
+      });
+
+      const stats = statsBuf ? computeNdviStatsFromFloatEncodedPng(statsBuf) : null;
+
+      console.log(
+        `ℹ️ [NDVI][Process] statsFloat sceneId=${sceneId} mean=${stats?.ndvi_mean ?? '-'} ` +
+          `min=${stats?.ndvi_min ?? '-'} max=${stats?.ndvi_max ?? '-'} ` +
+          `previewGenerated=${preview_url ? 'yes' : 'no'} statsComputed=${stats ? 'yes' : 'no'}`,
+      );
 
       return {
         preview_url,
         tile_url: null,
         raster_url: null,
-        status: preview_url ? 'generated' : 'metadata_only',
+        status: preview_url && stats ? 'generated' : 'metadata_only',
+        ...stats,
       };
     } catch (error) {
       console.warn(`⚠️ [NDVI][Process] falha sceneId=${sceneId}: ${error.message}`);
@@ -184,6 +247,13 @@ function evaluatePixel(sample) {
       preview_url: `${prefix}/1024x768/2e7d32/ffffff.png&text=NDVI+${plotId}+${stamp}`,
       tile_url: `${prefix}/512x512/33691e/ffffff.png&text=NDVI+TILE+${farmId}`,
       raster_url: `${prefix}/1200x900/1b5e20/ffffff.png&text=NDVI+RASTER+${plotId}`,
+      ndvi_mean: 0.62,
+      ndvi_min: 0.35,
+      ndvi_max: 0.81,
+      very_low_percent: 5,
+      low_percent: 25,
+      medium_percent: 40,
+      high_percent: 30,
       status: 'generated',
     };
   }

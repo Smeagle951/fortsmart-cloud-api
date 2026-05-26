@@ -29,9 +29,19 @@ export function logGenerateFail(meta, stage, error) {
   }
 }
 
-export function logGenerateOk(meta, layer) {
+export function logGenerateOk(meta, layer, extra = {}) {
+  const suffix = Object.entries(extra)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(' ');
   console.log(
-    `✅ [NDVI][generate] ok plotId=${meta.plotId} layerId=${layer?.layer_id || layer?.id || '-'} ` +
-      `status=${layer?.status || '-'} preview=${layer?.preview_url ? 'yes' : 'no'}`,
+    `✅ [NDVI][generate] ok plotId=${meta.plotId} farmId=${meta.farmId} ` +
+      `sceneId=${meta.sceneId || '-'} imageDate=${meta.imageDate || '-'} ` +
+      `layerId=${layer?.layer_id || layer?.id || '-'} status=${layer?.status || '-'} ` +
+      `ndviMean=${layer?.ndvi_mean ?? '-'} ndviMin=${layer?.ndvi_min ?? '-'} ` +
+      `ndviMax=${layer?.ndvi_max ?? '-'} preview=${layer?.preview_url ? 'yes' : 'no'} ` +
+      `tile=${layer?.tile_url ? 'yes' : 'no'} raster=${layer?.raster_url ? 'yes' : 'no'} ` +
+      `veryLow=${layer?.very_low_percent ?? '-'}% low=${layer?.low_percent ?? '-'}% ` +
+      `medium=${layer?.medium_percent ?? '-'}% high=${layer?.high_percent ?? '-'}%` +
+      (suffix ? ` ${suffix}` : ''),
   );
 }

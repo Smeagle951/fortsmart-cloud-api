@@ -132,6 +132,16 @@ class SoilSamplingNdviRepository {
     return result.rows[0] || null;
   }
 
+  async markLayerFailed(layerId) {
+    await this.pool.query(
+      `UPDATE soil_ndvi_layers
+          SET status = 'failed',
+              updated_at = NOW()
+        WHERE id = $1`,
+      [String(layerId)],
+    );
+  }
+
   _sanitizePreviewUrl(url) {
     if (url == null) return null;
     const text = String(url);

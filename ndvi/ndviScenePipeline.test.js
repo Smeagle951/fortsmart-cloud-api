@@ -39,24 +39,45 @@ describe('ndviScenePipeline', () => {
         preview_url: 'https://cdn/p.png',
         ndvi_mean: 0.72,
         layer_status: 'generated',
+        layer_id: 'layer-1',
       }),
-      'generated',
+      'ready',
     );
   });
 
-  it('formatSceneForApi expõe aliases camelCase', () => {
+  it('miniatura STAC sem camada NDVI usa status available', () => {
+    assert.equal(
+      resolveSceneStatus({
+        image_date: '2026-05-25',
+        thumbnail_url: 'https://thumb',
+      }),
+      'available',
+    );
     const api = formatSceneForApi({
       id: 'scene-1',
       scene_id: 'scene-1',
       image_date: '2026-05-25',
       cloud_coverage: 7,
       thumbnail_url: 'https://thumb',
+    });
+    assert.equal(api.status, 'available');
+    assert.equal(api.thumbnailUrl, 'https://thumb');
+  });
+
+  it('formatSceneForApi expõe aliases camelCase quando NDVI gerado', () => {
+    const api = formatSceneForApi({
+      id: 'scene-1',
+      scene_id: 'scene-1',
+      image_date: '2026-05-25',
+      cloud_coverage: 7,
+      preview_url: 'https://cdn/ndvi.png',
+      thumbnail_url: 'https://thumb',
       ndvi_mean: 0.65,
+      layer_id: 'layer-1',
+      layer_status: 'generated',
     });
     assert.equal(api.cloudPercent, 7);
     assert.equal(api.meanNdvi, 0.65);
-    assert.equal(api.thumbnailUrl, 'https://thumb');
-    assert.equal(api.previewUrl, 'https://thumb');
-    assert.notEqual(api.status, 'available');
+    assert.equal(api.status, 'ready');
   });
 });

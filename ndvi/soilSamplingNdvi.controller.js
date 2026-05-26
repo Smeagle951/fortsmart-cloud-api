@@ -1,3 +1,5 @@
+import { invalidNdviStatsReason, isValidNdviLayerRow } from './ndviValidity.js';
+
 class SoilSamplingNdviController {
   constructor(service, { authClient } = {}) {
     this.service = service;
@@ -143,6 +145,29 @@ class SoilSamplingNdviController {
         );
       }
 
+      if (!isValidNdviLayerRow(layer)) {
+        const hasPreview = Boolean(
+          layer.preview_url || layer.tile_url || layer.raster_url,
+        );
+        const reason =
+          invalidNdviStatsReason(layer) || (hasPreview ? 'zero_stats' : 'no_preview');
+        return this._sendError(
+          res,
+          Object.assign(
+            new Error('NDVI não foi calculado com estatísticas válidas.'),
+            {
+              code: 'ndvi_not_computed',
+              status: 422,
+              details: {
+                previewGenerated: hasPreview,
+                statsComputed: false,
+                reason,
+              },
+            },
+          ),
+        );
+      }
+
       res.status(201).json({ success: true, layer });
     } catch (error) {
       this._sendError(res, error);
@@ -275,6 +300,7 @@ class SoilSamplingNdviController {
       status = 503;
     } else if (code === 'gee_not_configured' || code === 'gee_disabled') {
       status = 503;
+      responseCode = 'NDVI_PROVIDER_NOT_CONFIGURED';
     } else if (code === 'plot_polygon_missing' || code === 'invalid_polygon') {
       status = 400;
     } else if (code === 'invalid_image_date' || code === 'campaign_required') {
@@ -283,8 +309,16 @@ class SoilSamplingNdviController {
       status = 400;
     } else if (code === 'empty_scenes' || code === 'ndvi_not_found') {
       status = 404;
-    } else if (code === 'layer_persist_failed') {
-      status = 500;
+    } else if (code === 'ndvi_not_computed') {
+      status = 422;
+    } else if (
+      code === 'layer_persist_failed' ||
+      code === 'NDVI_SERVICE_UNAVAILABLE' ||
+      code === 'ndvi_database_unavailable' ||
+      code === '28P01'
+    ) {
+      status = 503;
+      responseCode = 'NDVI_SERVICE_UNAVAILABLE';
     } else if (code === 'generate_failed') {
       status = error.details?.stage === 'persist' ? 500 : 502;
       if (!error.details?.stage) responseCode = 'NDVI_PROVIDER_ERROR';

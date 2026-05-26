@@ -1,3 +1,5 @@
+import { resolveLayerStatus } from './ndviValidity.js';
+
 function toIsoDate(value) {
   if (!value) return null;
   const text = String(value);
@@ -94,8 +96,7 @@ function mapLayer(row) {
   if (!layerId) return null;
 
   const preview = row.preview_url ?? null;
-  const status =
-    row.status || (preview ? 'generated' : 'metadata_only');
+  const status = resolveLayerStatus(row);
 
   return {
     layer_id: layerId,
