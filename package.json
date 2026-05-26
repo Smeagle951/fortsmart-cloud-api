@@ -14,7 +14,7 @@
     "migrate": "node --import tsx src/db/migrate.ts",
     "migrate:prod": "node dist/db/migrate.js",
     "hash-api-key": "node scripts/generate-api-key-hash.js",
-    "test:ndvi": "node --test ndvi/soilSamplingNdvi.generate.test.js ndvi/ndviScenePipeline.test.js"
+    "test:ndvi": "node --test ndvi/soilSamplingNdvi.generate.test.js ndvi/ndviScenePipeline.test.js ndvi/ndviValidity.test.js ndvi/ndviPngStats.test.js ndvi/ndviGrayscaleStats.test.js ndvi/ndviGenerateHttpValidity.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.758.0",
@@ -29,6 +29,7 @@
     "helmet": "^7.1.0",
     "multer": "^1.4.5-lts.1",
     "pg": "^8.13.1",
+    "pngjs": "^7.0.0",
     "typescript": "^5.7.2"
   },
   "devDependencies": {
