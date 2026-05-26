@@ -1,4 +1,7 @@
-import { invalidNdviStatsReason, isValidNdviLayerRow } from './ndviValidity.js';
+import {
+  isValidNdviGenerateHttpPayload,
+  readNdviGenerateStatsForDetails,
+} from './ndviGenerateHttpValidity.js';
 
 class SoilSamplingNdviController {
   constructor(service, { authClient } = {}) {
@@ -145,30 +148,37 @@ class SoilSamplingNdviController {
         );
       }
 
-      if (!isValidNdviLayerRow(layer)) {
-        const hasPreview = Boolean(
-          layer.preview_url || layer.tile_url || layer.raster_url,
+      if (!isValidNdviGenerateHttpPayload(layer)) {
+        const stats = readNdviGenerateStatsForDetails(layer);
+        const previewGenerated = Boolean(
+          (layer.preview_url && String(layer.preview_url).trim()) ||
+            (layer.previewUrl && String(layer.previewUrl).trim()) ||
+            (layer.tile_url && String(layer.tile_url).trim()) ||
+            (layer.tileUrl && String(layer.tileUrl).trim()) ||
+            (layer.raster_url && String(layer.raster_url).trim()) ||
+            (layer.rasterUrl && String(layer.rasterUrl).trim()),
         );
-        const reason =
-          invalidNdviStatsReason(layer) || (hasPreview ? 'zero_stats' : 'no_preview');
-        return this._sendError(
-          res,
-          Object.assign(
-            new Error('NDVI não foi calculado com estatísticas válidas.'),
-            {
-              code: 'ndvi_not_computed',
-              status: 422,
-              details: {
-                previewGenerated: hasPreview,
-                statsComputed: false,
-                reason,
-              },
-            },
-          ),
+        console.warn(
+          `⚠️ [NDVI][HTTP] generate bloqueado 422 plotId=${plotId} ` +
+            `reason=zero_or_invalid_stats preview=${previewGenerated ? 'yes' : 'no'} ` +
+            `mean=${stats.ndviMean ?? '-'} min=${stats.ndviMin ?? '-'} max=${stats.ndviMax ?? '-'}`,
         );
+        return res.status(422).json({
+          success: false,
+          code: 'ndvi_not_computed',
+          message: 'NDVI não foi calculado com estatísticas válidas.',
+          details: {
+            previewGenerated,
+            statsComputed: false,
+            reason: 'zero_or_invalid_stats',
+            ndviMean: stats.ndviMean,
+            ndviMin: stats.ndviMin,
+            ndviMax: stats.ndviMax,
+          },
+        });
       }
 
-      res.status(201).json({ success: true, layer });
+      res.status(201).json({ success: true, layer, data: layer });
     } catch (error) {
       this._sendError(res, error);
     }

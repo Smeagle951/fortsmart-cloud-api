@@ -7,6 +7,9 @@ import { jsonOk } from '../utils/response.js';
 /** Versão de capacidades — subir quando expor novas rotas (ex.: upload de imagens). */
 export const API_CAPABILITIES_VERSION = 4;
 
+/** Versão da validação NDVI HTTP (v2 = valida stats antes do 201). */
+export const NDVI_VALIDATION_VERSION = 'v2';
+
 export const healthRouter = Router();
 
 function formatUptime(seconds: number): string {
@@ -39,6 +42,7 @@ healthRouter.get(
       environment: process.env.NODE_ENV || 'development',
       uptime: formatUptime(process.uptime()),
       capabilities_version: API_CAPABILITIES_VERSION,
+      ndvi_validation_version: NDVI_VALIDATION_VERSION,
       database,
       r2: isObjectStorageConfigured() ? 'ok' : 'missing',
       image_routes: true,
