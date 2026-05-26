@@ -1,6 +1,6 @@
 /**
- * Processamento NDVI via Copernicus Process API.
- * DOIS requests: preview colorido + PNG cinza para stats float reais (não paleta).
+ * Processamento NDVI via Copernicus Process API (somente servidor).
+ * Preview: PNG colorido. Stats: segundo PNG em escala de cinza (NDVI real B04/B08).
  */
 import { computeNdviStatsFromFloatEncodedPng } from './ndviGrayscaleStats.js';
 import { storeNdviPreviewPng } from './ndviPreviewStorage.js';
@@ -9,7 +9,10 @@ const DEFAULT_PROCESS_URL = 'https://sh.dataspace.copernicus.eu/api/v1/process';
 
 const EVALSCRIPT_COLOR_PREVIEW = `//VERSION=3
 function setup() {
-  return { input: ["B04", "B08", "dataMask"], output: { bands: 4, sampleType: 'AUTO' } };
+  return {
+    input: ["B04", "B08", "dataMask"],
+    output: { bands: 4, sampleType: 'AUTO' }
+  };
 }
 function evaluatePixel(sample) {
   if (sample.dataMask === 0) return [0, 0, 0, 0];
@@ -23,10 +26,13 @@ function evaluatePixel(sample) {
   return [0.1, 0.55, 0.15, 1];
 }`;
 
-/** R=G=B = (clamp(ndvi,-1,1)+1)/2 — NDVI numérico puro, sem colorização. */
+/** R=G=B = (clamp(ndvi,-1,1)+1)/2 — stats derivadas do NDVI float, não da paleta. */
 const EVALSCRIPT_FLOAT_GRAY = `//VERSION=3
 function setup() {
-  return { input: ["B04", "B08", "dataMask"], output: { bands: 4, sampleType: 'AUTO' } };
+  return {
+    input: ["B04", "B08", "dataMask"],
+    output: { bands: 4, sampleType: 'AUTO' }
+  };
 }
 function evaluatePixel(sample) {
   if (sample.dataMask === 0) return [0, 0, 0, 0];
@@ -41,7 +47,9 @@ function resolveProcessUrl(raw) {
   const value = String(raw || '').trim();
   if (!value) return DEFAULT_PROCESS_URL;
   if (value.includes('/process/v1') && !value.includes('/api/v1/process')) {
-    console.warn(`⚠️ [NDVI] SENTINEL_PROCESS_URL legado (${value}) — usando ${DEFAULT_PROCESS_URL}`);
+    console.warn(
+      `⚠️ [NDVI] SENTINEL_PROCESS_URL legado (${value}) — usando ${DEFAULT_PROCESS_URL}`,
+    );
     return DEFAULT_PROCESS_URL;
   }
   return value;
@@ -62,7 +70,16 @@ class SentinelProcessClient {
     this.fetchImpl = fetchImpl;
   }
 
-  async _postProcessPng({ token, polygon, date, evalscript, width, height, sceneId, label }) {
+  async _postProcessPng({
+    token,
+    polygon,
+    date,
+    evalscript,
+    width,
+    height,
+    sceneId,
+    label,
+  }) {
     const payload = {
       input: {
         bounds: {
@@ -73,7 +90,10 @@ class SentinelProcessClient {
           {
             type: 'sentinel-2-l2a',
             dataFilter: {
-              timeRange: { from: `${date}T00:00:00Z`, to: `${date}T23:59:59Z` },
+              timeRange: {
+                from: `${date}T00:00:00Z`,
+                to: `${date}T23:59:59Z`,
+              },
               mosaickingOrder: 'leastCC',
             },
           },
@@ -108,7 +128,9 @@ class SentinelProcessClient {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
-      console.warn(`⚠️ [NDVI][Process][${label}] HTTP ${response.status} body=${errText.slice(0, 200)}`);
+      console.warn(
+        `⚠️ [NDVI][Process][${label}] HTTP ${response.status} body=${errText.slice(0, 200)}`,
+      );
       return null;
     }
 
@@ -117,11 +139,19 @@ class SentinelProcessClient {
     return buffer;
   }
 
-  async generateNdviLayer({ sceneId, polygon, imageDate, farmId, plotId, campaignId }) {
+  async generateNdviLayer({
+    sceneId,
+    polygon,
+    imageDate,
+    farmId,
+    plotId,
+  }) {
     const isProd = process.env.NODE_ENV === 'production';
     if (!this.authClient?.isConfigured()) {
       if (isProd && !this.enableDevMock) {
-        const err = new Error('Copernicus CDSE não configurado (CDSE_CLIENT_ID/SECRET)');
+        const err = new Error(
+          'Copernicus CDSE não configurado (CDSE_CLIENT_ID/SECRET)',
+        );
         err.code = 'cdse_not_configured';
         err.status = 503;
         throw err;
@@ -129,45 +159,66 @@ class SentinelProcessClient {
       return this._mockAssets({ farmId, plotId, imageDate });
     }
 
-    if (this.enableDevMock) return this._mockAssets({ farmId, plotId, imageDate });
+    if (this.enableDevMock) {
+      return this._mockAssets({ farmId, plotId, imageDate });
+    }
 
     const token = await this.authClient.getCdseAccessToken();
     const date = String(imageDate || '').slice(0, 10);
     if (!date) {
-      return { preview_url: null, tile_url: null, raster_url: null, status: 'metadata_only' };
+      return {
+        preview_url: null,
+        tile_url: null,
+        raster_url: null,
+        status: 'metadata_only',
+      };
     }
 
     try {
-      // Request 1: preview colorido
       const colorBuf = await this._postProcessPng({
-        token, polygon, date,
+        token,
+        polygon,
+        date,
         evalscript: EVALSCRIPT_COLOR_PREVIEW,
-        width: 512, height: 512, sceneId, label: 'preview_color',
+        width: 512,
+        height: 512,
+        sceneId,
+        label: 'preview_color',
       });
 
       if (!colorBuf) {
-        console.warn(`⚠️ [NDVI][Process] preview_color vazio sceneId=${sceneId}`);
-        return { preview_url: null, tile_url: null, raster_url: null, status: 'metadata_only' };
+        return {
+          preview_url: null,
+          tile_url: null,
+          raster_url: null,
+          status: 'metadata_only',
+        };
       }
 
       const preview_url = await storeNdviPreviewPng({
-        farmId, plotId, sceneId, imageDate: date, buffer: colorBuf,
+        farmId,
+        plotId,
+        sceneId,
+        imageDate: date,
+        buffer: colorBuf,
       });
 
-      // Request 2: PNG cinza para stats NDVI float reais
       const statsBuf = await this._postProcessPng({
-        token, polygon, date,
+        token,
+        polygon,
+        date,
         evalscript: EVALSCRIPT_FLOAT_GRAY,
-        width: 256, height: 256, sceneId, label: 'stats_float',
+        width: 256,
+        height: 256,
+        sceneId,
+        label: 'stats_float',
       });
 
-      const stats = statsBuf
-        ? computeNdviStatsFromFloatEncodedPng(statsBuf, { sceneId })
-        : null;
+      const stats = statsBuf ? computeNdviStatsFromFloatEncodedPng(statsBuf) : null;
 
       console.log(
-        `ℹ️ [NDVI][Process] statsFloat sceneId=${sceneId} ` +
-          `mean=${stats?.ndvi_mean ?? '-'} min=${stats?.ndvi_min ?? '-'} max=${stats?.ndvi_max ?? '-'} ` +
+        `ℹ️ [NDVI][Process] statsFloat sceneId=${sceneId} mean=${stats?.ndvi_mean ?? '-'} ` +
+          `min=${stats?.ndvi_min ?? '-'} max=${stats?.ndvi_max ?? '-'} ` +
           `previewGenerated=${preview_url ? 'yes' : 'no'} statsComputed=${stats ? 'yes' : 'no'}`,
       );
 
@@ -180,7 +231,12 @@ class SentinelProcessClient {
       };
     } catch (error) {
       console.warn(`⚠️ [NDVI][Process] falha sceneId=${sceneId}: ${error.message}`);
-      return { preview_url: null, tile_url: null, raster_url: null, status: 'metadata_only' };
+      return {
+        preview_url: null,
+        tile_url: null,
+        raster_url: null,
+        status: 'metadata_only',
+      };
     }
   }
 
@@ -191,8 +247,13 @@ class SentinelProcessClient {
       preview_url: `${prefix}/1024x768/2e7d32/ffffff.png&text=NDVI+${plotId}+${stamp}`,
       tile_url: `${prefix}/512x512/33691e/ffffff.png&text=NDVI+TILE+${farmId}`,
       raster_url: `${prefix}/1200x900/1b5e20/ffffff.png&text=NDVI+RASTER+${plotId}`,
-      ndvi_mean: 0.62, ndvi_min: 0.35, ndvi_max: 0.81,
-      very_low_percent: 5, low_percent: 25, medium_percent: 40, high_percent: 30,
+      ndvi_mean: 0.62,
+      ndvi_min: 0.35,
+      ndvi_max: 0.81,
+      very_low_percent: 5,
+      low_percent: 25,
+      medium_percent: 40,
+      high_percent: 30,
       status: 'generated',
     };
   }

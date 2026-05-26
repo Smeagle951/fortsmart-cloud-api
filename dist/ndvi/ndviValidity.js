@@ -22,6 +22,10 @@ export function isValidNdviMean(value, { hasRaster = false } = {}) {
   return true;
 }
 
+/**
+ * Stats completas (mean/min/max + percentuais opcionais) — evita 201 com NDVI zerado
+ * e percentuais inconsistentes.
+ */
 export function isValidNdviStats(stats) {
   if (!stats || typeof stats !== 'object') return false;
 
@@ -64,6 +68,7 @@ export function layerHasRaster(row) {
   );
 }
 
+/** Motivo para 422 ndvi_not_computed (contrato HTTP). */
 export function invalidNdviStatsReason(stats) {
   if (!stats || typeof stats !== 'object') return 'stats_null';
   const mean = toNum(stats.ndvi_mean ?? stats.ndviMean);
@@ -101,9 +106,15 @@ export function isValidNdviLayerRow(row) {
 export function resolveLayerStatus(row) {
   const stored = String(row?.status || '').toLowerCase();
   if (stored === 'failed') return 'failed';
+
   const raster = layerHasRaster(row);
-  if (raster && isValidNdviLayerRow(row)) return 'ready';
-  if (stored === 'generated' || stored === 'metadata_only') return 'metadata_only';
+
+  if (raster && isValidNdviLayerRow(row)) {
+    return 'ready';
+  }
+  if (stored === 'generated' || stored === 'metadata_only') {
+    return 'metadata_only';
+  }
   return 'metadata_only';
 }
 
@@ -118,8 +129,15 @@ export function buildStatsOrNull({
   highPercent = null,
 } = {}) {
   if (!isValidNdviMean(ndviMean, { hasRaster })) {
-    return { ndvi_mean: null, ndvi_min: null, ndvi_max: null,
-      very_low_percent: null, low_percent: null, medium_percent: null, high_percent: null };
+    return {
+      ndvi_mean: null,
+      ndvi_min: null,
+      ndvi_max: null,
+      very_low_percent: null,
+      low_percent: null,
+      medium_percent: null,
+      high_percent: null,
+    };
   }
   const mean = Number(ndviMean);
   const min = Number.isFinite(Number(ndviMin)) ? Number(ndviMin) : Math.max(-1, mean - 0.2);
@@ -134,8 +152,15 @@ export function buildStatsOrNull({
     high_percent: highPercent,
   };
   if (!isValidNdviStats(row)) {
-    return { ndvi_mean: null, ndvi_min: null, ndvi_max: null,
-      very_low_percent: null, low_percent: null, medium_percent: null, high_percent: null };
+    return {
+      ndvi_mean: null,
+      ndvi_min: null,
+      ndvi_max: null,
+      very_low_percent: null,
+      low_percent: null,
+      medium_percent: null,
+      high_percent: null,
+    };
   }
   return row;
 }

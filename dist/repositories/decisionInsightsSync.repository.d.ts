@@ -1,0 +1,37 @@
+import type { Pool, PoolClient } from 'pg';
+export type DecisionInsightUpsertResult = 'inserted' | 'updated' | 'skipped';
+export type DecisionInsightRow = {
+    id: string;
+    farm_cloud_id: string;
+    farm_local_id: string | null;
+    local_id: string;
+    talhao_local_id: string | null;
+    talhao_cloud_id: string | null;
+    safra_id: string | null;
+    culture_id: string | null;
+    organism_id: string | null;
+    source_module: string | null;
+    source_table: string | null;
+    source_id: string | null;
+    monitoring_session_id: string | null;
+    monitoring_occurrence_id: string | null;
+    monitoring_point_id: string | null;
+    prescription_id: string | null;
+    risk_level: string | null;
+    risk_score: string | null;
+    estimated_loss_sc_ha: string | null;
+    estimated_loss_brl_ha: string | null;
+    estimated_total_loss_brl: string | null;
+    action_window_hours: string | null;
+    recommendation: string | null;
+    confidence_percent: string | null;
+    evidence_json: unknown;
+    decision_engine_snapshot_json: unknown;
+    economic_analysis_json: unknown;
+    created_at: string | null;
+    updated_at: string | null;
+    synced_at: string;
+};
+export declare function upsertDecisionInsight(client: PoolClient, farmCloudId: string, farmLocalId: string, row: Record<string, unknown>): Promise<DecisionInsightUpsertResult>;
+export declare function listDecisionInsightsByFarm(pool: Pool, farmCloudId: string): Promise<DecisionInsightRow[]>;
+//# sourceMappingURL=decisionInsightsSync.repository.d.ts.map

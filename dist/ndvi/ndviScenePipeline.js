@@ -1,4 +1,5 @@
 import { toIsoDate } from './ndviResponse.mapper.js';
+import { hasUrl, isValidNdviLayerRow, isValidNdviStats } from './ndviValidity.js';
 
 const PROVIDER_LABEL = 'copernicus_dataspace';
 
@@ -61,10 +62,18 @@ export function enrichScenesFromLayers(scenes, layers) {
 
     if (!layer) return { ...scene, provider: scene.provider || PROVIDER_LABEL };
 
+    if (!isValidNdviLayerRow(layer)) {
+      return {
+        ...scene,
+        provider: layer.provider || scene.provider || PROVIDER_LABEL,
+      };
+    }
+
     return {
       ...scene,
       provider: layer.provider || scene.provider || PROVIDER_LABEL,
-      preview_url: layer.preview_url || scene.preview_url || scene.thumbnail_url,
+      preview_url: layer.preview_url || scene.preview_url,
+      thumbnail_url: scene.thumbnail_url,
       tile_url: layer.tile_url || scene.tile_url,
       raster_url: layer.raster_url || scene.raster_url,
       ndvi_mean: layer.ndvi_mean ?? scene.ndvi_mean,
@@ -81,22 +90,43 @@ export function enrichScenesFromLayers(scenes, layers) {
  * Status compatível com o app Flutter (sem "available" falso quando não há imagem).
  */
 export function resolveSceneStatus(scene) {
-  const storedStatus = String(scene.layer_status || '').toLowerCase();
+  const storedStatus = String(scene.layer_status || scene.status || '').toLowerCase();
   if (storedStatus === 'failed') return 'failed';
 
-  const preview = pickUrl(scene.preview_url, scene.thumbnail_url);
+  const preview = pickUrl(scene.preview_url);
   const tile = pickUrl(scene.tile_url);
-  const hasImage = Boolean(preview || tile);
+  const raster = pickUrl(scene.raster_url);
+  const thumbOnly = !preview && !tile && !raster && pickUrl(scene.thumbnail_url);
+  const hasNdviRaster = Boolean(preview || tile || raster);
 
-  if (storedStatus === 'generated' || storedStatus === 'generated_inline_preview') {
-    return hasImage ? 'generated' : 'metadata_only';
+  if (
+    hasNdviRaster &&
+    isValidNdviStats({
+      ndvi_mean: scene.ndvi_mean,
+      ndvi_min: scene.ndvi_min,
+      ndvi_max: scene.ndvi_max,
+      very_low_percent: scene.very_low_percent,
+      low_percent: scene.low_percent,
+      medium_percent: scene.medium_percent,
+      high_percent: scene.high_percent,
+    })
+  ) {
+    return 'ready';
   }
 
-  if (hasImage) {
-    return scene.ndvi_mean != null ? 'generated' : 'metadata_only';
+  if (thumbOnly || (hasImageFromStac(scene) && !scene.layer_id)) {
+    return 'available';
+  }
+
+  if (scene.layer_id && hasNdviRaster) {
+    return 'metadata_only';
   }
 
   return 'metadata_only';
+}
+
+function hasImageFromStac(scene) {
+  return Boolean(pickUrl(scene.thumbnail_url, scene.preview_url));
 }
 
 function pickUrl(...values) {
@@ -115,9 +145,15 @@ export function bboxFromStac(featureBbox) {
 }
 
 export function formatSceneForApi(scene) {
-  const preview = pickUrl(scene.preview_url, scene.thumbnail_url);
+  const preview = pickUrl(scene.preview_url);
   const tile = pickUrl(scene.tile_url);
-  const status = resolveSceneStatus({ ...scene, preview_url: preview });
+  const thumbnail = pickUrl(scene.thumbnail_url);
+  const status = resolveSceneStatus({
+    ...scene,
+    preview_url: preview,
+    tile_url: tile,
+  });
+  const catalogThumb = status === 'available' ? thumbnail : null;
 
   return {
     id: scene.id,
@@ -136,8 +172,8 @@ export function formatSceneForApi(scene) {
     resolutionMeters: scene.resolution_m ?? 10,
     preview_url: preview,
     previewUrl: preview,
-    thumbnail_url: scene.thumbnail_url || preview,
-    thumbnailUrl: scene.thumbnail_url || preview,
+    thumbnail_url: catalogThumb ?? thumbnail,
+    thumbnailUrl: catalogThumb ?? thumbnail,
     tile_url: tile,
     tileUrl: tile,
     raster_url: scene.raster_url ?? null,

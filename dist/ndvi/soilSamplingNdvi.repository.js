@@ -134,7 +134,10 @@ class SoilSamplingNdviRepository {
 
   async markLayerFailed(layerId) {
     await this.pool.query(
-      `UPDATE soil_ndvi_layers SET status = 'failed', updated_at = NOW() WHERE id = $1`,
+      `UPDATE soil_ndvi_layers
+          SET status = 'failed',
+              updated_at = NOW()
+        WHERE id = $1`,
       [String(layerId)],
     );
   }

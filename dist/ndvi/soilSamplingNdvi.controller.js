@@ -1,3 +1,8 @@
+import {
+  isValidNdviGenerateHttpPayload,
+  readNdviGenerateStatsForDetails,
+} from './ndviGenerateHttpValidity.js';
+
 class SoilSamplingNdviController {
   constructor(service, { authClient } = {}) {
     this.service = service;
@@ -143,48 +148,35 @@ class SoilSamplingNdviController {
         );
       }
 
-      // ── NDVI_HTTP_VALIDATION v2 ──────────────────────────────────────────
-      const { isValidNdviGenerateHttpPayload, readNdviGenerateStatsForDetails,
-              NDVI_VALIDATION_VERSION } = await import('./ndviGenerateHttpValidity.js');
-      const httpValid = isValidNdviGenerateHttpPayload(layer);
-      const httpStats = readNdviGenerateStatsForDetails(layer);
-      const httpReason = httpValid ? null : (
-        (layer.ndvi_mean === 0 && layer.ndvi_min === 0 && layer.ndvi_max === 0)
-          ? 'zero_stats' : 'invalid_stats'
-      );
-
-      console.log('[NDVI_HTTP_VALIDATION]', {
-        ndvi_validation_version: NDVI_VALIDATION_VERSION,
-        valid: httpValid,
-        reason: httpReason,
-        ndviMean: layer.ndvi_mean ?? layer.ndviMean ?? null,
-        ndviMin: layer.ndvi_min ?? layer.ndviMin ?? null,
-        ndviMax: layer.ndvi_max ?? layer.ndviMax ?? null,
-        previewUrl: !!(layer.preview_url || layer.previewUrl),
-        tileUrl: !!(layer.tile_url || layer.tileUrl),
-        rasterUrl: !!(layer.raster_url || layer.rasterUrl),
-      });
-
-      if (!httpValid) {
+      if (!isValidNdviGenerateHttpPayload(layer)) {
+        const stats = readNdviGenerateStatsForDetails(layer);
+        const previewGenerated = Boolean(
+          (layer.preview_url && String(layer.preview_url).trim()) ||
+            (layer.previewUrl && String(layer.previewUrl).trim()) ||
+            (layer.tile_url && String(layer.tile_url).trim()) ||
+            (layer.tileUrl && String(layer.tileUrl).trim()) ||
+            (layer.raster_url && String(layer.raster_url).trim()) ||
+            (layer.rasterUrl && String(layer.rasterUrl).trim()),
+        );
         console.warn(
-          `⚠️ [NDVI][HTTP] generate 422 plotId=${plotId} reason=${httpReason} ` +
-            `mean=${httpStats.ndviMean ?? '-'} min=${httpStats.ndviMin ?? '-'} max=${httpStats.ndviMax ?? '-'}`,
+          `⚠️ [NDVI][HTTP] generate bloqueado 422 plotId=${plotId} ` +
+            `reason=zero_or_invalid_stats preview=${previewGenerated ? 'yes' : 'no'} ` +
+            `mean=${stats.ndviMean ?? '-'} min=${stats.ndviMin ?? '-'} max=${stats.ndviMax ?? '-'}`,
         );
         return res.status(422).json({
           success: false,
           code: 'ndvi_not_computed',
           message: 'NDVI não foi calculado com estatísticas válidas.',
           details: {
-            previewGenerated: !!(layer.preview_url || layer.previewUrl),
+            previewGenerated,
             statsComputed: false,
-            reason: httpReason || 'zero_or_invalid_stats',
-            ndviMean: httpStats.ndviMean,
-            ndviMin: httpStats.ndviMin,
-            ndviMax: httpStats.ndviMax,
+            reason: 'zero_or_invalid_stats',
+            ndviMean: stats.ndviMean,
+            ndviMin: stats.ndviMin,
+            ndviMax: stats.ndviMax,
           },
         });
       }
-      // ────────────────────────────────────────────────────────────────────
 
       res.status(201).json({ success: true, layer, data: layer });
     } catch (error) {
@@ -318,6 +310,7 @@ class SoilSamplingNdviController {
       status = 503;
     } else if (code === 'gee_not_configured' || code === 'gee_disabled') {
       status = 503;
+      responseCode = 'NDVI_PROVIDER_NOT_CONFIGURED';
     } else if (code === 'plot_polygon_missing' || code === 'invalid_polygon') {
       status = 400;
     } else if (code === 'invalid_image_date' || code === 'campaign_required') {
@@ -326,8 +319,16 @@ class SoilSamplingNdviController {
       status = 400;
     } else if (code === 'empty_scenes' || code === 'ndvi_not_found') {
       status = 404;
-    } else if (code === 'layer_persist_failed') {
-      status = 500;
+    } else if (code === 'ndvi_not_computed') {
+      status = 422;
+    } else if (
+      code === 'layer_persist_failed' ||
+      code === 'NDVI_SERVICE_UNAVAILABLE' ||
+      code === 'ndvi_database_unavailable' ||
+      code === '28P01'
+    ) {
+      status = 503;
+      responseCode = 'NDVI_SERVICE_UNAVAILABLE';
     } else if (code === 'generate_failed') {
       status = error.details?.stage === 'persist' ? 500 : 502;
       if (!error.details?.stage) responseCode = 'NDVI_PROVIDER_ERROR';

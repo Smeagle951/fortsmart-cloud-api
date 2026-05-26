@@ -1,8 +1,7 @@
 /**
- * Validação final do payload HTTP de POST /generate.
+ * Validação final do payload HTTP de POST /generate (snake_case API + aliases camelCase).
  * Evita 201 com ndvi_mean/min/max zerados e percentuais inconsistentes.
  */
-export const NDVI_VALIDATION_VERSION = 'v2';
 
 function pickNum(obj, ...keys) {
   if (!obj || typeof obj !== 'object') return null;
@@ -26,6 +25,10 @@ function pickUrl(obj, ...keys) {
   return null;
 }
 
+/**
+ * @param {Record<string, unknown>} result — objeto `layer` já mapeado para a API
+ * @returns {boolean}
+ */
 export function isValidNdviGenerateHttpPayload(result) {
   if (!result || typeof result !== 'object') return false;
 
@@ -56,6 +59,7 @@ export function isValidNdviGenerateHttpPayload(result) {
 
   const allZero = mean === 0 && min === 0 && max === 0;
   if (allZero && hasClassDistribution) return false;
+
   if (allZero) return false;
   if (Math.abs(mean) < 1e-6) return false;
 

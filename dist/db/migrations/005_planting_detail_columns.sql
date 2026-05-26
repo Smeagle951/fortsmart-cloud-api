@@ -1,0 +1,16 @@
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS material_name TEXT;
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS crop_name TEXT;
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS plot_name TEXT;
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS subarea_name TEXT;
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS emergence_date DATE;
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS evaluation_date TIMESTAMPTZ;
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS dap INTEGER;
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS dae INTEGER;
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS population_per_meter NUMERIC;
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS spacing_cm NUMERIC;
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS stand_cv_percent NUMERIC;
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS stand_classification TEXT;
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS plants_counted NUMERIC;
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS meters_evaluated NUMERIC;
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS plot_geojson JSONB;
+ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS subarea_geojson JSONB;

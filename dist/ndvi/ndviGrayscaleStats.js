@@ -1,8 +1,8 @@
 import { PNG } from 'pngjs';
 
 /**
- * Estatísticas NDVI a partir de PNG onde R=G=B = (clamp(ndvi,-1,1)+1)/2 [0..1],
- * gerado pelo EVALSCRIPT_FLOAT_GRAY (B04/B08 numérico, não paleta).
+ * Estatísticas NDVI a partir de PNG onde R=G=B = (clamp(ndvi,-1,1)+1)/2  [0..1],
+ * gerado pelo evalscript (banda derivada de B04/B08, não paleta RGB).
  */
 const BUCKET_EDGES = [-1, -0.25, 0.25, 0.5, 1.01];
 
@@ -13,22 +13,17 @@ function bucketIndex(ndvi) {
   return BUCKET_EDGES.length - 2;
 }
 
-export function computeNdviStatsFromFloatEncodedPng(buffer, { sceneId = '-' } = {}) {
-  if (!buffer?.length || buffer[0] !== 0x89) {
-    console.warn(`⚠️ [NDVI][GrayStats] buffer inválido sceneId=${sceneId}`);
-    return null;
-  }
+export function computeNdviStatsFromFloatEncodedPng(buffer) {
+  if (!buffer?.length || buffer[0] !== 0x89) return null;
 
   let png;
   try {
     png = PNG.sync.read(buffer);
-  } catch (err) {
-    console.warn(`⚠️ [NDVI][GrayStats] PNG parse falhou sceneId=${sceneId}: ${err.message}`);
+  } catch {
     return null;
   }
 
   const { data, width, height } = png;
-  const totalPixels = width * height;
   const values = [];
   const buckets = [0, 0, 0, 0];
 
@@ -45,19 +40,7 @@ export function computeNdviStatsFromFloatEncodedPng(buffer, { sceneId = '-' } = 
     }
   }
 
-  const validPixels = values.length;
-  console.log(
-    `ℹ️ [NDVI][GrayStats] sceneId=${sceneId} ` +
-      `totalPixels=${totalPixels} validPixels=${validPixels} ` +
-      `sample0=${values[0]?.toFixed(3) ?? '-'} sample1=${values[1]?.toFixed(3) ?? '-'}`,
-  );
-
-  if (validPixels < 24) {
-    console.warn(
-      `⚠️ [NDVI][GrayStats] pixel insuficiente sceneId=${sceneId} validPixels=${validPixels}`,
-    );
-    return null;
-  }
+  if (values.length < 24) return null;
 
   let sum = 0;
   let min = 1;
@@ -68,11 +51,11 @@ export function computeNdviStatsFromFloatEncodedPng(buffer, { sceneId = '-' } = 
     max = Math.max(max, v);
   }
 
-  const mean = sum / validPixels;
+  const mean = sum / values.length;
   if (!Number.isFinite(mean)) return null;
 
-  const total = validPixels;
-  const stats = {
+  const total = values.length;
+  return {
     ndvi_mean: Number(mean.toFixed(3)),
     ndvi_min: Number(min.toFixed(3)),
     ndvi_max: Number(max.toFixed(3)),
@@ -81,13 +64,4 @@ export function computeNdviStatsFromFloatEncodedPng(buffer, { sceneId = '-' } = 
     medium_percent: Number(((buckets[2] / total) * 100).toFixed(1)),
     high_percent: Number(((buckets[3] / total) * 100).toFixed(1)),
   };
-
-  console.log(
-    `✅ [NDVI][GrayStats] sceneId=${sceneId} ` +
-      `mean=${stats.ndvi_mean} min=${stats.ndvi_min} max=${stats.ndvi_max} ` +
-      `veryLow=${stats.very_low_percent}% low=${stats.low_percent}% ` +
-      `medium=${stats.medium_percent}% high=${stats.high_percent}%`,
-  );
-
-  return stats;
 }

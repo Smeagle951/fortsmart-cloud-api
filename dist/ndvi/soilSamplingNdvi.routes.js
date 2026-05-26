@@ -34,29 +34,24 @@ function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
 
   const controller = new SoilSamplingNdviController(service, { authClient });
 
-  let schemaReady = repository
+  let schemaAvailable = false;
+  const schemaReady = repository
     .ensureSchema()
     .then(() => {
+      schemaAvailable = true;
       console.log('✅ [NDVI] schema soil_ndvi_layers pronto');
     })
     .catch((error) => {
-      console.error('❌ [NDVI] Falha ao preparar schema:', error.message);
-      throw error;
+      schemaAvailable = false;
+      console.error(
+        `❌ [NDVI] Falha ao preparar schema (modo degradado): ${error.message}`,
+      );
     });
 
   router.use(async (req, res, next) => {
-    try {
-      await schemaReady;
-      next();
-    } catch (error) {
-      res.status(503).json({
-        success: false,
-        code: 'ndvi_schema_unavailable',
-        message:
-          'Módulo NDVI indisponível: falha ao preparar tabela no banco. Verifique DATABASE_URL.',
-        details: { cause: error.message },
-      });
-    }
+    await schemaReady;
+    req.ndviSchemaAvailable = schemaAvailable;
+    next();
   });
 
   router.get('/health', controller.getStatus);
