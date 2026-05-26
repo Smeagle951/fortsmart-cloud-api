@@ -220,6 +220,7 @@ class SoilSamplingNdviService {
     startDate = null,
     endDate = null,
     maxCloud = null,
+    colormapMode = 'auto',
   }) {
     const meta = {
       plotId,
@@ -363,6 +364,7 @@ class SoilSamplingNdviService {
           farmId,
           plotId,
           campaignId,
+          colormapMode,
         });
       } catch (processError) {
         throw this._providerError(
@@ -511,10 +513,15 @@ class SoilSamplingNdviService {
         );
       }
 
+      if (assets?.colormap_mode) {
+        mapped.colormap_mode = assets.colormap_mode;
+      }
+
       this._assertReadyLayerOrThrow(mapped, meta);
       logGenerateOk(meta, mapped, {
         rasterGenerated: hasRaster ? 'yes' : 'no',
         statsComputed: stats?.ndvi_mean != null ? 'yes' : 'no',
+        colormapMode: assets?.colormap_mode ?? '-',
       });
       return mapped;
     } catch (error) {

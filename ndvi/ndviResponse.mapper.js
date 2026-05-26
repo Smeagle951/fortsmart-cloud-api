@@ -117,6 +117,7 @@ function mapLayer(row) {
     low_percent: row.low_percent,
     medium_percent: row.medium_percent,
     high_percent: row.high_percent,
+    colormap_mode: row.colormap_mode ?? null,
     preview_url: preview,
     tile_url: row.tile_url ?? null,
     raster_url: row.raster_url ?? null,

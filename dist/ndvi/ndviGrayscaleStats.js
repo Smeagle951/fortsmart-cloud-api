@@ -13,7 +13,7 @@ function bucketIndex(ndvi) {
   return BUCKET_EDGES.length - 2;
 }
 
-export function computeNdviStatsFromFloatEncodedPng(buffer) {
+export function computeNdviStatsFromFloatEncodedPng(buffer, { sceneId = '-' } = {}) {
   if (!buffer?.length || buffer[0] !== 0x89) return null;
 
   let png;
@@ -40,7 +40,12 @@ export function computeNdviStatsFromFloatEncodedPng(buffer) {
     }
   }
 
-  if (values.length < 24) return null;
+  if (values.length < 24) {
+    console.warn(
+      `⚠️ [NDVI][GrayStats] pixel insuficiente sceneId=${sceneId} validPixels=${values.length}`,
+    );
+    return null;
+  }
 
   let sum = 0;
   let min = 1;
@@ -54,8 +59,15 @@ export function computeNdviStatsFromFloatEncodedPng(buffer) {
   const mean = sum / values.length;
   if (!Number.isFinite(mean)) return null;
 
+  let sumSq = 0;
+  for (const v of values) {
+    const d = v - mean;
+    sumSq += d * d;
+  }
+  const std = Math.sqrt(sumSq / values.length);
+
   const total = values.length;
-  return {
+  const result = {
     ndvi_mean: Number(mean.toFixed(3)),
     ndvi_min: Number(min.toFixed(3)),
     ndvi_max: Number(max.toFixed(3)),
@@ -63,5 +75,14 @@ export function computeNdviStatsFromFloatEncodedPng(buffer) {
     low_percent: Number(((buckets[1] / total) * 100).toFixed(1)),
     medium_percent: Number(((buckets[2] / total) * 100).toFixed(1)),
     high_percent: Number(((buckets[3] / total) * 100).toFixed(1)),
+    ndvi_std: Number(std.toFixed(3)),
+    valid_pixels: total,
   };
+
+  console.log(
+    `✅ [NDVI][GrayStats] sceneId=${sceneId} validPixels=${total} ` +
+      `mean=${result.ndvi_mean} min=${result.ndvi_min} max=${result.ndvi_max} std=${result.ndvi_std}`,
+  );
+
+  return result;
 }

@@ -107,6 +107,7 @@ class SoilSamplingNdviController {
         start_date: startDate,
         end_date: endDate,
         max_cloud: maxCloud,
+        colormap_mode: colormapMode,
       } = req.body;
 
       console.log(
@@ -136,6 +137,7 @@ class SoilSamplingNdviController {
         startDate,
         endDate,
         maxCloud: maxCloud != null ? Number(maxCloud) : null,
+        colormapMode: colormapMode || 'auto',
       });
 
       if (!layer) {

@@ -3,28 +3,15 @@
  * Preview: PNG colorido. Stats: segundo PNG em escala de cinza (NDVI real B04/B08).
  */
 import { computeNdviStatsFromFloatEncodedPng } from './ndviGrayscaleStats.js';
+import {
+  buildAbsoluteColorEvalscript,
+  buildRelativeColorEvalscript,
+  logColormapDiagnostics,
+  pickPreviewColormapMode,
+} from './ndviColormap.js';
 import { storeNdviPreviewPng } from './ndviPreviewStorage.js';
 
 const DEFAULT_PROCESS_URL = 'https://sh.dataspace.copernicus.eu/api/v1/process';
-
-const EVALSCRIPT_COLOR_PREVIEW = `//VERSION=3
-function setup() {
-  return {
-    input: ["B04", "B08", "dataMask"],
-    output: { bands: 4, sampleType: 'AUTO' }
-  };
-}
-function evaluatePixel(sample) {
-  if (sample.dataMask === 0) return [0, 0, 0, 0];
-  const ndvi = (sample.B08 - sample.B04) / (sample.B08 + sample.B04);
-  if (!isFinite(ndvi)) return [0, 0, 0, 0];
-  if (ndvi < 0.1) return [0.75, 0.05, 0.05, 1];
-  if (ndvi < 0.25) return [0.95, 0.35, 0.1, 1];
-  if (ndvi < 0.4) return [0.98, 0.75, 0.15, 1];
-  if (ndvi < 0.55) return [0.85, 0.9, 0.2, 1];
-  if (ndvi < 0.7) return [0.4, 0.75, 0.25, 1];
-  return [0.1, 0.55, 0.15, 1];
-}`;
 
 /** R=G=B = (clamp(ndvi,-1,1)+1)/2 — stats derivadas do NDVI float, não da paleta. */
 const EVALSCRIPT_FLOAT_GRAY = `//VERSION=3
@@ -145,6 +132,7 @@ class SentinelProcessClient {
     imageDate,
     farmId,
     plotId,
+    colormapMode = 'auto',
   }) {
     const isProd = process.env.NODE_ENV === 'production';
     if (!this.authClient?.isConfigured()) {
@@ -175,34 +163,7 @@ class SentinelProcessClient {
     }
 
     try {
-      const colorBuf = await this._postProcessPng({
-        token,
-        polygon,
-        date,
-        evalscript: EVALSCRIPT_COLOR_PREVIEW,
-        width: 512,
-        height: 512,
-        sceneId,
-        label: 'preview_color',
-      });
-
-      if (!colorBuf) {
-        return {
-          preview_url: null,
-          tile_url: null,
-          raster_url: null,
-          status: 'metadata_only',
-        };
-      }
-
-      const preview_url = await storeNdviPreviewPng({
-        farmId,
-        plotId,
-        sceneId,
-        imageDate: date,
-        buffer: colorBuf,
-      });
-
+      // 1) Stats NDVI float (cinza) — antes do preview colorido
       const statsBuf = await this._postProcessPng({
         token,
         polygon,
@@ -214,19 +175,70 @@ class SentinelProcessClient {
         label: 'stats_float',
       });
 
-      const stats = statsBuf ? computeNdviStatsFromFloatEncodedPng(statsBuf) : null;
+      const stats = statsBuf
+        ? computeNdviStatsFromFloatEncodedPng(statsBuf, { sceneId })
+        : null;
+
+      if (!stats) {
+        console.warn(`⚠️ [NDVI][Process] stats indisponíveis sceneId=${sceneId}`);
+        return {
+          preview_url: null,
+          tile_url: null,
+          raster_url: null,
+          status: 'metadata_only',
+        };
+      }
+
+      const resolvedColormap = pickPreviewColormapMode(stats, colormapMode);
+      logColormapDiagnostics({ sceneId, stats, colormapMode: resolvedColormap });
+
+      const colorEvalscript =
+        resolvedColormap === 'relative'
+          ? buildRelativeColorEvalscript(stats.ndvi_min, stats.ndvi_max)
+          : buildAbsoluteColorEvalscript();
+
+      // 2) Preview colorido pixel a pixel (nunca por ndviMean)
+      const colorBuf = await this._postProcessPng({
+        token,
+        polygon,
+        date,
+        evalscript: colorEvalscript,
+        width: 512,
+        height: 512,
+        sceneId,
+        label: `preview_color_${resolvedColormap}`,
+      });
+
+      if (!colorBuf) {
+        return {
+          preview_url: null,
+          tile_url: null,
+          raster_url: null,
+          status: 'metadata_only',
+          ...stats,
+        };
+      }
+
+      const preview_url = await storeNdviPreviewPng({
+        farmId,
+        plotId,
+        sceneId,
+        imageDate: date,
+        buffer: colorBuf,
+      });
 
       console.log(
-        `ℹ️ [NDVI][Process] statsFloat sceneId=${sceneId} mean=${stats?.ndvi_mean ?? '-'} ` +
-          `min=${stats?.ndvi_min ?? '-'} max=${stats?.ndvi_max ?? '-'} ` +
-          `previewGenerated=${preview_url ? 'yes' : 'no'} statsComputed=${stats ? 'yes' : 'no'}`,
+        `ℹ️ [NDVI][Process] preview sceneId=${sceneId} colormap=${resolvedColormap} ` +
+          `mean=${stats.ndvi_mean} min=${stats.ndvi_min} max=${stats.ndvi_max} ` +
+          `previewGenerated=${preview_url ? 'yes' : 'no'}`,
       );
 
       return {
         preview_url,
         tile_url: null,
         raster_url: null,
-        status: preview_url && stats ? 'generated' : 'metadata_only',
+        colormap_mode: resolvedColormap,
+        status: preview_url ? 'generated' : 'metadata_only',
         ...stats,
       };
     } catch (error) {
