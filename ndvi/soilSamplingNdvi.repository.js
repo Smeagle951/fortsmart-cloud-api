@@ -103,7 +103,22 @@ class SoilSamplingNdviRepository {
     return result.rows;
   }
 
-  async findRecentCache({ farmId, plotId, imageDate, sceneId, maxCloud }) {
+  async findRecentCache({ farmId, plotId, imageDate, sceneId, maxCloud, visualMode = null }) {
+    if (sceneId && visualMode) {
+      const bySceneMode = await this.pool.query(
+        `SELECT *
+           FROM soil_ndvi_layers
+          WHERE farm_id = $1
+            AND plot_id = $2
+            AND scene_id = $3
+            AND visual_mode = $4
+          ORDER BY updated_at DESC
+          LIMIT 1`,
+        [String(farmId), String(plotId), String(sceneId), String(visualMode)],
+      );
+      if (bySceneMode.rows[0]) return bySceneMode.rows[0];
+    }
+
     if (sceneId) {
       const byScene = await this.pool.query(
         `SELECT *

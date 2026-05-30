@@ -136,9 +136,21 @@ export function layerMeetsContrastContract(
   requestedVisualMode = 'ndvi_contrast',
   { requestBounds = null } = {},
 ) {
-  if (requestedVisualMode !== 'ndvi_contrast') return true;
   if (!layer) return false;
   const mode = layer.visual_mode ?? layer.visualMode;
+  if (mode !== requestedVisualMode) return false;
+
+  const preview =
+    (layer.preview_url && String(layer.preview_url).trim()) ||
+    (layer.previewUrl && String(layer.previewUrl).trim());
+  if (!preview) return false;
+
+  if (requestedVisualMode !== 'ndvi_contrast') {
+    const bounds = readLayerBounds(layer);
+    if (!bounds) return false;
+    return boundsCloseToRequest(bounds, requestBounds);
+  }
+
   if (mode !== 'ndvi_contrast') return false;
   if (!isNdviV3Schema(layer)) return false;
   if (isLegacyLayer(layer)) return false;
@@ -158,12 +170,27 @@ export function validateNdviContrastHttpResponse(
   { requestBounds = null } = {},
 ) {
   if (requestedVisualMode !== 'ndvi_contrast') {
+    const resultVisualMode = layer?.visual_mode ?? layer?.visualMode ?? null;
+    const bounds = readLayerBounds(layer);
+    const hasPreview = !!(
+      (layer?.preview_url && String(layer.preview_url).trim()) ||
+      (layer?.previewUrl && String(layer.previewUrl).trim())
+    );
+    const ok =
+      resultVisualMode === requestedVisualMode &&
+      hasPreview &&
+      !!bounds &&
+      boundsCloseToRequest(bounds, requestBounds);
     return {
-      ok: true,
-      statusToReturn: 201,
-      resultVisualMode: layer?.visual_mode ?? layer?.visualMode ?? null,
+      ok,
+      statusToReturn: ok ? 201 : 422,
+      resultVisualMode,
       contrast: readLayerContrast(layer),
       hasContrast: contrastIsComplete(readLayerContrast(layer)),
+      hasPreview,
+      hasBounds: !!bounds,
+      bounds,
+      boundsMatchRequest: boundsCloseToRequest(bounds, requestBounds),
     };
   }
 

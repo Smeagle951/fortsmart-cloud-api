@@ -28,6 +28,9 @@ import {
   resolveRequestedVisualMode,
   validateNdviContrastHttpResponse,
 } from './ndviContrastHttpValidity.js';
+import { assertVisualModeSupported } from './ndviVisualModeGate.js';
+import { loadInternalGrid } from './ndviRasterStore.js';
+import { RASTER_SCHEMA_NUM } from './ndviRasterSerializer.js';
 
 function normalizeImageDate(value) {
   if (value == null) return null;
@@ -433,6 +436,24 @@ class SoilSamplingNdviService {
         throw this._error('image_date é obrigatório', 'invalid_image_date', 400);
       }
 
+      stage = 'visual_mode_gate';
+      let persistedRaster = null;
+      if (requestedVisualMode !== 'ndvi_contrast') {
+        try {
+          persistedRaster = await loadInternalGrid({
+            plotId,
+            sceneId: targetSceneId,
+            schemaVersion: RASTER_SCHEMA_NUM,
+          });
+        } catch (_) {
+          persistedRaster = null;
+        }
+        assertVisualModeSupported({
+          visualMode: requestedVisualMode,
+          raster: persistedRaster,
+        });
+      }
+
       stage = 'cache_lookup';
       logGenerateStage(
         meta,
@@ -448,6 +469,7 @@ class SoilSamplingNdviService {
             imageDate: targetDate,
             sceneId: targetSceneId,
             maxCloud,
+            visualMode: requestedVisualMode,
           });
         } catch (cacheError) {
           console.warn(
@@ -515,18 +537,17 @@ class SoilSamplingNdviService {
       }
 
       stage = 'raster_reuse';
-      if (!force) {
-        try {
-          const reused = await this.processClient.tryGenerateFromPersistedRaster?.({
-            sceneId: targetSceneId,
-            polygon,
-            imageDate: targetDate,
-            farmId,
-            plotId,
-            visualMode: requestedVisualMode,
-            colormapMode,
-          });
-          if (reused?.preview_url && reused?.raster_available) {
+      try {
+        const reused = await this.processClient.tryGenerateFromPersistedRaster?.({
+          sceneId: targetSceneId,
+          polygon,
+          imageDate: targetDate,
+          farmId,
+          plotId,
+          visualMode: requestedVisualMode,
+          colormapMode,
+        });
+        if (reused?.preview_url && reused?.raster_available) {
             logGenerateStage(meta, stage, 'hit=persisted_raster');
             const stats = NdviStatsService.buildStatsForAssets(reused);
             const plotBounds = this._boundsFromPolygon(polygon);
@@ -588,9 +609,8 @@ class SoilSamplingNdviService {
             logGenerateOk(meta, mapped, { cacheHit: false, rasterReuse: true });
             return mapped;
           }
-        } catch (reuseErr) {
-          console.warn(`⚠️ [NDVI] raster reuse ignorado: ${reuseErr.message}`);
-        }
+      } catch (reuseErr) {
+        console.warn(`⚠️ [NDVI] raster reuse ignorado: ${reuseErr.message}`);
       }
 
       stage = 'process';

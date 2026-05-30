@@ -37,6 +37,11 @@ function getContrast(layer) {
 }
 
 function normalizeSuccessLayer(layer) {
+  const visualMode =
+    layer?.visual_mode ??
+    layer?.visualMode ??
+    parseMaybeJson(layer?.agronomic_stats_json)?.visual_mode ??
+    'ndvi_contrast';
   return {
     ...layer,
     status: 'ready',
@@ -44,8 +49,8 @@ function normalizeSuccessLayer(layer) {
     schemaVersion: 'ndvi_v3',
     ndvi_schema_version: 3,
     ndviSchemaVersion: 3,
-    visual_mode: 'ndvi_contrast',
-    visualMode: 'ndvi_contrast',
+    visual_mode: visualMode,
+    visualMode,
     is_legacy_schema: false,
     isLegacySchema: false,
     isLegacy: false,

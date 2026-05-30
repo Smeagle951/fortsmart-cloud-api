@@ -25,6 +25,7 @@ import {
 } from './ndviRasterStore.js';
 import { generatePreviewFromRaster } from './ndviPreviewFromRaster.js';
 import { RASTER_SCHEMA_NUM } from './ndviRasterSerializer.js';
+import { applyPolygonMaskToPngBuffer } from './ndviPolygonMask.js';
 
 const DEFAULT_PROCESS_URL = 'https://sh.dataspace.copernicus.eu/api/v1/process';
 
@@ -202,16 +203,23 @@ class SentinelProcessClient {
       rasterReuse: true,
     });
 
+    const bounds = previewGen.bounds ?? polygonToBounds(polygon);
+    let maskedBuffer = applyPolygonMaskToPngBuffer(previewGen.buffer, {
+      bounds,
+      polygon,
+    });
+
     const preview_url = await storeNdviPreviewPng({
       farmId,
       plotId,
       sceneId,
       imageDate,
-      buffer: previewGen.buffer,
+      visualMode: resolvedVisual,
+      rendererVersion: previewGen.contrast?.rendererVersion ?? 'agronomic_contrast_v2',
+      buffer: maskedBuffer,
     });
 
     const contrast = previewGen.contrast ?? stats.contrast ?? {};
-    const bounds = previewGen.bounds ?? polygonToBounds(polygon);
     const rasterMetadata = buildNdviRasterMetadata({
       grid: { values: Array.from(raster.bands.ndvi), width: raster.width, height: raster.height },
       bounds,
@@ -238,6 +246,7 @@ class SentinelProcessClient {
       provider: raster.provider || 'copernicus_dataspace',
       source: raster.source || 'sentinel-2-l2a',
       status: preview_url ? 'generated' : 'metadata_only',
+      polygon_masked: true,
       available_visual_modes: VISUAL_MODES,
       contrast,
       spatial_metrics: previewGen.spatial_metrics ?? stats.spatial_metrics,
@@ -466,11 +475,15 @@ class SentinelProcessClient {
         Object.assign(contrast, previewGen.contrast);
       }
 
+      colorBuf = applyPolygonMaskToPngBuffer(colorBuf, { bounds, polygon });
+
       const preview_url = await storeNdviPreviewPng({
         farmId,
         plotId,
         sceneId,
         imageDate: date,
+        visualMode: resolvedVisual,
+        rendererVersion: contrast?.rendererVersion ?? 'agronomic_contrast_v2',
         buffer: colorBuf,
       });
 
@@ -542,6 +555,7 @@ class SentinelProcessClient {
         provider: 'copernicus_dataspace',
         source: 'sentinel-2-l2a',
         status: preview_url ? 'generated' : 'metadata_only',
+        polygon_masked: true,
         available_visual_modes: VISUAL_MODES,
         contrast,
         spatial_metrics: enrichedStats.spatial_metrics,
