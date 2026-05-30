@@ -16,6 +16,8 @@ const polygon = {
   ],
 };
 
+const contrast = { p5: 0.35, p50: 0.62, p95: 0.81 };
+
 describe('SoilSamplingNdviService.generateLayer', () => {
   it('retorna 400 sem polígono', async () => {
     const service = new SoilSamplingNdviService({
@@ -76,6 +78,8 @@ describe('SoilSamplingNdviService.generateLayer', () => {
           low_percent: 25,
           medium_percent: 40,
           high_percent: 30,
+          contrast,
+          visual_mode: 'ndvi_contrast',
           status: 'generated',
         }),
       },
@@ -203,6 +207,8 @@ describe('SoilSamplingNdviService.generateLayer', () => {
           low_percent: 25,
           medium_percent: 40,
           high_percent: 30,
+          contrast,
+          visual_mode: 'ndvi_contrast',
           status: 'generated',
         }),
       },
@@ -242,6 +248,8 @@ describe('SoilSamplingNdviService.generateLayer', () => {
           low_percent: 25,
           medium_percent: 40,
           high_percent: 30,
+          contrast,
+          visual_mode: 'ndvi_contrast',
           status: 'generated',
         }),
       },

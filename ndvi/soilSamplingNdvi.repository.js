@@ -60,6 +60,14 @@ class SoilSamplingNdviRepository {
     const alters = [
       'ALTER TABLE soil_ndvi_layers ADD COLUMN IF NOT EXISTS scene_id TEXT',
       'ALTER TABLE soil_ndvi_layers ADD COLUMN IF NOT EXISTS status TEXT DEFAULT \'available\'',
+      'ALTER TABLE soil_ndvi_layers ADD COLUMN IF NOT EXISTS agronomic_stats JSONB',
+      'ALTER TABLE soil_ndvi_layers ADD COLUMN IF NOT EXISTS visual_mode TEXT',
+      'ALTER TABLE soil_ndvi_layers ADD COLUMN IF NOT EXISTS processing_engine TEXT',
+      'ALTER TABLE soil_ndvi_layers ADD COLUMN IF NOT EXISTS provider TEXT',
+      'ALTER TABLE soil_ndvi_layers ADD COLUMN IF NOT EXISTS ndre_mean NUMERIC',
+      'ALTER TABLE soil_ndvi_layers ADD COLUMN IF NOT EXISTS bare_soil_percent NUMERIC',
+      'ALTER TABLE soil_ndvi_layers ADD COLUMN IF NOT EXISTS straw_percent NUMERIC',
+      'ALTER TABLE soil_ndvi_layers ADD COLUMN IF NOT EXISTS stress_candidate_percent NUMERIC',
       `ALTER TABLE soil_ndvi_layers ALTER COLUMN id TYPE TEXT USING id::text`,
       `ALTER TABLE soil_ndvi_layers ALTER COLUMN farm_id TYPE TEXT USING farm_id::text`,
       `ALTER TABLE soil_ndvi_layers ALTER COLUMN plot_id TYPE TEXT USING plot_id::text`,
@@ -228,6 +236,44 @@ class SoilSamplingNdviRepository {
     if (!row?.id) {
       throw new Error('upsertLayer não retornou id');
     }
+
+    const agroPayload =
+      data.agronomic_stats && typeof data.agronomic_stats === 'object'
+        ? data.agronomic_stats
+        : null;
+    if (
+      agroPayload ||
+      data.visual_mode ||
+      data.ndre_mean != null ||
+      data.bare_soil_percent != null
+    ) {
+      const agroResult = await this.pool.query(
+        `UPDATE soil_ndvi_layers
+            SET agronomic_stats = COALESCE($2::jsonb, agronomic_stats),
+                visual_mode = COALESCE($3, visual_mode),
+                processing_engine = COALESCE($4, processing_engine),
+                provider = COALESCE($5, provider),
+                ndre_mean = COALESCE($6, ndre_mean),
+                bare_soil_percent = COALESCE($7, bare_soil_percent),
+                straw_percent = COALESCE($8, straw_percent),
+                stress_candidate_percent = COALESCE($9, stress_candidate_percent)
+          WHERE id = $1
+          RETURNING *`,
+        [
+          id,
+          agroPayload ? JSON.stringify(agroPayload) : null,
+          data.visual_mode ?? null,
+          data.processing_engine ?? null,
+          data.provider ?? null,
+          data.ndre_mean ?? agroPayload?.ndre_mean ?? null,
+          data.bare_soil_percent ?? agroPayload?.bare_soil_percent ?? null,
+          data.straw_percent ?? agroPayload?.straw_percent ?? null,
+          data.stress_candidate_percent ?? agroPayload?.stress_candidate_percent ?? null,
+        ],
+      );
+      return agroResult.rows[0] || row;
+    }
+
     return row;
   }
 

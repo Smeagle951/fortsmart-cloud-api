@@ -2,6 +2,55 @@ import {
   isValidNdviGenerateHttpPayload,
   readNdviGenerateStatsForDetails,
 } from './ndviGenerateHttpValidity.js';
+import {
+  resolveRequestedVisualMode,
+  validateNdviContrastHttpResponse,
+} from './ndviContrastHttpValidity.js';
+
+function parseMaybeJson(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch (_) {
+      return null;
+    }
+  }
+  return null;
+}
+
+function getLayerPayload(result) {
+  return result?.layer || result?.data || result?.result || result;
+}
+
+function getContrast(layer) {
+  const agronomicStats = parseMaybeJson(layer?.agronomic_stats_json);
+  return (
+    layer?.contrast ||
+    layer?.stats?.contrast ||
+    layer?.agronomicStats?.contrast ||
+    agronomicStats?.contrast ||
+    agronomicStats?.stats?.contrast ||
+    null
+  );
+}
+
+function normalizeSuccessLayer(layer) {
+  return {
+    ...layer,
+    status: 'ready',
+    schema_version: 'ndvi_v3',
+    schemaVersion: 'ndvi_v3',
+    ndvi_schema_version: 3,
+    ndviSchemaVersion: 3,
+    visual_mode: 'ndvi_contrast',
+    visualMode: 'ndvi_contrast',
+    is_legacy_schema: false,
+    isLegacySchema: false,
+    isLegacy: false,
+  };
+}
 
 class SoilSamplingNdviController {
   constructor(service, { authClient } = {}) {
@@ -96,6 +145,11 @@ class SoilSamplingNdviController {
 
   async generate(req, res) {
     try {
+      console.log('[NDVI_REAL_HANDLER_HIT]', {
+        file: 'backend/fortsmart-cloud-api/ndvi/soilSamplingNdvi.controller.js',
+        time: new Date().toISOString(),
+        body: req.body,
+      });
       const { plotId } = req.params;
       const {
         farm_id: farmId,
@@ -108,12 +162,29 @@ class SoilSamplingNdviController {
         end_date: endDate,
         max_cloud: maxCloud,
         colormap_mode: colormapMode,
+        visual_mode: visualMode,
+        visualMode: visualModeCamel,
       } = req.body;
+
+      const requestedVisualMode = resolveRequestedVisualMode({
+        visual_mode: visualMode,
+        visualMode: visualModeCamel,
+        colormap_mode: colormapMode,
+      });
+      const isForce =
+        req.body.force === true || req.body.force_regenerate === true;
+
+      console.log('[NDVI_BACKEND_REQUEST]', {
+        visual_mode: visualMode,
+        visualMode: visualModeCamel,
+        requestedVisualMode,
+        force: isForce,
+      });
 
       console.log(
         `ℹ️ [NDVI][HTTP] POST generate plotId=${plotId} farmId=${farmId} ` +
           `campaignId=${campaignId || '-'} sceneId=${sceneId || '-'} ` +
-          `imageDate=${imageDate || '-'}`,
+          `imageDate=${imageDate || '-'} visualMode=${requestedVisualMode} force=${isForce}`,
       );
 
       if (!farmId || !plotId) {
@@ -126,7 +197,7 @@ class SoilSamplingNdviController {
         );
       }
 
-      const layer = await this.service.generateLayer({
+      const result = await this.service.generateLayer({
         farmId,
         plotId,
         campaignId,
@@ -138,7 +209,11 @@ class SoilSamplingNdviController {
         endDate,
         maxCloud: maxCloud != null ? Number(maxCloud) : null,
         colormapMode: colormapMode || 'auto',
+        visualMode: requestedVisualMode,
+        force: isForce,
       });
+
+      let layer = getLayerPayload(result);
 
       if (!layer) {
         return this._sendError(
@@ -180,7 +255,141 @@ class SoilSamplingNdviController {
         });
       }
 
-      res.status(201).json({ success: true, layer, data: layer });
+      // Gate absoluto: ndvi_contrast nunca pode retornar 201 legacy.
+      const requestedVisualModeGate =
+        req.body.visual_mode || req.body.visualMode || 'ndvi_contrast';
+      const layerForGate = getLayerPayload(result);
+      const resultVisualMode =
+        layerForGate?.visual_mode ||
+        layerForGate?.visualMode ||
+        parseMaybeJson(layerForGate?.agronomic_stats_json)?.visual_mode ||
+        parseMaybeJson(layerForGate?.agronomic_stats_json)?.visualMode ||
+        null;
+      const contrast = getContrast(layerForGate);
+
+      const hasValidContrast =
+        Boolean(contrast) &&
+        contrast.p5 != null &&
+        contrast.p50 != null &&
+        contrast.p95 != null &&
+        Number.isFinite(Number(contrast.p5)) &&
+        Number.isFinite(Number(contrast.p50)) &&
+        Number.isFinite(Number(contrast.p95));
+      const hasValidPreview = Boolean(layerForGate?.preview_url || layerForGate?.previewUrl);
+      const validForContrast =
+        requestedVisualModeGate !== 'ndvi_contrast' ||
+        (resultVisualMode === 'ndvi_contrast' && hasValidContrast && hasValidPreview);
+
+      console.log('[NDVI_FINAL_GATE]', {
+        requestedVisualMode: requestedVisualModeGate,
+        resultVisualMode,
+        hasValidContrast,
+        p5: contrast?.p5,
+        p50: contrast?.p50,
+        p95: contrast?.p95,
+        hasValidPreview,
+        validForContrast,
+      });
+
+      if (!validForContrast) {
+        return res.status(422).json({
+          success: false,
+          code: 'ndvi_contrast_not_computed',
+          reason: 'backend_returned_legacy_layer',
+          details: {
+            requestedVisualMode: requestedVisualModeGate,
+            resultVisualMode,
+            hasValidContrast,
+            p5: contrast?.p5,
+            p50: contrast?.p50,
+            p95: contrast?.p95,
+            hasValidPreview,
+          },
+        });
+      }
+
+      // Guard anti-regressão: no modo contraste, se há amplitude real de NDVI
+      // (p95-p5 >= 0.05) mas o preview ficou dominado por verde (>90%), o
+      // renderizador não aplicou o stretch por percentil — bloqueia 422.
+      if (
+        requestedVisualModeGate === 'ndvi_contrast' &&
+        hasValidContrast &&
+        Number(contrast.p95) - Number(contrast.p5) >= 0.05
+      ) {
+        const buckets = contrast.colorBuckets || {};
+        const greenDominance =
+          Number(buckets.greenPercent ?? 0) +
+          Number(buckets.darkGreenPercent ?? 0);
+        if (Number.isFinite(greenDominance) && greenDominance > 90) {
+          console.warn(
+            `⚠️ [NDVI][HTTP] contrast_renderer_not_applied plotId=${plotId} ` +
+              `range=${(Number(contrast.p95) - Number(contrast.p5)).toFixed(3)} ` +
+              `greenDominance=${greenDominance.toFixed(1)}%`,
+          );
+          return res.status(422).json({
+            success: false,
+            code: 'contrast_renderer_not_applied',
+            reason: 'green_dominated_preview_with_real_amplitude',
+            details: {
+              p5: contrast.p5,
+              p50: contrast.p50,
+              p95: contrast.p95,
+              range: Number((Number(contrast.p95) - Number(contrast.p5)).toFixed(3)),
+              greenDominance: Number(greenDominance.toFixed(1)),
+              colorBuckets: buckets,
+            },
+          });
+        }
+      }
+
+      const contrastValidation = validateNdviContrastHttpResponse(
+        layer,
+        requestedVisualMode,
+        { requestBounds: this.service._boundsFromPolygon?.(polygon) ?? null },
+      );
+
+      console.log('[NDVI_FINAL_GATE]', {
+        requestedVisualMode,
+        resultVisualMode: contrastValidation.resultVisualMode,
+        hasContrast: Boolean(contrastValidation.contrast),
+        p5: contrastValidation.contrast?.p5 ?? null,
+        p50: contrastValidation.contrast?.p50 ?? null,
+        p95: contrastValidation.contrast?.p95 ?? null,
+        validContrast: contrastValidation.ok,
+      });
+
+      console.log('[NDVI_BACKEND_FINAL_RESPONSE]', {
+        requestedVisualMode,
+        resultVisualMode: contrastValidation.resultVisualMode,
+        hasContrast: contrastValidation.hasContrast,
+        hasBounds: contrastValidation.hasBounds,
+        p5: contrastValidation.contrast?.p5 ?? null,
+        p50: contrastValidation.contrast?.p50 ?? null,
+        p95: contrastValidation.contrast?.p95 ?? null,
+        statusToReturn: contrastValidation.statusToReturn,
+      });
+
+      if (!contrastValidation.ok) {
+        return res.status(422).json({
+          success: false,
+          code: 'ndvi_contrast_not_computed',
+          reason: 'missing_visual_mode_or_contrast',
+          message:
+            'Modo ndvi_contrast exige visual_mode, contrast.p5/p50/p95, preview_url e bounds.',
+          details: {
+            requestedVisualMode,
+            resultVisualMode: contrastValidation.resultVisualMode,
+            hasContrast: contrastValidation.hasContrast,
+            hasBounds: contrastValidation.hasBounds,
+            p5: contrastValidation.contrast?.p5 ?? null,
+            p50: contrastValidation.contrast?.p50 ?? null,
+            p95: contrastValidation.contrast?.p95 ?? null,
+          },
+        });
+      }
+
+      layer = normalizeSuccessLayer(layer);
+      res.status(201).json({ success: true, layer });
     } catch (error) {
       this._sendError(res, error);
     }
@@ -321,7 +530,7 @@ class SoilSamplingNdviController {
       status = 400;
     } else if (code === 'empty_scenes' || code === 'ndvi_not_found') {
       status = 404;
-    } else if (code === 'ndvi_not_computed') {
+    } else if (code === 'ndvi_not_computed' || code === 'ndvi_contrast_not_computed') {
       status = 422;
     } else if (
       code === 'layer_persist_failed' ||
