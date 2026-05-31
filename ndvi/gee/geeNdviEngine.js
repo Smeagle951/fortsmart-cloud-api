@@ -43,7 +43,7 @@ function visualModes() {
 function rendererVersionFor(mode) {
   switch (mode) {
     case VISUAL_MODES.NDVI_CONTRAST:
-      return 'agronomic_contrast_v3_gee_10m';
+      return 'agronomic_contrast_v4_gee_10m';
     case VISUAL_MODES.NDVI_RELATIVE:
       return 'ndvi_relative_v2_gee_10m';
     case VISUAL_MODES.AGRONOMIC_CLASSES:
@@ -431,9 +431,31 @@ function resolveContrastStretch(stats = {}) {
   const p50 = Number(stats.ndvi_p50 ?? stats.contrast?.p50);
   const std = Number(stats.ndvi_std ?? stats.contrast?.std);
 
+  // Para talhões muito verdes, p2/p98 pode capturar borda/solo/estrada e
+  // abrir demais a escala, deixando tudo verde. O contraste agronômico deve
+  // priorizar a faixa robusta p5/p95 quando ela já tem amplitude útil.
+  if (Number.isFinite(p5) && Number.isFinite(p95) && p95 > p5) {
+    const robustRange = p95 - p5;
+    if (robustRange >= 0.025) {
+      return {
+        min: p5,
+        max: p95,
+        stretchMode: 'p5_p95_robust',
+      };
+    }
+  }
+
   if (Number.isFinite(p2) && Number.isFinite(p98) && p98 > p2) {
     const range = p98 - p2;
-    if (range >= 0.035 || !Number.isFinite(std) || !Number.isFinite(p50) || std <= 0) {
+    const p2LooksLikeOutlier =
+      Number.isFinite(p5) && Number.isFinite(p50) && p5 - p2 > Math.max(0.05, (p50 - p5) * 2.5);
+    const p98LooksLikeOutlier =
+      Number.isFinite(p95) && Number.isFinite(p50) && p98 - p95 > Math.max(0.05, (p95 - p50) * 2.5);
+    if (
+      range >= 0.035 &&
+      !p2LooksLikeOutlier &&
+      !p98LooksLikeOutlier
+    ) {
       return {
         min: p2,
         max: p98,
