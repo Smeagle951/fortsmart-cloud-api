@@ -3,7 +3,7 @@ import { storeNdviPreviewPng } from '../ndviPreviewStorage.js';
 const DATASET = 'COPERNICUS/S2_SR_HARMONIZED';
 const DEFAULT_MAX_CLOUD = 35;
 const GEE_RENDER_SCALE_M = 10;
-const DEFAULT_THUMB_SIZE = 2048;
+const DEFAULT_THUMB_SIZE = 1024;
 const DEFAULT_INNER_BUFFER_M = 10;
 const DEFAULT_SMOOTHING_RADIUS_PX = 1;
 
@@ -237,7 +237,7 @@ function smoothForPreview(image, geometry) {
   const radius = numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX);
   if (!Number.isFinite(radius) || radius <= 0) return image;
   return image
-    .focal_median({ radius, units: 'pixels' })
+    .focal_median(radius, 'circle', 'pixels')
     .updateMask(image.mask())
     .clip(geometry);
 }
@@ -495,6 +495,57 @@ async function downloadPng(url, fetchImpl) {
   return Buffer.from(await response.arrayBuffer());
 }
 
+function thumbnailSizes() {
+  const configured = numberFromEnv('GEE_THUMB_SIZE', DEFAULT_THUMB_SIZE);
+  return [...new Set([configured, DEFAULT_THUMB_SIZE, 768])]
+    .filter((size) => Number.isFinite(size) && size > 0)
+    .map((size) => Math.round(size));
+}
+
+async function renderVisualPngWithFallback({
+  image,
+  fallbackImage,
+  stats,
+  mode,
+  geometry,
+  fetchImpl,
+}) {
+  let lastError = null;
+  const candidates = [
+    { image, smoothingApplied: true },
+    fallbackImage ? { image: fallbackImage, smoothingApplied: false } : null,
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    for (const size of thumbnailSizes()) {
+      try {
+        const visual = candidate.image
+          .visualize(visualizationFor({ mode, stats }))
+          .clip(geometry);
+        const thumbUrl = visual.getThumbURL({
+          // Mantém o mesmo bbox geográfico do overlay; o buffer interno aparece
+          // como transparência dentro desse bbox, sem esticar a imagem.
+          region: geometry,
+          dimensions: size,
+          format: 'png',
+        });
+        return {
+          buffer: await downloadPng(thumbUrl, fetchImpl),
+          thumbSize: size,
+          smoothingApplied: candidate.smoothingApplied,
+        };
+      } catch (error) {
+        lastError = error;
+        console.warn('[NDVI_GEE_THUMB_FALLBACK]', {
+          size,
+          smoothingApplied: candidate.smoothingApplied,
+          message: error?.message || String(error),
+        });
+      }
+    }
+  }
+  throw lastError || new Error('Falha ao gerar thumbnail GEE');
+}
+
 export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = global.fetch } = {}) {
   await ensureGeeInitialized();
 
@@ -631,21 +682,17 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
           : { rendererVersion, edgeBufferM: numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M) };
       }
 
-      const renderImage = smoothForPreview(
-        resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi }),
-        renderGeometry,
-      );
-      const visual = renderImage
-        .visualize(visualizationFor({ mode, stats }))
-        .clip(renderGeometry);
-      const thumbUrl = visual.getThumbURL({
-        // Mantém o mesmo bbox geográfico do overlay; o buffer interno aparece
-        // como transparência dentro desse bbox, sem esticar a imagem.
-        region: geometry,
-        dimensions: numberFromEnv('GEE_THUMB_SIZE', DEFAULT_THUMB_SIZE),
-        format: 'png',
+      const rawRenderImage = resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi });
+      const renderImage = smoothForPreview(rawRenderImage, renderGeometry);
+      const renderedPng = await renderVisualPngWithFallback({
+        image: renderImage,
+        fallbackImage: rawRenderImage,
+        stats,
+        mode,
+        geometry,
+        fetchImpl,
       });
-      const pngBuffer = await downloadPng(thumbUrl, fetchImpl);
+      const pngBuffer = renderedPng.buffer;
       const previewUrl = await storeNdviPreviewPng({
         farmId,
         plotId,
@@ -671,9 +718,11 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         stretchMin: stats.contrast?.stretchMin,
         stretchMax: stats.contrast?.stretchMax,
         scaleM: GEE_RENDER_SCALE_M,
-        thumbSize: numberFromEnv('GEE_THUMB_SIZE', DEFAULT_THUMB_SIZE),
+        thumbSize: renderedPng.thumbSize,
         edgeBufferM: numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M),
-        smoothingRadiusPx: numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX),
+        smoothingRadiusPx: renderedPng.smoothingApplied
+          ? numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX)
+          : 0,
         rendererVersion,
         provider: 'google_earth_engine',
         alphaOutsidePolygon: true,
@@ -690,9 +739,11 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         provider: 'google_earth_engine',
         processing_engine: 'google_earth_engine',
         gee_render_scale_m: GEE_RENDER_SCALE_M,
-        gee_thumb_size: numberFromEnv('GEE_THUMB_SIZE', DEFAULT_THUMB_SIZE),
+        gee_thumb_size: renderedPng.thumbSize,
         gee_inner_buffer_m: numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M),
-        gee_smoothing_radius_px: numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX),
+        gee_smoothing_radius_px: renderedPng.smoothingApplied
+          ? numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX)
+          : 0,
       };
 
       return {
