@@ -265,15 +265,33 @@ class SoilSamplingNdviService {
     await this._tryEnsureSchema('searchScenes');
 
     let rawScenes;
-    try {
-      rawScenes = await this.catalogClient.searchSentinelScenes({
-        polygon,
-        startDate,
-        endDate,
-        maxCloud,
-      });
-    } catch (error) {
-      throw this._providerError(error, 'Falha ao buscar cenas Sentinel no provedor NDVI');
+    let scenesProvider = 'copernicus_dataspace';
+    if (this._geeReady()) {
+      try {
+        rawScenes = await this.geeClient.searchScenes({
+          polygon,
+          startDate,
+          endDate,
+          maxCloud,
+        });
+        scenesProvider = 'google_earth_engine';
+      } catch (error) {
+        console.warn(
+          `⚠️ [NDVI] GEE search falhou, fallback Copernicus: ${error?.message || error}`,
+        );
+      }
+    }
+    if (!rawScenes) {
+      try {
+        rawScenes = await this.catalogClient.searchSentinelScenes({
+          polygon,
+          startDate,
+          endDate,
+          maxCloud,
+        });
+      } catch (error) {
+        throw this._providerError(error, 'Falha ao buscar cenas Sentinel no provedor NDVI');
+      }
     }
 
     let layers = [];
@@ -294,7 +312,7 @@ class SoilSamplingNdviService {
 
     console.log(
       `✅ [NDVI] searchScenes plotId=${plotId} raw=${rawScenes.length} ` +
-        `deduped=${scenes.length} elapsedMs=${Date.now() - started}`,
+        `deduped=${scenes.length} provider=${scenesProvider} elapsedMs=${Date.now() - started}`,
     );
     return scenes;
   }
