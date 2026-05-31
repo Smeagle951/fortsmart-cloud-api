@@ -2,6 +2,10 @@ import { storeNdviPreviewPng } from '../ndviPreviewStorage.js';
 
 const DATASET = 'COPERNICUS/S2_SR_HARMONIZED';
 const DEFAULT_MAX_CLOUD = 35;
+const GEE_RENDER_SCALE_M = 10;
+const DEFAULT_THUMB_SIZE = 2048;
+const DEFAULT_INNER_BUFFER_M = 10;
+const DEFAULT_SMOOTHING_RADIUS_PX = 1;
 
 const VISUAL_MODES = Object.freeze({
   NDVI_ABSOLUTE: 'ndvi_absolute',
@@ -39,22 +43,22 @@ function visualModes() {
 function rendererVersionFor(mode) {
   switch (mode) {
     case VISUAL_MODES.NDVI_CONTRAST:
-      return 'agronomic_contrast_v2';
+      return 'agronomic_contrast_v3_gee_10m';
     case VISUAL_MODES.NDVI_RELATIVE:
-      return 'ndvi_relative_v1';
+      return 'ndvi_relative_v2_gee_10m';
     case VISUAL_MODES.AGRONOMIC_CLASSES:
-      return 'agronomic_classes_v1';
+      return 'agronomic_classes_v2_gee_10m';
     case VISUAL_MODES.NDRE:
-      return 'ndre_v1';
+      return 'ndre_v2_gee_10m';
     case VISUAL_MODES.SAVI:
-      return 'savi_v1';
+      return 'savi_v2_gee_10m';
     case VISUAL_MODES.BSI_SOIL:
-      return 'bsi_soil_v1';
+      return 'bsi_soil_v2_gee_10m';
     case VISUAL_MODES.NDMI_WATER_STRESS:
-      return 'ndmi_water_stress_v1';
+      return 'ndmi_water_stress_v2_gee_10m';
     case VISUAL_MODES.NDVI_ABSOLUTE:
     default:
-      return 'ndvi_absolute_v1';
+      return 'ndvi_absolute_v2_gee_10m';
   }
 }
 
@@ -213,6 +217,31 @@ function homogeneityScore({ std, p5, p95 }) {
   return Math.max(0, Math.min(100, Math.round(100 - stdPenalty - spreadPenalty)));
 }
 
+function numberFromEnv(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function bufferedGeometry(geometry) {
+  const bufferM = numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M);
+  if (!Number.isFinite(bufferM) || bufferM <= 0) return geometry;
+  return geometry.buffer(-Math.abs(bufferM));
+}
+
+function maskIndexToGeometry(gee, image, geometry, bandName) {
+  const plotMask = gee.Image.constant(1).clip(geometry).selfMask();
+  return image.updateMask(plotMask).clip(geometry).rename(bandName);
+}
+
+function smoothForPreview(image, geometry) {
+  const radius = numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX);
+  if (!Number.isFinite(radius) || radius <= 0) return image;
+  return image
+    .focal_median({ radius, units: 'pixels' })
+    .updateMask(image.mask())
+    .clip(geometry);
+}
+
 function roundOrNull(value) {
   const number = Number(value);
   return Number.isFinite(number) ? Number(number.toFixed(4)) : null;
@@ -284,7 +313,7 @@ async function calculateIndexMeans(gee, { ndre, savi, bsi, ndmi, geometry }) {
     gee.Image.cat(images).reduceRegion({
       reducer: gee.Reducer.mean(),
       geometry,
-      scale: 10,
+      scale: GEE_RENDER_SCALE_M,
       maxPixels: 1e9,
       bestEffort: true,
     }),
@@ -304,9 +333,9 @@ async function calculateGeeNdviStats(gee, { ndvi, ndre, savi, bsi, ndmi, geometr
         .Reducer.mean()
         .combine(gee.Reducer.minMax(), '', true)
         .combine(gee.Reducer.stdDev(), '', true)
-        .combine(gee.Reducer.percentile([5, 10, 25, 50, 75, 90, 95]), '', true),
+        .combine(gee.Reducer.percentile([2, 5, 10, 25, 50, 75, 90, 95, 98]), '', true),
       geometry,
-      scale: 10,
+      scale: GEE_RENDER_SCALE_M,
       maxPixels: 1e9,
       bestEffort: true,
     }),
@@ -315,7 +344,7 @@ async function calculateGeeNdviStats(gee, { ndvi, ndre, savi, bsi, ndmi, geometr
     buildClassAreaImage(gee, ndvi).reduceRegion({
       reducer: gee.Reducer.sum(),
       geometry,
-      scale: 10,
+      scale: GEE_RENDER_SCALE_M,
       maxPixels: 1e9,
       bestEffort: true,
     }),
@@ -327,8 +356,10 @@ async function calculateGeeNdviStats(gee, { ndvi, ndre, savi, bsi, ndmi, geometr
     Number(classStats.medium || 0) +
     Number(classStats.high || 0);
   const ndviStd = roundOrNull(basicStats.NDVI_stdDev);
+  const p2 = roundOrNull(basicStats.NDVI_p2);
   const p5 = roundOrNull(basicStats.NDVI_p5);
   const p95 = roundOrNull(basicStats.NDVI_p95);
+  const p98 = roundOrNull(basicStats.NDVI_p98);
   const homogeneity = homogeneityScore({ std: ndviStd, p5, p95 });
   const indexStats = await calculateIndexMeans(gee, { ndre, savi, bsi, ndmi, geometry });
 
@@ -337,6 +368,7 @@ async function calculateGeeNdviStats(gee, { ndvi, ndre, savi, bsi, ndmi, geometr
     ndvi_min: roundOrNull(basicStats.NDVI_min),
     ndvi_max: roundOrNull(basicStats.NDVI_max),
     ndvi_std: ndviStd,
+    ndvi_p2: p2,
     ndvi_p5: p5,
     ndvi_p10: roundOrNull(basicStats.NDVI_p10),
     ndvi_p25: roundOrNull(basicStats.NDVI_p25),
@@ -344,6 +376,7 @@ async function calculateGeeNdviStats(gee, { ndvi, ndre, savi, bsi, ndmi, geometr
     ndvi_p75: roundOrNull(basicStats.NDVI_p75),
     ndvi_p90: roundOrNull(basicStats.NDVI_p90),
     ndvi_p95: p95,
+    ndvi_p98: p98,
     homogeneity_score: homogeneity,
     homogeneity_label: homogeneityLabel(homogeneity),
     very_low_percent: percent(classStats.very_low, totalArea),
@@ -351,6 +384,7 @@ async function calculateGeeNdviStats(gee, { ndvi, ndre, savi, bsi, ndmi, geometr
     medium_percent: percent(classStats.medium, totalArea),
     high_percent: percent(classStats.high, totalArea),
     contrast: {
+      p2,
       p5,
       p10: roundOrNull(basicStats.NDVI_p10),
       p25: roundOrNull(basicStats.NDVI_p25),
@@ -358,6 +392,7 @@ async function calculateGeeNdviStats(gee, { ndvi, ndre, savi, bsi, ndmi, geometr
       p75: roundOrNull(basicStats.NDVI_p75),
       p90: roundOrNull(basicStats.NDVI_p90),
       p95,
+      p98,
       min: roundOrNull(basicStats.NDVI_min),
       max: roundOrNull(basicStats.NDVI_max),
       std: ndviStd,
@@ -388,13 +423,46 @@ function resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi }) {
   }
 }
 
+function resolveContrastStretch(stats = {}) {
+  const p2 = Number(stats.ndvi_p2 ?? stats.contrast?.p2);
+  const p98 = Number(stats.ndvi_p98 ?? stats.contrast?.p98);
+  const p5 = Number(stats.ndvi_p5 ?? stats.contrast?.p5);
+  const p95 = Number(stats.ndvi_p95 ?? stats.contrast?.p95);
+  const p50 = Number(stats.ndvi_p50 ?? stats.contrast?.p50);
+  const std = Number(stats.ndvi_std ?? stats.contrast?.std);
+
+  if (Number.isFinite(p2) && Number.isFinite(p98) && p98 > p2) {
+    const range = p98 - p2;
+    if (range >= 0.035 || !Number.isFinite(std) || !Number.isFinite(p50) || std <= 0) {
+      return {
+        min: p2,
+        max: p98,
+        stretchMode: 'p2_p98',
+      };
+    }
+  }
+
+  if (Number.isFinite(p50) && Number.isFinite(std) && std > 0) {
+    return {
+      min: Math.max(-1, p50 - 2 * std),
+      max: Math.min(1, p50 + 2 * std),
+      stretchMode: 'std_2sigma',
+    };
+  }
+
+  return {
+    min: Number.isFinite(p5) ? p5 : 0,
+    max: Number.isFinite(p95) && p95 > p5 ? p95 : 1,
+    stretchMode: 'p5_p95',
+  };
+}
+
 function visualizationFor({ mode = VISUAL_MODES.NDVI_CONTRAST, stats = {} } = {}) {
   if (mode === VISUAL_MODES.NDVI_CONTRAST) {
-    const min = Number(stats.ndvi_p5 ?? stats.contrast?.p5);
-    const max = Number(stats.ndvi_p95 ?? stats.contrast?.p95);
+    const stretch = resolveContrastStretch(stats);
     return {
-      min: Number.isFinite(min) ? min : 0,
-      max: Number.isFinite(max) ? max : 1,
+      min: stretch.min,
+      max: stretch.max,
       palette: NDVI_AGRONOMIC_PALETTE,
       forceRgbOutput: true,
     };
@@ -473,6 +541,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       const gee = await ensureGeeInitialized();
       const mode = visualModes().includes(visualMode) ? visualMode : VISUAL_MODES.NDVI_CONTRAST;
       const geometry = geometryFromPolygon(gee, polygon);
+      const renderGeometry = bufferedGeometry(geometry);
       const image = sceneId
         ? gee.Image(sceneId)
         : sentinelCollection(gee, {
@@ -495,32 +564,43 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       const cloudCoverage = await getInfo(image.get('CLOUDY_PIXEL_PERCENTAGE')).catch(() => null);
 
       const maskedImage = maskClouds(image);
-      const ndvi = maskedImage.normalizedDifference(['B8', 'B4']).rename('NDVI').clip(geometry);
-      const ndre = maskedImage.normalizedDifference(['B8A', 'B5']).rename('NDRE').clip(geometry);
-      const savi = maskedImage
-        .expression('((nir - red) / (nir + red + 0.5)) * 1.5', {
-          nir: maskedImage.select('B8'),
-          red: maskedImage.select('B4'),
-        })
-        .rename('SAVI')
-        .clip(geometry);
-      const ndmi = maskedImage.normalizedDifference(['B8', 'B11']).rename('NDMI').clip(geometry);
-      const bsi = maskedImage
-        .expression('((swir + red) - (nir + blue)) / ((swir + red) + (nir + blue))', {
+      const rawNdvi = maskedImage.normalizedDifference(['B8', 'B4']);
+      const rawNdre = maskedImage.normalizedDifference(['B8A', 'B5']);
+      const rawSavi = maskedImage.expression('((nir - red) / (nir + red + 0.5)) * 1.5', {
+        nir: maskedImage.select('B8'),
+        red: maskedImage.select('B4'),
+      });
+      const rawNdmi = maskedImage.normalizedDifference(['B8', 'B11']);
+      const rawBsi = maskedImage.expression(
+        '((swir + red) - (nir + blue)) / ((swir + red) + (nir + blue))',
+        {
           swir: maskedImage.select('B11'),
           red: maskedImage.select('B4'),
           nir: maskedImage.select('B8'),
           blue: maskedImage.select('B2'),
-        })
-        .rename('BSI')
-        .clip(geometry);
+        },
+      );
+
+      const ndvi = maskIndexToGeometry(gee, rawNdvi, renderGeometry, 'NDVI');
+      const ndre = maskIndexToGeometry(gee, rawNdre, renderGeometry, 'NDRE');
+      const savi = maskIndexToGeometry(gee, rawSavi, renderGeometry, 'SAVI');
+      const ndmi = maskIndexToGeometry(gee, rawNdmi, renderGeometry, 'NDMI');
+      const bsi = maskIndexToGeometry(gee, rawBsi, renderGeometry, 'BSI');
 
       const rendererVersion = rendererVersionFor(mode);
-      const stats = await calculateGeeNdviStats(gee, { ndvi, ndre, savi, bsi, ndmi, geometry });
+      const stats = await calculateGeeNdviStats(gee, {
+        ndvi,
+        ndre,
+        savi,
+        bsi,
+        ndmi,
+        geometry: renderGeometry,
+      });
       const p5 = stats.ndvi_p5 ?? stats.contrast?.p5;
       const p50 = stats.ndvi_p50 ?? stats.contrast?.p50;
       const p95 = stats.ndvi_p95 ?? stats.contrast?.p95;
       const range = p95 != null && p5 != null ? Number((p95 - p5).toFixed(4)) : null;
+      const contrastStretch = resolveContrastStretch(stats);
 
       if (mode === VISUAL_MODES.NDVI_CONTRAST) {
         const validContrast =
@@ -539,21 +619,30 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
           p50,
           p95,
           rendererVersion,
-          stretchMode: 'p5_p95',
+          stretchMode: contrastStretch.stretchMode,
+          stretchMin: roundOrNull(contrastStretch.min),
+          stretchMax: roundOrNull(contrastStretch.max),
+          edgeBufferM: numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M),
+          smoothingRadiusPx: numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX),
         };
       } else {
         stats.contrast = stats.contrast
-          ? { ...stats.contrast, rendererVersion }
-          : { rendererVersion };
+          ? { ...stats.contrast, rendererVersion, edgeBufferM: numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M) }
+          : { rendererVersion, edgeBufferM: numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M) };
       }
 
-      const renderImage = resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi });
+      const renderImage = smoothForPreview(
+        resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi }),
+        renderGeometry,
+      );
       const visual = renderImage
         .visualize(visualizationFor({ mode, stats }))
-        .clip(geometry);
+        .clip(renderGeometry);
       const thumbUrl = visual.getThumbURL({
+        // Mantém o mesmo bbox geográfico do overlay; o buffer interno aparece
+        // como transparência dentro desse bbox, sem esticar a imagem.
         region: geometry,
-        dimensions: Number(process.env.GEE_THUMB_SIZE || 768),
+        dimensions: numberFromEnv('GEE_THUMB_SIZE', DEFAULT_THUMB_SIZE),
         format: 'png',
       });
       const pngBuffer = await downloadPng(thumbUrl, fetchImpl);
@@ -578,6 +667,13 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         p50,
         p95,
         range,
+        stretchMode: stats.contrast?.stretchMode,
+        stretchMin: stats.contrast?.stretchMin,
+        stretchMax: stats.contrast?.stretchMax,
+        scaleM: GEE_RENDER_SCALE_M,
+        thumbSize: numberFromEnv('GEE_THUMB_SIZE', DEFAULT_THUMB_SIZE),
+        edgeBufferM: numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M),
+        smoothingRadiusPx: numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX),
         rendererVersion,
         provider: 'google_earth_engine',
         alphaOutsidePolygon: true,
@@ -593,6 +689,10 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         bounds: polygonToBounds(polygon),
         provider: 'google_earth_engine',
         processing_engine: 'google_earth_engine',
+        gee_render_scale_m: GEE_RENDER_SCALE_M,
+        gee_thumb_size: numberFromEnv('GEE_THUMB_SIZE', DEFAULT_THUMB_SIZE),
+        gee_inner_buffer_m: numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M),
+        gee_smoothing_radius_px: numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX),
       };
 
       return {
