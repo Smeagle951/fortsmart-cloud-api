@@ -3,7 +3,7 @@ import { storeNdviPreviewPng } from '../ndviPreviewStorage.js';
 const DATASET = 'COPERNICUS/S2_SR_HARMONIZED';
 const DEFAULT_MAX_CLOUD = 35;
 const GEE_RENDER_SCALE_M = 10;
-const DEFAULT_THUMB_SIZE = 1024;
+const DEFAULT_THUMB_SIZE = 1536;
 const DEFAULT_INNER_BUFFER_M = 10;
 const DEFAULT_SMOOTHING_RADIUS_PX = 1;
 
@@ -19,13 +19,11 @@ const VISUAL_MODES = Object.freeze({
 });
 
 const NDVI_AGRONOMIC_PALETTE = [
-  '7A0000',
-  'B30000',
-  'E53935',
+  'C62828',
+  'EF6C00',
   'FB8C00',
   'FDD835',
-  'C0CA33',
-  '7CB342',
+  'A5D66D',
   '43A047',
   '1B5E20',
 ];
@@ -43,7 +41,7 @@ function visualModes() {
 function rendererVersionFor(mode) {
   switch (mode) {
     case VISUAL_MODES.NDVI_CONTRAST:
-      return 'agronomic_contrast_v4_gee_10m';
+      return 'agronomic_contrast_v5_gee_10m';
     case VISUAL_MODES.NDVI_RELATIVE:
       return 'ndvi_relative_v2_gee_10m';
     case VISUAL_MODES.AGRONOMIC_CLASSES:
@@ -222,10 +220,43 @@ function numberFromEnv(name, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
-function bufferedGeometry(geometry) {
+function innerBufferedGeometry(geometry) {
   const bufferM = numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M);
   if (!Number.isFinite(bufferM) || bufferM <= 0) return geometry;
   return geometry.buffer(-Math.abs(bufferM));
+}
+
+async function safeStatsGeometry(gee, geometry) {
+  const bufferM = numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M);
+  if (!Number.isFinite(bufferM) || bufferM <= 0) {
+    return { geometry, bufferAppliedM: 0 };
+  }
+
+  const candidate = innerBufferedGeometry(geometry);
+  try {
+    const areas = await getInfo(
+      gee.Dictionary({
+        full: geometry.area(1),
+        buffered: candidate.area(1),
+      }),
+    );
+    const fullArea = Number(areas?.full);
+    const bufferedArea = Number(areas?.buffered);
+    if (
+      Number.isFinite(fullArea) &&
+      Number.isFinite(bufferedArea) &&
+      fullArea > 0 &&
+      bufferedArea > fullArea * 0.25
+    ) {
+      return { geometry: candidate, bufferAppliedM: bufferM };
+    }
+  } catch (error) {
+    console.warn('[NDVI_GEE_BUFFER_FALLBACK]', {
+      bufferM,
+      message: error?.message || String(error),
+    });
+  }
+  return { geometry, bufferAppliedM: 0 };
 }
 
 function maskIndexToGeometry(gee, image, geometry, bandName) {
@@ -519,7 +550,7 @@ async function downloadPng(url, fetchImpl) {
 
 function thumbnailSizes() {
   const configured = numberFromEnv('GEE_THUMB_SIZE', DEFAULT_THUMB_SIZE);
-  return [...new Set([configured, DEFAULT_THUMB_SIZE, 768])]
+  return [...new Set([configured, 2048, DEFAULT_THUMB_SIZE, 1024])]
     .filter((size) => Number.isFinite(size) && size > 0)
     .map((size) => Math.round(size));
 }
@@ -614,7 +645,8 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       const gee = await ensureGeeInitialized();
       const mode = visualModes().includes(visualMode) ? visualMode : VISUAL_MODES.NDVI_CONTRAST;
       const geometry = geometryFromPolygon(gee, polygon);
-      const renderGeometry = bufferedGeometry(geometry);
+      const statsGeometry = await safeStatsGeometry(gee, geometry);
+      const renderGeometry = statsGeometry.geometry;
       const image = sceneId
         ? gee.Image(sceneId)
         : sentinelCollection(gee, {
@@ -695,13 +727,13 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
           stretchMode: contrastStretch.stretchMode,
           stretchMin: roundOrNull(contrastStretch.min),
           stretchMax: roundOrNull(contrastStretch.max),
-          edgeBufferM: numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M),
+          edgeBufferM: statsGeometry.bufferAppliedM,
           smoothingRadiusPx: numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX),
         };
       } else {
         stats.contrast = stats.contrast
-          ? { ...stats.contrast, rendererVersion, edgeBufferM: numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M) }
-          : { rendererVersion, edgeBufferM: numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M) };
+          ? { ...stats.contrast, rendererVersion, edgeBufferM: statsGeometry.bufferAppliedM }
+          : { rendererVersion, edgeBufferM: statsGeometry.bufferAppliedM };
       }
 
       const rawRenderImage = resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi });
@@ -741,7 +773,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         stretchMax: stats.contrast?.stretchMax,
         scaleM: GEE_RENDER_SCALE_M,
         thumbSize: renderedPng.thumbSize,
-        edgeBufferM: numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M),
+        edgeBufferM: statsGeometry.bufferAppliedM,
         smoothingRadiusPx: renderedPng.smoothingApplied
           ? numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX)
           : 0,
@@ -762,7 +794,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         processing_engine: 'google_earth_engine',
         gee_render_scale_m: GEE_RENDER_SCALE_M,
         gee_thumb_size: renderedPng.thumbSize,
-        gee_inner_buffer_m: numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M),
+        gee_inner_buffer_m: statsGeometry.bufferAppliedM,
         gee_smoothing_radius_px: renderedPng.smoothingApplied
           ? numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX)
           : 0,
