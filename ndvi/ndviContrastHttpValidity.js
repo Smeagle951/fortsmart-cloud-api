@@ -154,10 +154,6 @@ export function layerMeetsContrastContract(
   if (mode !== 'ndvi_contrast') return false;
   if (!isNdviV3Schema(layer)) return false;
   if (isLegacyLayer(layer)) return false;
-  const preview =
-    (layer.preview_url && String(layer.preview_url).trim()) ||
-    (layer.previewUrl && String(layer.previewUrl).trim());
-  if (!preview) return false;
   if (!contrastIsComplete(readLayerContrast(layer))) return false;
   const bounds = readLayerBounds(layer);
   if (!bounds) return false;
