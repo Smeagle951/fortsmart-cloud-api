@@ -7,13 +7,20 @@ export function getNdviProviderStatus() {
     .toLowerCase();
 
   const geeEnabled = process.env.GEE_ENABLED === 'true';
+  const geeServiceAccountJson = String(
+    process.env.GEE_SERVICE_ACCOUNT_JSON ||
+      process.env.GOOGLE_SERVICE_ACCOUNT_JSON ||
+      '',
+  ).trim();
   const geeProjectId = String(process.env.GEE_PROJECT_ID || '').trim();
   const geeClientEmail = String(process.env.GEE_CLIENT_EMAIL || '').trim();
   const geePrivateKey = String(
     process.env.GEE_PRIVATE_KEY || process.env.GEE_PRIVATE_KEY_B64 || '',
   ).trim();
 
-  const geeConfigured = Boolean(geeProjectId && geeClientEmail && geePrivateKey);
+  const geeJsonConfigured = Boolean(geeServiceAccountJson);
+  const geeKeyConfigured = Boolean(geeClientEmail && geePrivateKey);
+  const geeConfigured = geeJsonConfigured || geeKeyConfigured;
 
   const cdseConfigured = Boolean(
     process.env.CDSE_CLIENT_ID && process.env.CDSE_CLIENT_SECRET,
@@ -38,6 +45,7 @@ export function getNdviProviderStatus() {
     active_provider: activeProvider,
     gee_enabled: geeEnabled,
     gee_configured: geeConfigured,
+    gee_credentials_source: geeJsonConfigured ? 'service_account_json' : (geeKeyConfigured ? 'env_key' : 'none'),
     gee_primary: geePrimary,
     copernicus_configured: cdseConfigured,
     storage_configured: storageConfigured,
@@ -67,7 +75,7 @@ export function assertGeeIfRequired() {
 
   if (!status.gee_configured) {
     const err = new Error(
-      'Google Earth Engine solicitado, mas GEE_PROJECT_ID, GEE_CLIENT_EMAIL e GEE_PRIVATE_KEY não estão configurados.',
+      'Google Earth Engine solicitado, mas GEE_SERVICE_ACCOUNT_JSON ou GEE_CLIENT_EMAIL/GEE_PRIVATE_KEY não estão configurados.',
     );
     err.code = 'gee_not_configured';
     err.status = 503;
