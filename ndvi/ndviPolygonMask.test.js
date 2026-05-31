@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyPolygonMaskToPngBuffer, pointInRing } from './ndviPolygonMask.js';
+import {
+  applyPolygonMaskToPngBuffer,
+  maskValuesToPolygon,
+  pointInRing,
+} from './ndviPolygonMask.js';
 import { PNG } from 'pngjs';
 
 describe('ndviPolygonMask', () => {
@@ -45,6 +49,32 @@ describe('ndviPolygonMask', () => {
     const alphas = [out.data[3], out.data[7], out.data[11], out.data[15]];
     const transparent = alphas.filter((a) => a === 0).length;
     assert.ok(transparent >= 1, 'deve mascarar ao menos um pixel fora do talhão');
-    assert.ok(alphas.some((a) => a === 255), 'deve manter pixels dentro do talhão');
+    assert.ok(alphas.some((a) => a >= 180 && a <= 220), 'deve manter pixels dentro do talhão');
+  });
+
+  it('maskValuesToPolygon exclui fora do polígono antes dos percentis', () => {
+    const polygon = {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [0, 0],
+          [0.5, 0],
+          [0.5, 0.5],
+          [0, 0.5],
+          [0, 0],
+        ],
+      ],
+    };
+    const result = maskValuesToPolygon({
+      values: [0.9, 0.1, 0.1, 0.1],
+      width: 2,
+      height: 2,
+      bounds: { west: 0, south: 0, east: 1, north: 1 },
+      polygon,
+    });
+
+    assert.equal(result.maskStats.outsidePolygonTransparent, true);
+    assert.equal(result.maskStats.validPixels, 1);
+    assert.equal(result.values.filter((value) => value != null).length, 1);
   });
 });

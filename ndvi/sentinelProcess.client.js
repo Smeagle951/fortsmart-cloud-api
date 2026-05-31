@@ -25,7 +25,7 @@ import {
 } from './ndviRasterStore.js';
 import { generatePreviewFromRaster } from './ndviPreviewFromRaster.js';
 import { RASTER_SCHEMA_NUM } from './ndviRasterSerializer.js';
-import { applyPolygonMaskToPngBuffer } from './ndviPolygonMask.js';
+import { maskValuesToPolygon } from './ndviPolygonMask.js';
 
 const DEFAULT_PROCESS_URL = 'https://sh.dataspace.copernicus.eu/api/v1/process';
 
@@ -196,6 +196,7 @@ class SentinelProcessClient {
     const previewGen = generatePreviewFromRaster({
       raster,
       visualMode: resolvedVisual,
+      polygon,
     });
     console.log('[NDVI_PREVIEW_FROM_RASTER]', {
       sceneId,
@@ -204,10 +205,6 @@ class SentinelProcessClient {
     });
 
     const bounds = previewGen.bounds ?? polygonToBounds(polygon);
-    let maskedBuffer = applyPolygonMaskToPngBuffer(previewGen.buffer, {
-      bounds,
-      polygon,
-    });
 
     const preview_url = await storeNdviPreviewPng({
       farmId,
@@ -216,7 +213,7 @@ class SentinelProcessClient {
       imageDate,
       visualMode: resolvedVisual,
       rendererVersion: previewGen.contrast?.rendererVersion ?? 'agronomic_contrast_v2',
-      buffer: maskedBuffer,
+      buffer: previewGen.buffer,
     });
 
     const contrast = previewGen.contrast ?? stats.contrast ?? {};
@@ -380,7 +377,19 @@ class SentinelProcessClient {
       };
       Object.assign(contrast, resolveContrastStretch(contrast));
       const bounds = polygonToBounds(polygon);
-      const grid = stats._ndvi_grid ?? null;
+      const rawGrid = stats._ndvi_grid ?? null;
+      const gridMask = rawGrid?.values?.length
+        ? maskValuesToPolygon({
+            values: rawGrid.values,
+            width: rawGrid.width,
+            height: rawGrid.height,
+            bounds,
+            polygon,
+          })
+        : null;
+      const grid = rawGrid && gridMask
+        ? { ...rawGrid, values: gridMask.values, maskStats: gridMask.maskStats }
+        : rawGrid;
       const rendererV2 = grid?.values?.length
         ? renderAgronomicContrastV2({
             values: grid.values,
@@ -462,6 +471,7 @@ class SentinelProcessClient {
       const previewGen = generatePreviewFromRaster({
         raster: persistedRaster,
         visualMode: resolvedVisual,
+        polygon,
       });
       console.log('[NDVI_PREVIEW_FROM_RASTER]', {
         sceneId,
@@ -474,8 +484,6 @@ class SentinelProcessClient {
       if (previewGen.contrast) {
         Object.assign(contrast, previewGen.contrast);
       }
-
-      colorBuf = applyPolygonMaskToPngBuffer(colorBuf, { bounds, polygon });
 
       const preview_url = await storeNdviPreviewPng({
         farmId,
@@ -515,11 +523,14 @@ class SentinelProcessClient {
         p5: contrast.p5 ?? null,
         p50: contrast.p50 ?? null,
         p95: contrast.p95 ?? null,
+        validPixelCount:
+          previewGen.maskStats?.validPixels ?? grid?.maskStats?.validPixels ?? null,
         range:
           Number.isFinite(contrast.pLow) && Number.isFinite(contrast.pHigh)
             ? Number((contrast.pHigh - contrast.pLow).toFixed(3))
             : null,
         rendererVersion: contrast.rendererVersion ?? null,
+        alphaOutsidePolygon: true,
         colorBuckets,
         usedPercentileStretch:
           Number.isFinite(contrast.pLow) && Number.isFinite(contrast.pHigh),

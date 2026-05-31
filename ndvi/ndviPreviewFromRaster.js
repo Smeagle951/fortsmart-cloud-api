@@ -8,6 +8,10 @@ import { smoothPreviewPngBuffer } from './ndviSpatialSmoothing.js';
 import { selectBandForVisualMode } from './ndviRasterLoader.js';
 import { buildNdviZones } from './ndviZoneBuilder.js';
 import { resolveContrastStretch } from './ndviContrastEngine.js';
+import {
+  applyPolygonMaskToPngBuffer,
+  maskValuesToPolygon,
+} from './ndviPolygonMask.js';
 
 const CONTRAST_MODES = new Set([
   'ndvi_contrast',
@@ -61,28 +65,36 @@ export function rasterValuesToPngBuffer({ values, width, height, visualMode, con
     png.data[o] = Math.round(rgb[0] * 255);
     png.data[o + 1] = Math.round(rgb[1] * 255);
     png.data[o + 2] = Math.round(rgb[2] * 255);
-    png.data[o + 3] = 255;
+    png.data[o + 3] = 210;
   }
 
   return PNG.sync.write(png);
 }
 
-export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast' }) {
+export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast', polygon = null }) {
   const mode = String(visualMode || 'ndvi_contrast');
   const width = raster.width;
   const height = raster.height;
   const rawValues = valuesFromRasterBand(raster, mode);
-  const finite = rawValues.filter((v) => v != null && Number.isFinite(v));
+  const bounds = raster.bounds;
+  const { values: maskedRawValues, maskStats } = maskValuesToPolygon({
+    values: rawValues,
+    width,
+    height,
+    bounds,
+    polygon,
+  });
+  const finite = maskedRawValues.filter((v) => v != null && Number.isFinite(v));
 
   let contrast;
-  let colorValues = rawValues;
+  let colorValues = maskedRawValues;
 
   let outWidth = width;
   let outHeight = height;
 
   if (CONTRAST_MODES.has(mode)) {
     const rendered = renderAgronomicContrastV2({
-      values: rawValues.map((v) => (v == null ? NaN : v)),
+      values: maskedRawValues.map((v) => (v == null ? NaN : v)),
       width,
       height,
       visualMode: mode,
@@ -93,7 +105,7 @@ export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast'
     outHeight = rendered.height || height;
   } else {
     const rendered = renderAgronomicContrastV2({
-      values: rawValues.map((v) => (v == null ? NaN : v)),
+      values: maskedRawValues.map((v) => (v == null ? NaN : v)),
       width,
       height,
       visualMode: 'ndvi_contrast',
@@ -107,9 +119,8 @@ export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast'
     outHeight = rendered.height || height;
   }
 
-  const bounds = raster.bounds;
   const zones = buildNdviZones({
-    values: rawValues,
+    values: maskedRawValues,
     width,
     height,
     bounds,
@@ -124,11 +135,17 @@ export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast'
     contrast,
   });
   buffer = smoothPreviewPngBuffer(buffer);
+  buffer = applyPolygonMaskToPngBuffer(buffer, {
+    bounds,
+    polygon,
+    alphaInside: 210,
+  });
 
   return {
     buffer,
     contrast,
     bounds,
+    maskStats,
     zones: zones.zones,
     spatial_metrics: zones.spatialMetrics,
     visual_mode: mode,
