@@ -41,7 +41,7 @@ function visualModes() {
 function rendererVersionFor(mode) {
   switch (mode) {
     case VISUAL_MODES.NDVI_CONTRAST:
-      return 'agronomic_contrast_v5_gee_10m';
+      return 'agronomic_contrast_v6_gee_masked';
     case VISUAL_MODES.NDVI_RELATIVE:
       return 'ndvi_relative_v2_gee_10m';
     case VISUAL_MODES.AGRONOMIC_CLASSES:
@@ -296,15 +296,66 @@ function geometryFromPolygon(gee, polygon) {
   return gee.Geometry.Polygon(polygon.coordinates);
 }
 
-function maskClouds(image) {
+function buildSclValidMask(image) {
   const scl = image.select('SCL');
-  const validScl = scl
-    .neq(3)
+  return scl
+    .neq(0)
+    .and(scl.neq(1))
+    .and(scl.neq(2))
+    .and(scl.neq(3))
+    .and(scl.neq(6))
     .and(scl.neq(8))
     .and(scl.neq(9))
     .and(scl.neq(10))
     .and(scl.neq(11));
-  return image.updateMask(validScl);
+}
+
+function maskClouds(image) {
+  return image.updateMask(buildSclValidMask(image));
+}
+
+function buildNdviValidMask(gee, { image, ndvi, geometry }) {
+  const b4 = image.select('B4');
+  const b8 = image.select('B8');
+  const plotMask = gee.Image.constant(1).clip(geometry).selfMask();
+  const bandMask = b4
+    .mask()
+    .and(b8.mask())
+    .and(b4.gt(0))
+    .and(b8.gt(0));
+  const ndviMask = ndvi.gte(-1).and(ndvi.lte(1));
+  return buildSclValidMask(image)
+    .and(bandMask)
+    .and(ndviMask)
+    .updateMask(plotMask)
+    .clip(geometry);
+}
+
+async function calculateGeeMaskStats(gee, { image, validMask, geometry }) {
+  const one = gee.Image.constant(1);
+  const sclExcludedMask = buildSclValidMask(image).not();
+  const counts = await getInfo(
+    gee.Image.cat([
+      one.rename('total'),
+      one.updateMask(validMask).rename('valid'),
+      one.updateMask(sclExcludedMask).rename('scl_excluded'),
+    ]).reduceRegion({
+      reducer: gee.Reducer.count(),
+      geometry,
+      scale: GEE_RENDER_SCALE_M,
+      maxPixels: 1e9,
+      bestEffort: true,
+    }),
+  );
+  const totalPixels = Number(counts?.total || 0);
+  const validPixels = Number(counts?.valid || 0);
+  const sclExcludedPixels = Number(counts?.scl_excluded || 0);
+  return {
+    totalPixels,
+    validPixels,
+    maskedPixels: Math.max(0, totalPixels - validPixels),
+    sclExcludedPixels,
+  };
 }
 
 function sentinelCollection(gee, { geometry, startDate, endDate, maxCloud }) {
@@ -573,6 +624,7 @@ async function renderVisualPngWithFallback({
       try {
         const visual = candidate.image
           .visualize(visualizationFor({ mode, stats }))
+          .updateMask(candidate.image.mask())
           .clip(geometry);
         const thumbUrl = visual.getThumbURL({
           // Mantém o mesmo bbox geográfico do overlay; o buffer interno aparece
@@ -686,13 +738,23 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         },
       );
 
-      const ndvi = maskIndexToGeometry(gee, rawNdvi, renderGeometry, 'NDVI');
-      const ndre = maskIndexToGeometry(gee, rawNdre, renderGeometry, 'NDRE');
-      const savi = maskIndexToGeometry(gee, rawSavi, renderGeometry, 'SAVI');
-      const ndmi = maskIndexToGeometry(gee, rawNdmi, renderGeometry, 'NDMI');
-      const bsi = maskIndexToGeometry(gee, rawBsi, renderGeometry, 'BSI');
+      const validNdviMask = buildNdviValidMask(gee, {
+        image,
+        ndvi: rawNdvi,
+        geometry: renderGeometry,
+      });
+      const ndvi = maskIndexToGeometry(gee, rawNdvi.updateMask(validNdviMask), renderGeometry, 'NDVI');
+      const ndre = maskIndexToGeometry(gee, rawNdre.updateMask(validNdviMask), renderGeometry, 'NDRE');
+      const savi = maskIndexToGeometry(gee, rawSavi.updateMask(validNdviMask), renderGeometry, 'SAVI');
+      const ndmi = maskIndexToGeometry(gee, rawNdmi.updateMask(validNdviMask), renderGeometry, 'NDMI');
+      const bsi = maskIndexToGeometry(gee, rawBsi.updateMask(validNdviMask), renderGeometry, 'BSI');
 
       const rendererVersion = rendererVersionFor(mode);
+      const maskStats = await calculateGeeMaskStats(gee, {
+        image,
+        validMask: validNdviMask,
+        geometry: renderGeometry,
+      });
       const stats = await calculateGeeNdviStats(gee, {
         ndvi,
         ndre,
@@ -762,6 +824,12 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       console.log(`visualMode=${mode}`);
       console.log(`rendererVersion=${rendererVersion}`);
       console.log('modeSupported=true');
+      console.log('[NDVI_GEE_MASK]', {
+        ...maskStats,
+        p5,
+        p50,
+        p95,
+      });
       console.log('[NDVI_RENDER_V2_FINAL]', {
         visualMode: mode,
         p5,
