@@ -6,6 +6,7 @@ import {
   resolveRequestedVisualMode,
   validateNdviContrastHttpResponse,
 } from './ndviContrastHttpValidity.js';
+import { geeSmokeFailurePayload, runGeeSmokeTest } from './geeTest.js';
 
 function parseMaybeJson(value) {
   if (!value) return null;
@@ -71,6 +72,7 @@ class SoilSamplingNdviController {
     this.testCopernicusToken = this.testCopernicusToken.bind(this);
     this.getStatus = this.getStatus.bind(this);
     this.getGeeHealth = this.getGeeHealth.bind(this);
+    this.getGeeTest = this.getGeeTest.bind(this);
     this.listLayers = this.listLayers.bind(this);
   }
 
@@ -520,6 +522,17 @@ class SoilSamplingNdviController {
       });
     } catch (error) {
       this._sendError(res, error);
+    }
+  }
+
+  async getGeeTest(req, res) {
+    try {
+      const result = await runGeeSmokeTest();
+      res.json(result);
+    } catch (error) {
+      const payload = await geeSmokeFailurePayload(error);
+      const status = error?.status || 500;
+      res.status(status).json(payload);
     }
   }
 

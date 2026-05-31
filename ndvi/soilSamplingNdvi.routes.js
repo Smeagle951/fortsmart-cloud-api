@@ -80,6 +80,7 @@ function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
 
   router.get('/health', controller.getStatus);
   router.get('/gee-health', controller.getGeeHealth);
+  router.get('/gee-test', controller.getGeeTest);
   router.get('/copernicus/test-token', controller.testCopernicusToken);
   router.get('/status', controller.getStatus);
 
