@@ -28,15 +28,20 @@ export function canRenderFromPersistedRaster(visualMode, raster) {
   return true;
 }
 
-export function assertVisualModeSupported({ visualMode, raster = null } = {}) {
+export function assertVisualModeSupported({
+  visualMode,
+  raster = null,
+  geeAvailable = false,
+} = {}) {
   const mode = normalizeVisualModeKey(visualMode);
   if (mode === 'ndvi_contrast') return mode;
+  // GEE-primary: com GEE disponível, qualquer modo é renderizável server-side.
+  if (geeAvailable && RASTER_VISUAL_MODES.includes(mode)) return mode;
+  // Sem GEE: só liberamos modos avançados se houver raster persistido (Copernicus).
   if (canRenderFromPersistedRaster(mode, raster)) return mode;
 
   const err = new Error(
-    mode === 'ndvi_contrast'
-      ? 'Modo NDVI inválido.'
-      : `Modo "${mode}" só está disponível após gerar NDVI Contraste para esta cena (raster persistido).`,
+    `Modo "${mode}" exige Google Earth Engine ou raster persistido (gere NDVI Contraste primeiro).`,
   );
   err.code = 'unsupported_visual_mode';
   err.status = 422;

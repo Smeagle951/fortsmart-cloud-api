@@ -40,11 +40,17 @@ function normalizeImageDate(value) {
 }
 
 class SoilSamplingNdviService {
-  constructor({ repository, catalogClient, processClient, authClient }) {
+  constructor({ repository, catalogClient, processClient, authClient, geeClient = null }) {
     this.repository = repository;
     this.catalogClient = catalogClient;
     this.processClient = processClient;
     this.authClient = authClient;
+    this.geeClient = geeClient;
+  }
+
+  /** GEE pronto (engine injetado e implementado). */
+  _geeReady() {
+    return Boolean(this.geeClient?.isImplemented?.());
   }
 
   _logRequest(meta) {
@@ -437,8 +443,9 @@ class SoilSamplingNdviService {
       }
 
       stage = 'visual_mode_gate';
+      const geeAvailable = this._geeReady();
       let persistedRaster = null;
-      if (requestedVisualMode !== 'ndvi_contrast') {
+      if (requestedVisualMode !== 'ndvi_contrast' && !geeAvailable) {
         try {
           persistedRaster = await loadInternalGrid({
             plotId,
@@ -451,6 +458,7 @@ class SoilSamplingNdviService {
         assertVisualModeSupported({
           visualMode: requestedVisualMode,
           raster: persistedRaster,
+          geeAvailable,
         });
       }
 
@@ -538,7 +546,12 @@ class SoilSamplingNdviService {
 
       stage = 'raster_reuse';
       try {
-        const reused = await this.processClient.tryGenerateFromPersistedRaster?.({
+        // GEE-primary: quando GEE está disponível, geramos direto via GEE
+        // (renderiza qualquer modo server-side) e ignoramos o reuse de raster
+        // Copernicus persistido.
+        const reused = geeAvailable
+          ? null
+          : await this.processClient.tryGenerateFromPersistedRaster?.({
           sceneId: targetSceneId,
           polygon,
           imageDate: targetDate,
@@ -614,26 +627,64 @@ class SoilSamplingNdviService {
       }
 
       stage = 'process';
-      logGenerateStage(meta, stage);
+      logGenerateStage(meta, stage, `provider=${geeAvailable ? 'gee' : 'copernicus'}`);
+      const processParams = {
+        sceneId: targetSceneId,
+        polygon,
+        imageDate: targetDate,
+        startDate,
+        endDate,
+        maxCloud,
+        farmId,
+        plotId,
+        campaignId,
+        colormapMode,
+        visualMode: requestedVisualMode,
+        forceRemote: force,
+      };
+
       let assets;
-      try {
-        assets = await this.processClient.generateNdviLayer({
-          sceneId: targetSceneId,
-          polygon,
-          imageDate: targetDate,
-          farmId,
-          plotId,
-          campaignId,
-          colormapMode,
-          visualMode: requestedVisualMode,
-          forceRemote: force,
-        });
-      } catch (processError) {
-        throw this._providerError(
-          processError,
-          'Não foi possível gerar NDVI no provedor de imagens',
-        );
+      let assetProvider = 'copernicus_dataspace';
+      if (geeAvailable) {
+        try {
+          assets = await this.geeClient.generateLayer(processParams);
+          // O manager/cliente devolve { provider, layer } ou layer direto.
+          if (assets?.layer) {
+            assetProvider = assets.provider || 'google_earth_engine';
+            assets = assets.layer;
+          } else {
+            assetProvider = assets?.provider_used || assets?.provider || 'google_earth_engine';
+          }
+        } catch (geeError) {
+          // Modos avançados não fazem fallback Copernicus → propaga 422.
+          if (requestedVisualMode !== 'ndvi_contrast') {
+            throw this._error(
+              geeError?.message ||
+                `Modo "${requestedVisualMode}" exige Google Earth Engine.`,
+              geeError?.code || 'unsupported_visual_mode',
+              geeError?.status || 422,
+              { requestedVisualMode, provider: 'google_earth_engine' },
+            );
+          }
+          console.warn(
+            `⚠️ [NDVI] GEE falhou (ndvi_contrast), fallback Copernicus: ${geeError?.message || geeError}`,
+          );
+          assets = null;
+        }
       }
+
+      if (!assets) {
+        try {
+          assets = await this.processClient.generateNdviLayer(processParams);
+          assetProvider = 'copernicus_dataspace';
+        } catch (processError) {
+          throw this._providerError(
+            processError,
+            'Não foi possível gerar NDVI no provedor de imagens',
+          );
+        }
+      }
+      logGenerateStage(meta, 'provider_used', assetProvider);
 
       const hasRaster = this._hasRenderableAssets(assets);
       const stats = NdviStatsService.buildStatsForAssets(assets);
@@ -968,6 +1019,42 @@ class SoilSamplingNdviService {
 
   getProviderStatus() {
     return getNdviProviderStatus();
+  }
+
+  /**
+   * Diagnóstico do provider GEE para o endpoint /gee-health.
+   * `gee_engine_loaded` indica se o engine real foi injetado (pipeline portado
+   * + @google/earthengine instalado). Sem ele, o cloud-api usa Copernicus.
+   */
+  getGeeHealth() {
+    const status = getNdviProviderStatus();
+    const engineLoaded = this._geeReady();
+    const effectiveProvider = engineLoaded
+      ? 'google_earth_engine'
+      : 'copernicus_dataspace';
+
+    let readiness = 'disabled';
+    if (engineLoaded) {
+      readiness = 'ready';
+    } else if (status.gee_primary) {
+      // Habilitado + configurado, mas engine ainda não carregado/portado.
+      readiness = 'enabled_engine_missing';
+    } else if (status.gee_enabled && !status.gee_configured) {
+      readiness = 'enabled_not_configured';
+    }
+
+    return {
+      provider: effectiveProvider,
+      gee_enabled: status.gee_enabled,
+      gee_configured: status.gee_configured,
+      gee_primary: status.gee_primary,
+      gee_engine_loaded: engineLoaded,
+      copernicus_fallback: !engineLoaded,
+      copernicus_configured: status.copernicus_configured,
+      storage_configured: status.storage_configured,
+      readiness,
+      advanced_modes_available: engineLoaded,
+    };
   }
 
   _requireScope({ farmId, plotId }) {

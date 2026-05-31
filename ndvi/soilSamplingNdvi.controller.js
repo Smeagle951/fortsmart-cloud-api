@@ -70,6 +70,7 @@ class SoilSamplingNdviController {
     this.refresh = this.refresh.bind(this);
     this.testCopernicusToken = this.testCopernicusToken.bind(this);
     this.getStatus = this.getStatus.bind(this);
+    this.getGeeHealth = this.getGeeHealth.bind(this);
     this.listLayers = this.listLayers.bind(this);
   }
 
@@ -503,6 +504,19 @@ class SoilSamplingNdviController {
         database,
         copernicus_token_configured: Boolean(this.authClient?.isConfigured?.()),
         ...provider,
+      });
+    } catch (error) {
+      this._sendError(res, error);
+    }
+  }
+
+  async getGeeHealth(req, res) {
+    try {
+      const health = this.service.getGeeHealth?.() || {};
+      const httpStatus = health.readiness === 'ready' ? 200 : 503;
+      res.status(httpStatus).json({
+        success: health.readiness === 'ready',
+        ...health,
       });
     } catch (error) {
       this._sendError(res, error);

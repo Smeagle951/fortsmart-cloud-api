@@ -26,21 +26,29 @@ export function getNdviProviderStatus() {
         process.env.NDVI_PUBLIC_BASE_URL),
   );
 
-  const activeProvider =
-    ndviProvider === 'gee' && geeConfigured && geeEnabled
-      ? 'google_earth_engine'
-      : 'copernicus_dataspace';
+  // GEE-primary: sempre que habilitado e configurado o GEE é o provider
+  // principal; Copernicus/CDSE passa a ser fallback (apenas ndvi_contrast).
+  const geePrimary = geeEnabled && geeConfigured;
+  const activeProvider = geePrimary
+    ? 'google_earth_engine'
+    : 'copernicus_dataspace';
 
   return {
     ndvi_provider: ndviProvider,
     active_provider: activeProvider,
     gee_enabled: geeEnabled,
     gee_configured: geeConfigured,
+    gee_primary: geePrimary,
     copernicus_configured: cdseConfigured,
     storage_configured: storageConfigured,
-    /** Cloud-api processa NDVI via Copernicus Process API. */
-    cloud_api_uses: 'copernicus_dataspace',
+    /** Provider efetivamente usado pelo cloud-api (GEE quando primary). */
+    cloud_api_uses: activeProvider,
   };
+}
+
+/** GEE é o provider principal (habilitado + configurado). */
+export function isGeePrimary() {
+  return getNdviProviderStatus().gee_primary;
 }
 
 export function assertCopernicusReady(authClient) {

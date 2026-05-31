@@ -38,18 +38,122 @@ export class CopernicusNdviProviderClient extends NdviProviderClient {
   }
 }
 
+/**
+ * Cliente GEE. O pipeline real (Earth Engine) é injetado via `engine`.
+ * Sem engine injetado, comporta-se como não implementado — o manager faz
+ * fallback para Copernicus (apenas ndvi_contrast). Isso mantém produção
+ * funcionando enquanto o engine GEE ainda não foi portado/instalado.
+ */
 export class GeeNdviProviderClient extends NdviProviderClient {
+  constructor({ engine = null } = {}) {
+    super();
+    this.engine = engine;
+  }
+
+  /** GEE só está pronto quando o engine real foi injetado. */
   isImplemented() {
-    return false;
+    return Boolean(this.engine);
   }
 
-  async searchScenes() {
-    throw providerNotImplemented();
+  async searchScenes(params) {
+    if (!this.engine) throw providerNotImplemented();
+    const scenes = await this.engine.searchGeeScenes(params);
+    return (scenes || []).map((scene) => ({
+      ...scene,
+      provider: 'google_earth_engine',
+      provider_used: 'google_earth_engine',
+      source: scene.source || 'gee_sentinel_2_l2a',
+      processing_engine: 'google_earth_engine',
+    }));
   }
 
-  async generateLayer() {
-    throw providerNotImplemented();
+  async generateLayer(params) {
+    if (!this.engine) throw providerNotImplemented();
+    const layer = await this.engine.generateGeeNdviLayer(params);
+    return {
+      ...layer,
+      provider: 'google_earth_engine',
+      provider_used: 'google_earth_engine',
+      source: layer?.source || 'gee_sentinel_2_l2a',
+      processing_engine: 'google_earth_engine',
+    };
   }
+}
+
+/**
+ * Orquestra GEE-primary com fallback Copernicus.
+ * Regra: GEE para todos os modos; Copernicus só atende ndvi_contrast como
+ * backup. Modo avançado sem GEE → unsupported_visual_mode (422).
+ */
+export class NdviProviderManager {
+  constructor({ geeClient, copernicusClient } = {}) {
+    this.geeClient = geeClient;
+    this.copernicusClient = copernicusClient;
+  }
+
+  _geeReady() {
+    return Boolean(this.geeClient?.isImplemented?.());
+  }
+
+  async searchScenes(params) {
+    if (this._geeReady()) {
+      try {
+        const scenes = await this.geeClient.searchScenes(params);
+        return { provider: 'google_earth_engine', fallbackUsed: false, scenes };
+      } catch (error) {
+        console.warn(
+          `⚠️ [NDVI] GEE searchScenes falhou, fallback Copernicus: ${error?.message || error}`,
+        );
+      }
+    }
+    const scenes = await this.copernicusClient.searchScenes(params);
+    return {
+      provider: 'copernicus_dataspace',
+      fallbackUsed: this._geeReady(),
+      scenes,
+    };
+  }
+
+  async generateLayer(params) {
+    const requestedVisualMode = params?.visualMode || params?.visual_mode || 'ndvi_contrast';
+
+    if (this._geeReady()) {
+      try {
+        const layer = await this.geeClient.generateLayer(params);
+        return { provider: 'google_earth_engine', fallbackUsed: false, layer };
+      } catch (error) {
+        // Modos avançados não têm fallback Copernicus — propaga 422.
+        if (requestedVisualMode !== 'ndvi_contrast') {
+          throw unsupportedVisualMode(requestedVisualMode, error);
+        }
+        console.warn(
+          `⚠️ [NDVI] GEE generate (ndvi_contrast) falhou, fallback Copernicus: ${error?.message || error}`,
+        );
+      }
+    } else if (requestedVisualMode !== 'ndvi_contrast') {
+      // GEE indisponível e modo avançado pedido sem raster persistido:
+      // o gate de modo já barra antes, mas aqui é a última linha de defesa.
+      throw unsupportedVisualMode(requestedVisualMode);
+    }
+
+    const layer = await this.copernicusClient.generateLayer(params);
+    return {
+      provider: 'copernicus_dataspace',
+      fallbackUsed: this._geeReady(),
+      layer,
+    };
+  }
+}
+
+export function unsupportedVisualMode(visualMode, cause = null) {
+  const error = new Error(
+    `Modo "${visualMode}" exige Google Earth Engine, que não está disponível no momento.`,
+  );
+  error.code = 'unsupported_visual_mode';
+  error.status = 422;
+  error.provider = 'google_earth_engine';
+  if (cause?.message) error.cause = cause.message;
+  return error;
 }
 
 export function providerNotImplemented() {
