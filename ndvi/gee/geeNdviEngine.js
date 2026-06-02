@@ -3,7 +3,7 @@ import { storeNdviPreviewPng } from '../ndviPreviewStorage.js';
 const DATASET = 'COPERNICUS/S2_SR_HARMONIZED';
 const DEFAULT_MAX_CLOUD = 35;
 const GEE_RENDER_SCALE_M = 10;
-const DEFAULT_THUMB_SIZE = 1536;
+const DEFAULT_THUMB_SIZE = 2048;
 const DEFAULT_INNER_BUFFER_M = 10;
 const DEFAULT_SMOOTHING_RADIUS_PX = 1;
 
@@ -19,16 +19,19 @@ const VISUAL_MODES = Object.freeze({
 });
 
 const NDVI_AGRONOMIC_PALETTE = [
-  'C62828',
-  'EF6C00',
-  'FB8C00',
-  'FDD835',
-  'A5D66D',
-  '43A047',
-  '1B5E20',
+  '8B0000',
+  'D73027',
+  'F46D43',
+  'FDAE61',
+  'FEE08B',
+  'D9EF8B',
+  'A6D96A',
+  '66BD63',
+  '1A9850',
+  '006837',
 ];
 const SOIL_PALETTE = ['C49A6C', 'D8C18A', '8BC34A', '2E7D32'];
-const WATER_STRESS_PALETTE = ['8D1B1B', 'F9A825', '66BB6A', '00796B'];
+const WATER_STRESS_PALETTE = ['8D1B1B', 'E65100', 'F9A825', '66BB6A', '81D4FA', '0D47A1'];
 
 let initialized = false;
 let initializing = null;
@@ -41,7 +44,7 @@ function visualModes() {
 function rendererVersionFor(mode) {
   switch (mode) {
     case VISUAL_MODES.NDVI_CONTRAST:
-      return 'agronomic_contrast_v6_gee_masked';
+      return 'agronomic_contrast_v7_visual_quality';
     case VISUAL_MODES.NDVI_RELATIVE:
       return 'ndvi_relative_v2_gee_10m';
     case VISUAL_MODES.AGRONOMIC_CLASSES:
@@ -228,8 +231,12 @@ function innerBufferedGeometry(geometry) {
 
 async function safeStatsGeometry(gee, geometry) {
   const bufferM = numberFromEnv('GEE_INNER_BUFFER_M', DEFAULT_INNER_BUFFER_M);
+  let fullAreaHa = null;
   if (!Number.isFinite(bufferM) || bufferM <= 0) {
-    return { geometry, bufferAppliedM: 0 };
+    try {
+      fullAreaHa = Number(await getInfo(geometry.area(1))) / 10000;
+    } catch (_) {}
+    return { geometry, bufferAppliedM: 0, fullAreaHa };
   }
 
   const candidate = innerBufferedGeometry(geometry);
@@ -242,13 +249,14 @@ async function safeStatsGeometry(gee, geometry) {
     );
     const fullArea = Number(areas?.full);
     const bufferedArea = Number(areas?.buffered);
+    fullAreaHa = Number.isFinite(fullArea) ? fullArea / 10000 : null;
     if (
       Number.isFinite(fullArea) &&
       Number.isFinite(bufferedArea) &&
       fullArea > 0 &&
       bufferedArea > fullArea * 0.25
     ) {
-      return { geometry: candidate, bufferAppliedM: bufferM };
+      return { geometry: candidate, bufferAppliedM: bufferM, fullAreaHa };
     }
   } catch (error) {
     console.warn('[NDVI_GEE_BUFFER_FALLBACK]', {
@@ -256,7 +264,7 @@ async function safeStatsGeometry(gee, geometry) {
       message: error?.message || String(error),
     });
   }
-  return { geometry, bufferAppliedM: 0 };
+  return { geometry, bufferAppliedM: 0, fullAreaHa };
 }
 
 function maskIndexToGeometry(gee, image, geometry, bandName) {
@@ -266,8 +274,11 @@ function maskIndexToGeometry(gee, image, geometry, bandName) {
 
 function smoothForPreview(image, geometry) {
   const radius = numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX);
-  if (!Number.isFinite(radius) || radius <= 0) return image;
-  return image
+  const resampled = image.resample('bicubic');
+  if (!Number.isFinite(radius) || radius <= 0) {
+    return resampled.updateMask(image.mask()).clip(geometry);
+  }
+  return resampled
     .focal_median(radius, 'circle', 'pixels')
     .updateMask(image.mask())
     .clip(geometry);
@@ -331,6 +342,23 @@ function buildNdviValidMask(gee, { image, ndvi, geometry }) {
     .clip(geometry);
 }
 
+function buildIndexValidMask(gee, { image, index, geometry, bands }) {
+  const plotMask = gee.Image.constant(1).clip(geometry).selfMask();
+  const bandMask = bands
+    .map((band) => image.select(band))
+    .reduce((mask, bandImage) =>
+      mask
+        .and(bandImage.mask())
+        .and(bandImage.gt(0)),
+    gee.Image.constant(1));
+  const indexMask = index.gte(-1).and(index.lte(1));
+  return buildSclValidMask(image)
+    .and(bandMask)
+    .and(indexMask)
+    .updateMask(plotMask)
+    .clip(geometry);
+}
+
 async function calculateGeeMaskStats(gee, { image, validMask, geometry }) {
   const one = gee.Image.constant(1);
   const sclExcludedMask = buildSclValidMask(image).not();
@@ -383,17 +411,14 @@ function buildClassAreaImage(gee, ndvi) {
   ]);
 }
 
-async function calculateIndexMeans(gee, { ndre, savi, bsi, ndmi, geometry }) {
-  const images = [
-    ndre ? ndre.rename('NDRE') : null,
-    savi ? savi.rename('SAVI') : null,
-    bsi ? bsi.rename('BSI') : null,
-    ndmi ? ndmi.rename('NDMI') : null,
-  ].filter(Boolean);
-  if (!images.length) return {};
+async function calculateSingleIndexStats(gee, { image, bandName, geometry }) {
+  if (!image) return {};
   const stats = await getInfo(
-    gee.Image.cat(images).reduceRegion({
-      reducer: gee.Reducer.mean(),
+    image.rename(bandName).reduceRegion({
+      reducer: gee
+        .Reducer.mean()
+        .combine(gee.Reducer.minMax(), '', true)
+        .combine(gee.Reducer.percentile([5, 25, 50, 75, 95]), '', true),
       geometry,
       scale: GEE_RENDER_SCALE_M,
       maxPixels: 1e9,
@@ -401,10 +426,100 @@ async function calculateIndexMeans(gee, { ndre, savi, bsi, ndmi, geometry }) {
     }),
   );
   return {
-    ndre_mean: roundOrNull(stats.NDRE),
-    savi_mean: roundOrNull(stats.SAVI),
-    bsi_mean: roundOrNull(stats.BSI),
-    ndmi_mean: roundOrNull(stats.NDMI),
+    mean: roundOrNull(stats[`${bandName}_mean`] ?? stats[bandName]),
+    min: roundOrNull(stats[`${bandName}_min`]),
+    max: roundOrNull(stats[`${bandName}_max`]),
+    p5: roundOrNull(stats[`${bandName}_p5`]),
+    p25: roundOrNull(stats[`${bandName}_p25`]),
+    p50: roundOrNull(stats[`${bandName}_p50`]),
+    p75: roundOrNull(stats[`${bandName}_p75`]),
+    p95: roundOrNull(stats[`${bandName}_p95`]),
+  };
+}
+
+async function calculateThresholdPercents(gee, { baseImage, bands, geometry }) {
+  const entries = Object.entries(bands).filter(([, image]) => image);
+  if (!entries.length) return {};
+  const areas = await getInfo(
+    gee.Image.cat([
+      gee.Image.pixelArea().updateMask(baseImage.mask()).rename('total'),
+      ...entries.map(([name, image]) => gee.Image.pixelArea().updateMask(image).rename(name)),
+    ]).reduceRegion({
+      reducer: gee.Reducer.sum(),
+      geometry,
+      scale: GEE_RENDER_SCALE_M,
+      maxPixels: 1e9,
+      bestEffort: true,
+    }),
+  );
+  const total = Number(areas?.total || 0);
+  return Object.fromEntries(
+    entries.map(([key]) => [key, percent(areas?.[key], total)]),
+  );
+}
+
+async function calculateIndexStats(gee, { ndre, savi, bsi, ndmi, geometry }) {
+  const [ndreStats, saviStats, bsiStats, ndmiStats] = await Promise.all([
+    calculateSingleIndexStats(gee, { image: ndre, bandName: 'NDRE', geometry }),
+    calculateSingleIndexStats(gee, { image: savi, bandName: 'SAVI', geometry }),
+    calculateSingleIndexStats(gee, { image: bsi, bandName: 'BSI', geometry }),
+    calculateSingleIndexStats(gee, { image: ndmi, bandName: 'NDMI', geometry }),
+  ]);
+  const [moistureBuckets, chlorophyllBuckets] = await Promise.all([
+    ndmi
+      ? calculateThresholdPercents(gee, {
+          geometry,
+          baseImage: ndmi,
+          bands: {
+            waterStressPercent: ndmi.lt(0.1),
+            adequateMoisturePercent: ndmi.gte(0.2).and(ndmi.lt(0.45)),
+            highMoisturePercent: ndmi.gte(0.45),
+          },
+        })
+      : {},
+    ndre && Number.isFinite(ndreStats.p25) && Number.isFinite(ndreStats.p75)
+      ? calculateThresholdPercents(gee, {
+          geometry,
+          baseImage: ndre,
+          bands: {
+            lowChlorophyllPercent: ndre.lte(ndreStats.p25),
+            highChlorophyllPercent: ndre.gte(ndreStats.p75),
+          },
+        })
+      : {},
+  ]);
+  return {
+    ndre_mean: ndreStats.mean,
+    ndre_min: ndreStats.min,
+    ndre_max: ndreStats.max,
+    ndre_p5: ndreStats.p5,
+    ndre_p25: ndreStats.p25,
+    ndre_p50: ndreStats.p50,
+    ndre_p75: ndreStats.p75,
+    ndre_p95: ndreStats.p95,
+    lowChlorophyllPercent: chlorophyllBuckets.lowChlorophyllPercent,
+    highChlorophyllPercent: chlorophyllBuckets.highChlorophyllPercent,
+    savi_mean: saviStats.mean,
+    savi_min: saviStats.min,
+    savi_max: saviStats.max,
+    savi_p5: saviStats.p5,
+    savi_p50: saviStats.p50,
+    savi_p95: saviStats.p95,
+    bsi_mean: bsiStats.mean,
+    bsi_min: bsiStats.min,
+    bsi_max: bsiStats.max,
+    bsi_p5: bsiStats.p5,
+    bsi_p50: bsiStats.p50,
+    bsi_p95: bsiStats.p95,
+    ndmi_mean: ndmiStats.mean,
+    ndmi_min: ndmiStats.min,
+    ndmi_max: ndmiStats.max,
+    ndmi_p5: ndmiStats.p5,
+    ndmi_p50: ndmiStats.p50,
+    ndmi_p95: ndmiStats.p95,
+    waterStressPercent: moistureBuckets.waterStressPercent,
+    adequateMoisturePercent: moistureBuckets.adequateMoisturePercent,
+    highMoisturePercent: moistureBuckets.highMoisturePercent,
   };
 }
 
@@ -443,7 +558,7 @@ async function calculateGeeNdviStats(gee, { ndvi, ndre, savi, bsi, ndmi, geometr
   const p95 = roundOrNull(basicStats.NDVI_p95);
   const p98 = roundOrNull(basicStats.NDVI_p98);
   const homogeneity = homogeneityScore({ std: ndviStd, p5, p95 });
-  const indexStats = await calculateIndexMeans(gee, { ndre, savi, bsi, ndmi, geometry });
+  const indexStats = await calculateIndexStats(gee, { ndre, savi, bsi, ndmi, geometry });
 
   return {
     ndvi_mean: roundOrNull(basicStats.NDVI_mean ?? basicStats.NDVI),
@@ -518,10 +633,26 @@ function resolveContrastStretch(stats = {}) {
   // priorizar a faixa robusta p5/p95 quando ela já tem amplitude útil.
   if (Number.isFinite(p5) && Number.isFinite(p95) && p95 > p5) {
     const robustRange = p95 - p5;
-    if (robustRange >= 0.025) {
+    if (
+      robustRange < 0.03 &&
+      Number.isFinite(p2) &&
+      Number.isFinite(p98) &&
+      p98 > p2
+    ) {
+      return {
+        min: p2,
+        max: p98,
+        gamma: 0.85,
+        lowContrastScene: true,
+        stretchMode: 'low_contrast_p2_p98_gamma',
+      };
+    }
+    if (robustRange >= 0.03) {
       return {
         min: p5,
         max: p95,
+        gamma: 1,
+        lowContrastScene: false,
         stretchMode: 'p5_p95_robust',
       };
     }
@@ -541,6 +672,8 @@ function resolveContrastStretch(stats = {}) {
       return {
         min: p2,
         max: p98,
+        gamma: 1,
+        lowContrastScene: false,
         stretchMode: 'p2_p98',
       };
     }
@@ -550,6 +683,8 @@ function resolveContrastStretch(stats = {}) {
     return {
       min: Math.max(-1, p50 - 2 * std),
       max: Math.min(1, p50 + 2 * std),
+      gamma: 1,
+      lowContrastScene: false,
       stretchMode: 'std_2sigma',
     };
   }
@@ -557,6 +692,8 @@ function resolveContrastStretch(stats = {}) {
   return {
     min: Number.isFinite(p5) ? p5 : 0,
     max: Number.isFinite(p95) && p95 > p5 ? p95 : 1,
+    gamma: 1,
+    lowContrastScene: false,
     stretchMode: 'p5_p95',
   };
 }
@@ -567,6 +704,7 @@ function visualizationFor({ mode = VISUAL_MODES.NDVI_CONTRAST, stats = {} } = {}
     return {
       min: stretch.min,
       max: stretch.max,
+      gamma: stretch.gamma,
       palette: NDVI_AGRONOMIC_PALETTE,
       forceRgbOutput: true,
     };
@@ -575,7 +713,20 @@ function visualizationFor({ mode = VISUAL_MODES.NDVI_CONTRAST, stats = {} } = {}
     return { min: -0.25, max: 0.45, palette: SOIL_PALETTE, forceRgbOutput: true };
   }
   if (mode === VISUAL_MODES.NDMI_WATER_STRESS) {
-    return { min: -0.15, max: 0.55, palette: WATER_STRESS_PALETTE, forceRgbOutput: true };
+    return {
+      min: Number(stats.ndmi_p5 ?? -0.15),
+      max: Number(stats.ndmi_p95 ?? 0.55),
+      palette: WATER_STRESS_PALETTE,
+      forceRgbOutput: true,
+    };
+  }
+  if (mode === VISUAL_MODES.NDRE) {
+    return {
+      min: Number(stats.ndre_p5 ?? 0),
+      max: Number(stats.ndre_p95 ?? 0.6),
+      palette: NDVI_AGRONOMIC_PALETTE,
+      forceRgbOutput: true,
+    };
   }
   return {
     min: mode === VISUAL_MODES.NDVI_ABSOLUTE ? 0 : Number(stats.ndvi_min ?? 0),
@@ -599,9 +750,24 @@ async function downloadPng(url, fetchImpl) {
   return Buffer.from(await response.arrayBuffer());
 }
 
-function thumbnailSizes() {
-  const configured = numberFromEnv('GEE_THUMB_SIZE', DEFAULT_THUMB_SIZE);
-  return [...new Set([configured, 2048, DEFAULT_THUMB_SIZE, 1024])]
+function preferredThumbSize(areaHa) {
+  const configured = numberFromEnv('GEE_THUMB_SIZE', NaN);
+  if (Number.isFinite(configured) && configured >= 2048) return Math.round(configured);
+  const area = Number(areaHa);
+  if (Number.isFinite(area) && area > 1000) return 4096;
+  if (Number.isFinite(area) && area > 500) return 3072;
+  return DEFAULT_THUMB_SIZE;
+}
+
+function thumbnailSizes(areaHa) {
+  const configured = numberFromEnv('GEE_THUMB_SIZE', NaN);
+  const preferred = preferredThumbSize(areaHa);
+  const fallbacks = preferred >= 4096
+    ? [4096, 3072, DEFAULT_THUMB_SIZE, 1536]
+    : preferred >= 3072
+      ? [3072, DEFAULT_THUMB_SIZE, 1536]
+      : [DEFAULT_THUMB_SIZE, 1536];
+  return [...new Set([configured, preferred, ...fallbacks])]
     .filter((size) => Number.isFinite(size) && size > 0)
     .map((size) => Math.round(size));
 }
@@ -612,6 +778,7 @@ async function renderVisualPngWithFallback({
   stats,
   mode,
   geometry,
+  areaHa,
   fetchImpl,
 }) {
   let lastError = null;
@@ -620,7 +787,7 @@ async function renderVisualPngWithFallback({
     fallbackImage ? { image: fallbackImage, smoothingApplied: false } : null,
   ].filter(Boolean);
   for (const candidate of candidates) {
-    for (const size of thumbnailSizes()) {
+    for (const size of thumbnailSizes(areaHa)) {
       try {
         const visual = candidate.image
           .visualize(visualizationFor({ mode, stats }))
@@ -698,7 +865,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       const mode = visualModes().includes(visualMode) ? visualMode : VISUAL_MODES.NDVI_CONTRAST;
       const geometry = geometryFromPolygon(gee, polygon);
       const statsGeometry = await safeStatsGeometry(gee, geometry);
-      const renderGeometry = statsGeometry.geometry;
+      const plotGeometry = geometry;
       const image = sceneId
         ? gee.Image(sceneId)
         : sentinelCollection(gee, {
@@ -738,22 +905,56 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         },
       );
 
-      const validNdviMask = buildNdviValidMask(gee, {
+      const statsValidMask = buildNdviValidMask(gee, {
         image,
         ndvi: rawNdvi,
-        geometry: renderGeometry,
+        geometry: statsGeometry.geometry,
       });
-      const ndvi = maskIndexToGeometry(gee, rawNdvi.updateMask(validNdviMask), renderGeometry, 'NDVI');
-      const ndre = maskIndexToGeometry(gee, rawNdre.updateMask(validNdviMask), renderGeometry, 'NDRE');
-      const savi = maskIndexToGeometry(gee, rawSavi.updateMask(validNdviMask), renderGeometry, 'SAVI');
-      const ndmi = maskIndexToGeometry(gee, rawNdmi.updateMask(validNdviMask), renderGeometry, 'NDMI');
-      const bsi = maskIndexToGeometry(gee, rawBsi.updateMask(validNdviMask), renderGeometry, 'BSI');
+      const renderValidMask = buildNdviValidMask(gee, {
+        image,
+        ndvi: rawNdvi,
+        geometry: plotGeometry,
+      });
+      const statsNdreMask = buildIndexValidMask(gee, {
+        image,
+        index: rawNdre,
+        geometry: statsGeometry.geometry,
+        bands: ['B8A', 'B5'],
+      });
+      const statsNdmiMask = buildIndexValidMask(gee, {
+        image,
+        index: rawNdmi,
+        geometry: statsGeometry.geometry,
+        bands: ['B8', 'B11'],
+      });
+      const renderNdreMask = buildIndexValidMask(gee, {
+        image,
+        index: rawNdre,
+        geometry: plotGeometry,
+        bands: ['B8A', 'B5'],
+      });
+      const renderNdmiMask = buildIndexValidMask(gee, {
+        image,
+        index: rawNdmi,
+        geometry: plotGeometry,
+        bands: ['B8', 'B11'],
+      });
+      const ndvi = maskIndexToGeometry(gee, rawNdvi.updateMask(statsValidMask), statsGeometry.geometry, 'NDVI');
+      const ndre = maskIndexToGeometry(gee, rawNdre.updateMask(statsNdreMask), statsGeometry.geometry, 'NDRE');
+      const savi = maskIndexToGeometry(gee, rawSavi.updateMask(statsValidMask), statsGeometry.geometry, 'SAVI');
+      const ndmi = maskIndexToGeometry(gee, rawNdmi.updateMask(statsNdmiMask), statsGeometry.geometry, 'NDMI');
+      const bsi = maskIndexToGeometry(gee, rawBsi.updateMask(statsValidMask), statsGeometry.geometry, 'BSI');
+      const renderNdvi = maskIndexToGeometry(gee, rawNdvi.updateMask(renderValidMask), plotGeometry, 'NDVI');
+      const renderNdre = maskIndexToGeometry(gee, rawNdre.updateMask(renderNdreMask), plotGeometry, 'NDRE');
+      const renderSavi = maskIndexToGeometry(gee, rawSavi.updateMask(renderValidMask), plotGeometry, 'SAVI');
+      const renderNdmi = maskIndexToGeometry(gee, rawNdmi.updateMask(renderNdmiMask), plotGeometry, 'NDMI');
+      const renderBsi = maskIndexToGeometry(gee, rawBsi.updateMask(renderValidMask), plotGeometry, 'BSI');
 
       const rendererVersion = rendererVersionFor(mode);
       const maskStats = await calculateGeeMaskStats(gee, {
         image,
-        validMask: validNdviMask,
-        geometry: renderGeometry,
+        validMask: renderValidMask,
+        geometry: plotGeometry,
       });
       const stats = await calculateGeeNdviStats(gee, {
         ndvi,
@@ -761,7 +962,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         savi,
         bsi,
         ndmi,
-        geometry: renderGeometry,
+        geometry: statsGeometry.geometry,
       });
       const p5 = stats.ndvi_p5 ?? stats.contrast?.p5;
       const p50 = stats.ndvi_p50 ?? stats.contrast?.p50;
@@ -789,6 +990,8 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
           stretchMode: contrastStretch.stretchMode,
           stretchMin: roundOrNull(contrastStretch.min),
           stretchMax: roundOrNull(contrastStretch.max),
+          gamma: contrastStretch.gamma,
+          lowContrastScene: contrastStretch.lowContrastScene,
           edgeBufferM: statsGeometry.bufferAppliedM,
           smoothingRadiusPx: numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX),
         };
@@ -798,14 +1001,59 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
           : { rendererVersion, edgeBufferM: statsGeometry.bufferAppliedM };
       }
 
-      const rawRenderImage = resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi });
-      const renderImage = smoothForPreview(rawRenderImage, renderGeometry);
+      const ndviMean = Number(stats.ndvi_mean);
+      const ndviP50 = Number(stats.ndvi_p50);
+      const ndmiMean = Number(stats.ndmi_mean);
+      const ndmiP5 = Number(stats.ndmi_p5);
+      const ndmiP95 = Number(stats.ndmi_p95);
+      const ndreMean = Number(stats.ndre_mean);
+      const ndreP25 = Number(stats.ndre_p25);
+      stats.evidence = {
+        hasProbableWaterStress:
+          Number(stats.waterStressPercent || 0) >= 5 ||
+          (Number.isFinite(ndmiMean) && ndmiMean < 0.1),
+        hasMoistureGradient:
+          Number.isFinite(ndmiP5) &&
+          Number.isFinite(ndmiP95) &&
+          ndmiP95 - ndmiP5 >= 0.12,
+        hasLocalizedDryZone: Number(stats.waterStressPercent || 0) >= 8,
+        waterStressPercent: stats.waterStressPercent ?? null,
+        hasLowChlorophyllZone: Number(stats.lowChlorophyllPercent || 0) >= 10,
+        hasNdreNdviMismatch:
+          Number.isFinite(ndviP50) &&
+          Number.isFinite(ndreMean) &&
+          ndviP50 >= 0.75 &&
+          ndreMean <= 0.28,
+        ndreMean: stats.ndre_mean ?? null,
+        lowChlorophyllPercent: stats.lowChlorophyllPercent ?? null,
+        ndviLowNdmiLow:
+          Number.isFinite(ndviMean) &&
+          Number.isFinite(ndmiMean) &&
+          ndviMean < 0.6 &&
+          ndmiMean < 0.1,
+        ndviHighNdreLow:
+          Number.isFinite(ndviP50) &&
+          Number.isFinite(ndreP25) &&
+          ndviP50 >= 0.75 &&
+          ndreP25 <= 0.25,
+      };
+
+      const rawRenderImage = resolveIndexImage({
+        mode,
+        ndvi: renderNdvi,
+        ndre: renderNdre,
+        savi: renderSavi,
+        bsi: renderBsi,
+        ndmi: renderNdmi,
+      });
+      const renderImage = smoothForPreview(rawRenderImage, plotGeometry);
       const renderedPng = await renderVisualPngWithFallback({
         image: renderImage,
         fallbackImage: rawRenderImage,
         stats,
         mode,
-        geometry,
+        geometry: plotGeometry,
+        areaHa: statsGeometry.fullAreaHa,
         fetchImpl,
       });
       const pngBuffer = renderedPng.buffer;
@@ -829,6 +1077,26 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         p5,
         p50,
         p95,
+      });
+      console.log('[NDVI_VISUAL_QUALITY]', {
+        scale: GEE_RENDER_SCALE_M,
+        dimensions: renderedPng.thumbSize,
+        smoothing: renderedPng.smoothingApplied
+          ? `focal_median_${numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX)}px`
+          : 'none',
+        resample: 'bicubic',
+        p5,
+        p50,
+        p95,
+        visualMin: stats.contrast?.stretchMin,
+        visualMax: stats.contrast?.stretchMax,
+        lowContrastScene: Boolean(stats.contrast?.lowContrastScene),
+      });
+      console.log('[NDVI_MASK_ALPHA]', {
+        validPixels: maskStats.validPixels,
+        maskedPixels: maskStats.maskedPixels,
+        transparentPixels: maskStats.maskedPixels,
+        outsidePolygonTransparent: true,
       });
       console.log('[NDVI_RENDER_V2_FINAL]', {
         visualMode: mode,
