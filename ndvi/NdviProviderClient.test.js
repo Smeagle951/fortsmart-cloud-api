@@ -22,7 +22,7 @@ describe('NdviProviderClient', () => {
   it('provider=gee sem implementação retorna erro claro', async () => {
     assert.throws(
       () => selectNdviProvider({ mode: 'gee', geeClient: new GeeNdviProviderClient() }),
-      /not implemented/,
+      /desativado por política/,
     );
   });
 
@@ -34,7 +34,21 @@ describe('NdviProviderClient', () => {
       copernicusClient,
     });
     assert.equal(selected.client, copernicusClient);
-    assert.equal(selected.fallbackUsed, true);
+    assert.equal(selected.fallbackUsed, false);
     assert.equal(selected.provider, 'copernicus_dataspace');
+  });
+
+  it('provider=gee exige opt-in antes de permitir o engine', () => {
+    const previous = process.env.GEE_ALLOW_USAGE;
+    process.env.GEE_ALLOW_USAGE = 'true';
+    try {
+      assert.throws(
+        () => selectNdviProvider({ mode: 'gee', geeClient: new GeeNdviProviderClient() }),
+        /not implemented/,
+      );
+    } finally {
+      if (previous === undefined) delete process.env.GEE_ALLOW_USAGE;
+      else process.env.GEE_ALLOW_USAGE = previous;
+    }
   });
 });

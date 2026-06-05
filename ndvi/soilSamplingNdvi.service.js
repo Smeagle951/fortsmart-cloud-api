@@ -48,9 +48,13 @@ class SoilSamplingNdviService {
     this.geeClient = geeClient;
   }
 
-  /** GEE pronto (engine injetado e implementado). */
+  /** GEE dormente por padrão; só usa com opt-in explícito para evitar custo. */
   _geeReady() {
-    return Boolean(this.geeClient?.isImplemented?.());
+    return (
+      process.env.NDVI_PROVIDER === 'gee' &&
+      process.env.GEE_ALLOW_USAGE === 'true' &&
+      Boolean(this.geeClient?.isImplemented?.())
+    );
   }
 
   _logRequest(meta) {
@@ -564,9 +568,9 @@ class SoilSamplingNdviService {
 
       stage = 'raster_reuse';
       try {
-        // GEE-primary: quando GEE está disponível, geramos direto via GEE
-        // (renderiza qualquer modo server-side) e ignoramos o reuse de raster
-        // Copernicus persistido.
+        // Copernicus-first: GEE fica dormente por padrão. Quando não há opt-in
+        // explícito, reutilizamos raster Copernicus persistido para modos
+        // avançados sem chamar Earth Engine.
         const reused = geeAvailable
           ? null
           : await this.processClient.tryGenerateFromPersistedRaster?.({
@@ -1040,30 +1044,28 @@ class SoilSamplingNdviService {
   }
 
   /**
-   * Diagnóstico do provider GEE para o endpoint /gee-health.
-   * `gee_engine_loaded` indica se o engine real foi injetado (pipeline portado
-   * + @google/earthengine instalado). Sem ele, o cloud-api usa Copernicus.
+   * Diagnóstico do provider GEE para /gee-health.
+   * Copernicus é o provider ativo; GEE só pode ser usado com opt-in explícito.
    */
   getGeeHealth() {
     const status = getNdviProviderStatus();
     const engineLoaded = this._geeReady();
-    const effectiveProvider = engineLoaded
-      ? 'google_earth_engine'
-      : 'copernicus_dataspace';
+    const effectiveProvider = engineLoaded ? 'google_earth_engine' : 'copernicus_dataspace';
 
-    let readiness = 'disabled';
+    let readiness = 'disabled_by_policy';
     if (engineLoaded) {
       readiness = 'ready';
     } else if (status.gee_primary) {
-      // Habilitado + configurado, mas engine ainda não carregado/portado.
       readiness = 'enabled_engine_missing';
-    } else if (status.gee_enabled && !status.gee_configured) {
+    } else if (status.gee_usage_allowed && !status.gee_configured) {
       readiness = 'enabled_not_configured';
     }
 
     return {
       provider: effectiveProvider,
       gee_enabled: status.gee_enabled,
+      gee_hidden: status.gee_hidden,
+      gee_usage_allowed: status.gee_usage_allowed,
       gee_configured: status.gee_configured,
       gee_primary: status.gee_primary,
       gee_engine_loaded: engineLoaded,

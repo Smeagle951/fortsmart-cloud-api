@@ -81,9 +81,9 @@ export class GeeNdviProviderClient extends NdviProviderClient {
 }
 
 /**
- * Orquestra GEE-primary com fallback Copernicus.
- * Regra: GEE para todos os modos; Copernicus só atende ndvi_contrast como
- * backup. Modo avançado sem GEE → unsupported_visual_mode (422).
+ * Orquestra Copernicus-first.
+ * GEE fica dormente por padrão para evitar custo acidental. Só usa GEE com
+ * opt-in explícito: NDVI_PROVIDER=gee + GEE_ALLOW_USAGE=true.
  */
 export class NdviProviderManager {
   constructor({ geeClient, copernicusClient } = {}) {
@@ -92,7 +92,11 @@ export class NdviProviderManager {
   }
 
   _geeReady() {
-    return Boolean(this.geeClient?.isImplemented?.());
+    return (
+      process.env.NDVI_PROVIDER === 'gee' &&
+      process.env.GEE_ALLOW_USAGE === 'true' &&
+      Boolean(this.geeClient?.isImplemented?.())
+    );
   }
 
   async searchScenes(params) {
@@ -167,14 +171,25 @@ export function providerNotImplemented() {
 export function selectNdviProvider({ mode = process.env.NDVI_PROVIDER, geeClient, copernicusClient } = {}) {
   const requested = String(mode || 'copernicus').toLowerCase();
   if (requested === 'gee') {
+    if (process.env.GEE_ALLOW_USAGE !== 'true') throw geeDisabledByPolicy();
     if (!geeClient?.isImplemented?.()) throw providerNotImplemented();
     return { client: geeClient, fallbackUsed: false, requested, provider: 'google_earth_engine' };
   }
   if (requested === 'auto') {
-    if (geeClient?.isImplemented?.()) {
+    if (process.env.GEE_ALLOW_USAGE === 'true' && geeClient?.isImplemented?.()) {
       return { client: geeClient, fallbackUsed: false, requested, provider: 'google_earth_engine' };
     }
-    return { client: copernicusClient, fallbackUsed: true, requested, provider: 'copernicus_dataspace' };
+    return { client: copernicusClient, fallbackUsed: false, requested, provider: 'copernicus_dataspace' };
   }
   return { client: copernicusClient, fallbackUsed: false, requested, provider: 'copernicus_dataspace' };
+}
+
+export function geeDisabledByPolicy() {
+  const error = new Error(
+    'Google Earth Engine está desativado por política. Provider NDVI ativo: Copernicus Data Space.',
+  );
+  error.code = 'GEE_DISABLED_BY_POLICY';
+  error.status = 503;
+  error.provider = 'copernicus_dataspace';
+  return error;
 }

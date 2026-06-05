@@ -35,7 +35,7 @@ export function assertVisualModeSupported({
 } = {}) {
   const mode = normalizeVisualModeKey(visualMode);
   if (mode === 'ndvi_contrast') return mode;
-  // GEE-primary: com GEE disponível, qualquer modo é renderizável server-side.
+  // GEE só entra com opt-in explícito; por padrão Copernicus usa raster persistido.
   if (geeAvailable && RASTER_VISUAL_MODES.includes(mode)) return mode;
   // Sem GEE: só liberamos modos avançados se houver raster persistido (Copernicus).
   if (canRenderFromPersistedRaster(mode, raster)) return mode;

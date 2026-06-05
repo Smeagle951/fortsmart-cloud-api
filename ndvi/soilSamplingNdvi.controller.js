@@ -515,7 +515,10 @@ class SoilSamplingNdviController {
   async getGeeHealth(req, res) {
     try {
       const health = this.service.getGeeHealth?.() || {};
-      const httpStatus = health.readiness === 'ready' ? 200 : 503;
+      const httpStatus =
+        health.readiness === 'ready' || health.readiness === 'disabled_by_policy'
+          ? 200
+          : 503;
       res.status(httpStatus).json({
         success: health.readiness === 'ready',
         ...health,
@@ -527,6 +530,16 @@ class SoilSamplingNdviController {
 
   async getGeeTest(req, res) {
     try {
+      if (process.env.NDVI_PROVIDER !== 'gee' || process.env.GEE_ALLOW_USAGE !== 'true') {
+        return res.status(503).json({
+          success: false,
+          configured: false,
+          provider: 'google_earth_engine',
+          active_provider: 'copernicus_dataspace',
+          error: 'GEE_DISABLED_BY_POLICY',
+          message: 'Google Earth Engine está desativado; Copernicus Sentinel-2 L2A é o provider ativo.',
+        });
+      }
       const result = await runGeeSmokeTest();
       res.json(result);
     } catch (error) {

@@ -6,7 +6,9 @@ export function getNdviProviderStatus() {
     .trim()
     .toLowerCase();
 
-  const geeEnabled = process.env.GEE_ENABLED === 'true';
+  const geeUsageAllowed =
+    ndviProvider === 'gee' && process.env.GEE_ALLOW_USAGE === 'true';
+  const geeEnabled = process.env.GEE_ENABLED === 'true' && geeUsageAllowed;
   const geeServiceAccountJson = String(
     process.env.GEE_SERVICE_ACCOUNT_JSON ||
       process.env.GOOGLE_SERVICE_ACCOUNT_JSON ||
@@ -33,8 +35,9 @@ export function getNdviProviderStatus() {
         process.env.NDVI_PUBLIC_BASE_URL),
   );
 
-  // GEE-primary: sempre que habilitado e configurado o GEE é o provider
-  // principal; Copernicus/CDSE passa a ser fallback (apenas ndvi_contrast).
+  // Copernicus-first: GEE fica dormente por padrão para evitar custo acidental.
+  // Mesmo que GEE_ENABLED esteja true no ambiente antigo, só usa GEE se houver
+  // opt-in explícito: NDVI_PROVIDER=gee + GEE_ALLOW_USAGE=true.
   const geePrimary = geeEnabled && geeConfigured;
   const activeProvider = geePrimary
     ? 'google_earth_engine'
@@ -44,6 +47,8 @@ export function getNdviProviderStatus() {
     ndvi_provider: ndviProvider,
     active_provider: activeProvider,
     gee_enabled: geeEnabled,
+    gee_hidden: !geeUsageAllowed,
+    gee_usage_allowed: geeUsageAllowed,
     gee_configured: geeConfigured,
     gee_credentials_source: geeJsonConfigured ? 'service_account_json' : (geeKeyConfigured ? 'env_key' : 'none'),
     gee_primary: geePrimary,
@@ -54,7 +59,7 @@ export function getNdviProviderStatus() {
   };
 }
 
-/** GEE é o provider principal (habilitado + configurado). */
+/** GEE é o provider principal apenas com opt-in explícito. */
 export function isGeePrimary() {
   return getNdviProviderStatus().gee_primary;
 }
@@ -72,6 +77,15 @@ export function assertCopernicusReady(authClient) {
 export function assertGeeIfRequired() {
   const status = getNdviProviderStatus();
   if (process.env.NDVI_PROVIDER !== 'gee' && !status.gee_enabled) return status;
+
+  if (process.env.NDVI_PROVIDER === 'gee' && process.env.GEE_ALLOW_USAGE !== 'true') {
+    const err = new Error(
+      'Google Earth Engine está desativado por política. Use Copernicus Data Space como provider NDVI.',
+    );
+    err.code = 'gee_disabled_by_policy';
+    err.status = 503;
+    throw err;
+  }
 
   if (!status.gee_configured) {
     const err = new Error(

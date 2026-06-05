@@ -27,11 +27,9 @@ function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
 
   const repository = new SoilSamplingNdviRepository(pool);
 
-  // Seam GEE-primary: começa dormente (engine=null → isImplemented()=false),
-  // então o serviço usa Copernicus normalmente. Quando GEE está habilitado e
-  // configurado, carregamos o engine real dinamicamente (precisa portar
-  // ./gee/geeNdviEngine.js e instalar @google/earthengine). Se o engine não
-  // estiver disponível, mantém-se o fallback Copernicus sem quebrar produção.
+  // Copernicus-first: GEE fica dormente (engine=null → isImplemented()=false)
+  // para evitar custo acidental. Só carregamos o engine real com opt-in
+  // explícito em ndviEnv: NDVI_PROVIDER=gee + GEE_ALLOW_USAGE=true.
   const geeClient = new GeeNdviProviderClient({ engine: null });
 
   const service = new SoilSamplingNdviService({
@@ -48,10 +46,10 @@ function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
     try {
       const mod = await import('./gee/geeNdviEngine.js');
       geeClient.engine = await mod.createGeeNdviEngine({ publicBaseUrl });
-      console.log('✅ [NDVI] Google Earth Engine ativo como provider principal');
+      console.log('✅ [NDVI] Google Earth Engine ativo por opt-in explícito');
     } catch (error) {
       console.warn(
-        `⚠️ [NDVI] GEE habilitado mas engine indisponível — fallback Copernicus: ${error?.message || error}`,
+        `⚠️ [NDVI] GEE solicitado mas engine indisponível — usando Copernicus: ${error?.message || error}`,
       );
     }
   })();
