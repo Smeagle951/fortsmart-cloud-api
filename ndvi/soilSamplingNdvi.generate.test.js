@@ -100,6 +100,74 @@ describe('SoilSamplingNdviService.generateLayer', () => {
     assert.ok(NdviResponseMapper.mapLayer(savedRow));
   });
 
+  it('gera modo avançado via Copernicus quando raster persistido ainda não existe', async () => {
+    let requestedMode = null;
+    const savedRow = {
+      id: 'layer-moisture',
+      scene_id: 'scene-abc',
+      farm_id: 'f1',
+      plot_id: 'p1',
+      campaign_id: '16',
+      source: 'sentinel_2_l2a',
+      image_date: '2026-05-25',
+      status: 'generated',
+      preview_url: 'https://cdn.example/ndmi.png',
+      ndvi_mean: 0.62,
+      ndvi_min: 0.35,
+      ndvi_max: 0.81,
+      very_low_percent: 5,
+      low_percent: 25,
+      medium_percent: 40,
+      high_percent: 30,
+      visual_mode: 'ndmi_water_stress',
+      is_active: false,
+    };
+
+    const service = new SoilSamplingNdviService({
+      repository: {
+        ensureSchema: async () => {},
+        findRecentCache: async () => null,
+        upsertLayer: async (data) => ({ ...savedRow, ...data, id: savedRow.id }),
+      },
+      catalogClient: { polygonToBbox: () => [-54.48, -15.38, -54.47, -15.37] },
+      processClient: {
+        generateNdviLayer: async (params) => {
+          requestedMode = params.visualMode;
+          return {
+            preview_url: 'https://cdn.example/ndmi.png',
+            ndvi_mean: 0.62,
+            ndvi_min: 0.35,
+            ndvi_max: 0.81,
+            very_low_percent: 5,
+            low_percent: 25,
+            medium_percent: 40,
+            high_percent: 30,
+            contrast,
+            visual_mode: 'ndmi_water_stress',
+            status: 'generated',
+          };
+        },
+      },
+      authClient: { isConfigured: () => true },
+    });
+
+    const layer = await service.generateLayer({
+      farmId: 'f1',
+      plotId: 'p1',
+      campaignId: '16',
+      sceneId: 'scene-abc',
+      polygon,
+      imageDate: '2026-05-25',
+      visualMode: 'ndmi_water_stress',
+      force: true,
+    });
+
+    assert.equal(requestedMode, 'ndmi_water_stress');
+    assert.equal(layer.visual_mode, 'ndmi_water_stress');
+    assert.equal(layer.preview_url, 'https://cdn.example/ndmi.png');
+    assert.equal(layer.status, 'ready');
+  });
+
   it('422 quando preview existe mas stats NDVI inválidas (mean zero)', async () => {
     const service = new SoilSamplingNdviService({
       repository: {

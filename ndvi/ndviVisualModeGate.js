@@ -28,6 +28,18 @@ export function canRenderFromPersistedRaster(visualMode, raster) {
   return true;
 }
 
+export function missingBandsForVisualMode(visualMode, raster) {
+  const mode = normalizeVisualModeKey(visualMode);
+  const bands = raster?.bands || {};
+  const missing = [];
+  if (!bands.ndvi?.length) missing.push('B04/B08');
+  if (mode === 'ndre' && !bands.ndre?.length) missing.push('B05/B8A ou B05/B08');
+  if (mode === 'savi' && !bands.savi?.length) missing.push('B04/B08');
+  if (mode === 'bsi_soil' && !bands.bsi?.length) missing.push('B02/B04/B08/B11');
+  if (mode === 'ndmi_water_stress' && !bands.ndmi?.length) missing.push('B08/B11');
+  return missing;
+}
+
 export function assertVisualModeSupported({
   visualMode,
   raster = null,
@@ -40,10 +52,13 @@ export function assertVisualModeSupported({
   // Sem GEE: só liberamos modos avançados se houver raster persistido (Copernicus).
   if (canRenderFromPersistedRaster(mode, raster)) return mode;
 
-  const err = new Error(
-    `Modo "${mode}" exige Google Earth Engine ou raster persistido (gere NDVI Contraste primeiro).`,
-  );
+  const missing = missingBandsForVisualMode(mode, raster);
+  const reason = missing.length
+    ? `A cena não possui as bandas necessárias para "${mode}": ${missing.join(', ')}.`
+    : `Modo visual "${mode}" não é suportado para Sentinel/Copernicus.`;
+  const err = new Error(reason);
   err.code = 'unsupported_visual_mode';
   err.status = 422;
+  err.details = { visualMode: mode, missingBands: missing };
   throw err;
 }

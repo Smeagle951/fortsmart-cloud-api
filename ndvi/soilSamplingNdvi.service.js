@@ -477,11 +477,22 @@ class SoilSamplingNdviService {
         } catch (_) {
           persistedRaster = null;
         }
-        assertVisualModeSupported({
-          visualMode: requestedVisualMode,
-          raster: persistedRaster,
-          geeAvailable,
-        });
+        // Unknown modes must fail early. Known Sentinel/Copernicus modes can be
+        // generated remotely even when no internal raster exists yet.
+        if (!persistedRaster) {
+          assertVisualModeSupported({
+            visualMode: requestedVisualMode,
+            raster: { bands: { ndvi: [1], ndre: [1], savi: [1], bsi: [1], ndmi: [1] } },
+            geeAvailable,
+          });
+          logGenerateStage(meta, stage, 'remote_copernicus_generation=allowed');
+        } else {
+          assertVisualModeSupported({
+            visualMode: requestedVisualMode,
+            raster: persistedRaster,
+            geeAvailable,
+          });
+        }
       }
 
       stage = 'cache_lookup';
