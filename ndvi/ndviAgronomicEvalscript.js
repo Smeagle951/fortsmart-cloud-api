@@ -184,8 +184,11 @@ export function buildNdviContrastPreviewEvalscript(stats = {}) {
   const p95 = Number(stats.ndvi_p95 ?? stats.ndviP95);
   const p2 = Number(stats.ndvi_p2 ?? stats.ndviP2);
   const p98 = Number(stats.ndvi_p98 ?? stats.ndviP98);
+  const robustRange = Number.isFinite(p5) && Number.isFinite(p95) ? p95 - p5 : null;
+  const lowContrastScene = Number.isFinite(robustRange) && robustRange < 0.05;
   const useP2P98 =
-    !Number.isFinite(p5) || !Number.isFinite(p95) || p95 - p5 < 0.08;
+    !lowContrastScene &&
+    (!Number.isFinite(p5) || !Number.isFinite(p95) || p95 - p5 < 0.08);
   const low = useP2P98 && Number.isFinite(p2) ? p2 : p5;
   const high = useP2P98 && Number.isFinite(p98) ? p98 : p95;
   const safeLow = Number.isFinite(low) ? low : 0;
@@ -211,9 +214,24 @@ export function buildNdviContrastPreviewEvalscript(stats = {}) {
 const VLOW=${safeLow};
 const SPAN=${span};
 const GAMMA=${gamma};
+const LOW_CONTRAST=${lowContrastScene ? 'true' : 'false'};
 const STOPS=${JSON.stringify(stops)};
+const ABS_STOPS=[
+  {m:0.2,r:0.843,g:0.188,b:0.153},
+  {m:0.35,r:0.988,g:0.553,b:0.349},
+  {m:0.5,r:0.996,g:0.878,b:0.545},
+  {m:0.65,r:0.569,g:0.812,b:0.376},
+  {m:0.78,r:0.369,g:0.788,b:0.384},
+  {m:0.88,r:0.204,g:0.659,b:0.325},
+  {m:1.01,r:0.102,g:0.596,b:0.314}
+];
 function setup(){return {input:["B04","B08","SCL","dataMask"],output:{bands:4,sampleType:'AUTO'}};}
 function isWaterCloud(scl){return [0,1,2,3,6,8,9,10,11].indexOf(scl)>=0;}
+function colorAbs(v){
+  const x=Math.max(-1,Math.min(1,v));
+  for(let i=0;i<ABS_STOPS.length;i++){if(x<ABS_STOPS[i].m)return [ABS_STOPS[i].r,ABS_STOPS[i].g,ABS_STOPS[i].b,1];}
+  const s=ABS_STOPS[ABS_STOPS.length-1];return [s.r,s.g,s.b,1];
+}
 function colorContrast(t){
   const x=Math.pow(Math.max(0,Math.min(1,t)),GAMMA);
   if(x<=0){const s=STOPS[0];return [s.r,s.g,s.b,1];}
@@ -231,6 +249,7 @@ function evaluatePixel(s){
   if(s.dataMask===0||isWaterCloud(s.SCL)) return [0,0,0,0];
   const n=(s.B08-s.B04)/(s.B08+s.B04);
   if(!isFinite(n)) return [0,0,0,0];
+  if(LOW_CONTRAST) return colorAbs(n);
   return colorContrast((n-VLOW)/SPAN);
 }`;
 }

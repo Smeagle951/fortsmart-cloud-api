@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { PNG } from 'pngjs';
 
 import {
   serializeInternalGridDocument,
@@ -84,6 +85,31 @@ test('generatePreviewFromRaster produz PNG sem Sentinel', () => {
   assert.ok(out.buffer?.length > 100);
   assert.equal(out.rasterReuse, true);
   assert.ok(out.contrast?.p5 != null || out.contrast?.pLow != null);
+});
+
+test('generatePreviewFromRaster evita vermelho falso em cena homogênea alta', () => {
+  const raster = syntheticGrid(8, 8);
+  for (let i = 0; i < raster.bands.ndvi.length; i += 1) {
+    raster.bands.ndvi[i] = 0.86 + (i / (raster.bands.ndvi.length - 1)) * 0.01;
+  }
+  const loaded = deserializeInternalGridBuffer(
+    serializeInternalGridDocument(raster).buffer,
+  );
+  const out = generatePreviewFromRaster({ raster: loaded, visualMode: 'ndvi_contrast' });
+  assert.equal(out.contrast.lowContrastScene, true);
+
+  const png = PNG.sync.read(out.buffer);
+  let redPixels = 0;
+  let visiblePixels = 0;
+  for (let i = 0; i < png.data.length; i += 4) {
+    if (png.data[i + 3] < 40) continue;
+    visiblePixels += 1;
+    if (png.data[i] > png.data[i + 1] * 1.2 && png.data[i] > png.data[i + 2] * 1.2) {
+      redPixels += 1;
+    }
+  }
+  assert.ok(visiblePixels > 0);
+  assert.ok(redPixels / visiblePixels < 0.05);
 });
 
 test('cache científico e visual têm chaves distintas', () => {

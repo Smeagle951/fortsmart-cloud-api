@@ -8,7 +8,7 @@ import {
 } from './ndviHistogramEqualization.js';
 import { medianFilter3x3, bilinearUpscale } from './ndviSpatialSmoothing.js';
 
-const RENDERER_VERSION = 'agronomic_contrast_v2';
+const RENDERER_VERSION = 'agronomic_contrast_v2_1';
 
 function finiteNdviValues(values) {
   return Array.isArray(values)
@@ -102,16 +102,26 @@ export function renderAgronomicContrastV2({
   const percentiles = calculatePercentiles(rawValues);
   const stretch = resolveStretch(percentiles);
   const gamma = gammaForDistribution(percentiles);
-  const stretched = values.map((value) => applyContrastStretch(value, stretch.pLow, stretch.pHigh));
+  const sourceValues = values.map((value) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= -1 && n <= 1 ? n : null;
+  });
+  const stretched = sourceValues.map((value) =>
+    value == null ? null : applyContrastStretch(value, stretch.pLow, stretch.pHigh),
+  );
   const gammaCorrected = stretched.map((value) =>
     value == null ? null : round(Math.pow(value, gamma), 4),
   );
-  const equalized = applyHistogramEqualization(gammaCorrected, {
-    p5: 0,
-    p95: 1,
-    visualMode,
-    clipLimit: 2.5,
-  });
+  // Low contrast scenes are agronomically homogeneous. Do not force CLAHE or a
+  // full red→green spread, otherwise a healthy high-NDVI field looks critical.
+  const equalized = stretch.lowContrastScene
+    ? sourceValues
+    : applyHistogramEqualization(gammaCorrected, {
+        p5: 0,
+        p95: 1,
+        visualMode,
+        clipLimit: 2.5,
+      });
   const smoothed =
     width && height && width * height === equalized.length
       ? medianFilter3x3(equalized, width, height)

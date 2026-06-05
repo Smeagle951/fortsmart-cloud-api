@@ -35,13 +35,22 @@ export function valuesFromRasterBand(raster, visualMode) {
   return out;
 }
 
-export function rasterValuesToPngBuffer({ values, width, height, visualMode, contrast }) {
+export function rasterValuesToPngBuffer({
+  values,
+  width,
+  height,
+  visualMode,
+  contrast,
+  valuesAreVisual = false,
+}) {
   const png = new PNG({ width, height });
   const mode = String(visualMode || 'ndvi_contrast');
-  const colormapMode =
-    mode === 'ndvi_absolute' ? 'absolute' : pickPreviewColormapMode(contrast, 'relative');
-  const vmin = contrast?.pLow ?? contrast?.p5 ?? 0;
-  const vmax = contrast?.pHigh ?? contrast?.p95 ?? 1;
+  const lowContrastScene = contrast?.lowContrastScene === true;
+  const colormapMode = mode === 'ndvi_absolute' || lowContrastScene
+    ? 'absolute'
+    : pickPreviewColormapMode(contrast, 'relative');
+  const vmin = valuesAreVisual ? 0 : (contrast?.pLow ?? contrast?.p5 ?? 0);
+  const vmax = valuesAreVisual ? 1 : (contrast?.pHigh ?? contrast?.p95 ?? 1);
 
   for (let i = 0; i < values.length; i += 1) {
     const v = values[i];
@@ -54,7 +63,7 @@ export function rasterValuesToPngBuffer({ values, width, height, visualMode, con
       continue;
     }
     const rgb = ndviToPreviewRgb(v, {
-      mode: CONTRAST_MODES.has(mode) ? 'relative' : colormapMode,
+      mode: CONTRAST_MODES.has(mode) && !lowContrastScene ? 'relative' : colormapMode,
       vmin,
       vmax,
     });
@@ -88,6 +97,7 @@ export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast'
 
   let contrast;
   let colorValues = maskedRawValues;
+  let valuesAreVisual = false;
 
   let outWidth = width;
   let outHeight = height;
@@ -101,6 +111,7 @@ export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast'
     });
     contrast = rendered.contrast;
     colorValues = rendered.visualValues;
+    valuesAreVisual = !contrast?.lowContrastScene;
     outWidth = rendered.width || width;
     outHeight = rendered.height || height;
   } else {
@@ -133,6 +144,7 @@ export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast'
     height: outHeight,
     visualMode: mode,
     contrast,
+    valuesAreVisual,
   });
   buffer = smoothPreviewPngBuffer(buffer);
   buffer = applyPolygonMaskToPngBuffer(buffer, {

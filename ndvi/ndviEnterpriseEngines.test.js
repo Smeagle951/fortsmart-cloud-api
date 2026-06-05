@@ -106,7 +106,7 @@ test('renderer v2 gera múltiplos buckets e preserva stats brutos', () => {
     height: 10,
     visualMode: 'ndvi_contrast',
   });
-  assert.equal(rendered.contrast.rendererVersion, 'agronomic_contrast_v2');
+  assert.equal(rendered.contrast.rendererVersion, 'agronomic_contrast_v2_1');
   assert.equal(values[0], before[0]);
   assert.equal(values.at(-1), before.at(-1));
   const activeBuckets = Object.values(rendered.contrast.colorBuckets).filter((v) => v > 0);
@@ -122,6 +122,9 @@ test('renderer v2 marca lowContrastScene quando range é muito baixo', () => {
     visualMode: 'ndvi_contrast',
   });
   assert.equal(rendered.contrast.lowContrastScene, true);
+  assert.ok(Math.min(...rendered.visualValues.filter(Number.isFinite)) >= 0.85);
+  assert.ok(Math.max(...rendered.visualValues.filter(Number.isFinite)) <= 0.88);
+  assert.equal(rendered.contrast.equalization.enabled, false);
 });
 
 test('raster metadata diferencia raster interno de preview', () => {
