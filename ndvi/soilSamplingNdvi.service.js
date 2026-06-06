@@ -39,6 +39,34 @@ function normalizeImageDate(value) {
   return text;
 }
 
+function num(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function hasCoreRenderableNdviStats(stats) {
+  if (!stats || typeof stats !== 'object') return false;
+  const mean = num(stats.ndvi_mean ?? stats.ndviMean);
+  const min = num(stats.ndvi_min ?? stats.ndviMin);
+  const max = num(stats.ndvi_max ?? stats.ndviMax);
+  const p5 = num(stats.ndvi_p5 ?? stats.ndviP5 ?? stats.contrast?.p5);
+  const p50 = num(stats.ndvi_p50 ?? stats.ndviP50 ?? stats.contrast?.p50);
+  const p95 = num(stats.ndvi_p95 ?? stats.ndviP95 ?? stats.contrast?.p95);
+  const validPixels = num(
+    stats.validPixelCount ?? stats.valid_pixel_count ?? stats.valid_pixels,
+  );
+  if ([mean, min, max, p5, p50, p95].some((value) => value == null)) {
+    return false;
+  }
+  if (mean < -1 || mean > 1 || min < -1 || max > 1 || min > mean || mean > max) {
+    return false;
+  }
+  if (p5 > p50 || p50 > p95) return false;
+  if (validPixels != null && validPixels < 24) return false;
+  return true;
+}
+
 class SoilSamplingNdviService {
   constructor({ repository, catalogClient, processClient, authClient, geeClient = null }) {
     this.repository = repository;
@@ -742,15 +770,7 @@ class SoilSamplingNdviService {
         medium_percent: assets?.medium_percent ?? assets?.mediumPercent,
         high_percent: assets?.high_percent ?? assets?.highPercent,
       };
-      const statsValid = isValidNdviStats({
-        ndvi_mean: stats.ndvi_mean,
-        ndvi_min: stats.ndvi_min,
-        ndvi_max: stats.ndvi_max,
-        very_low_percent: stats.very_low_percent,
-        low_percent: stats.low_percent,
-        medium_percent: stats.medium_percent,
-        high_percent: stats.high_percent,
-      });
+      const statsValid = isValidNdviStats(stats) || hasCoreRenderableNdviStats(stats);
       const layerStatus =
         hasRaster && statsValid ? 'generated' : 'metadata_only';
 
