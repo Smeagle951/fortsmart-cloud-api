@@ -85,6 +85,40 @@ test('generatePreviewFromRaster produz PNG sem Sentinel', () => {
   assert.ok(out.buffer?.length > 100);
   assert.equal(out.rasterReuse, true);
   assert.ok(out.contrast?.p5 != null || out.contrast?.pLow != null);
+  assert.equal(out.stats.ndvi_mean != null, true);
+  assert.equal(out.stats.ndvi_p5 != null, true);
+  assert.equal(out.stats.ndvi_p50 != null, true);
+  assert.equal(out.stats.ndvi_p95 != null, true);
+  assert.equal(out.stats.validPixelCount, 64);
+  assert.equal(out.diagnosis != null, true);
+  assert.equal(out.legend != null, true);
+  assert.equal(out.sourceContext.statsRecomputed, true);
+});
+
+test('generatePreviewFromRaster recalcula stats completas no reuse de raster', () => {
+  const raster = deserializeInternalGridBuffer(
+    serializeInternalGridDocument(syntheticGrid()).buffer,
+  );
+  const out = generatePreviewFromRaster({ raster, visualMode: 'ndvi_contrast' });
+  assert.equal(out.stats.ndvi_mean > 0, true);
+  assert.equal(out.stats.ndvi_min <= out.stats.ndvi_mean, true);
+  assert.equal(out.stats.ndvi_mean <= out.stats.ndvi_max, true);
+  assert.equal(out.stats.contrast.rendererVersion != null, true);
+  assert.equal(out.stats.validAreaHa > 0, true);
+});
+
+test('generatePreviewFromRaster separa metadata por visualMode', () => {
+  const raster = deserializeInternalGridBuffer(
+    serializeInternalGridDocument(syntheticGrid()).buffer,
+  );
+  const contrast = generatePreviewFromRaster({ raster, visualMode: 'ndvi_contrast' });
+  const moisture = generatePreviewFromRaster({ raster, visualMode: 'ndmi_water_stress' });
+  const redEdge = generatePreviewFromRaster({ raster, visualMode: 'ndre' });
+  assert.equal(contrast.visual_mode, 'ndvi_contrast');
+  assert.equal(moisture.visual_mode, 'ndmi_water_stress');
+  assert.equal(redEdge.visual_mode, 'ndre');
+  assert.notEqual(contrast.legend.title, moisture.legend.title);
+  assert.notEqual(moisture.legend.title, redEdge.legend.title);
 });
 
 test('generatePreviewFromRaster evita vermelho falso em cena homogênea alta', () => {

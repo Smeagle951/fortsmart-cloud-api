@@ -106,6 +106,35 @@ function pickAgronomic(row) {
     available_visual_modes:
       raw?.available_visual_modes ?? row?.available_visual_modes ?? null,
     zones: raw?.zones ?? row?.zones ?? [],
+    diagnosis: raw?.diagnosis ?? row?.diagnosis ?? null,
+    legend: raw?.legend ?? row?.legend ?? null,
+    sourceContext:
+      raw?.sourceContext ?? raw?.source_context ?? row?.sourceContext ?? row?.source_context ?? null,
+    source_context:
+      raw?.source_context ?? raw?.sourceContext ?? row?.source_context ?? row?.sourceContext ?? null,
+    cacheHit: raw?.cacheHit ?? raw?.cache_hit ?? row?.cacheHit ?? row?.cache_hit ?? null,
+    cacheTag: raw?.cacheTag ?? raw?.cache_tag ?? row?.cacheTag ?? row?.cache_tag ?? null,
+    generatedAt: raw?.generatedAt ?? raw?.generated_at ?? row?.generatedAt ?? row?.generated_at ?? null,
+    rendererVersion:
+      raw?.rendererVersion ??
+      raw?.renderer_version ??
+      row?.rendererVersion ??
+      row?.renderer_version ??
+      contrast?.rendererVersion ??
+      null,
+    renderer_version:
+      raw?.renderer_version ??
+      raw?.rendererVersion ??
+      row?.renderer_version ??
+      row?.rendererVersion ??
+      contrast?.rendererVersion ??
+      null,
+    validPixelCount:
+      raw?.validPixelCount ?? raw?.valid_pixel_count ?? raw?.valid_pixels ?? row?.validPixelCount ?? null,
+    maskedPixelCount:
+      raw?.maskedPixelCount ?? raw?.masked_pixel_count ?? raw?.masked_pixels ?? row?.maskedPixelCount ?? null,
+    validAreaHa: raw?.validAreaHa ?? raw?.valid_area_ha ?? row?.validAreaHa ?? null,
+    maskedAreaHa: raw?.maskedAreaHa ?? raw?.masked_area_ha ?? row?.maskedAreaHa ?? null,
     raster_url: raw?.raster_url ?? row?.raster_url ?? null,
     raster_available: raw?.raster_available ?? row?.raster_available ?? null,
     raster_format: raw?.raster_format ?? row?.raster_format ?? null,

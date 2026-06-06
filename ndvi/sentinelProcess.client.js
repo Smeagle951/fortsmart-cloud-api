@@ -216,12 +216,37 @@ class SentinelProcessClient {
       buffer: previewGen.buffer,
     });
 
-    const contrast = previewGen.contrast ?? stats.contrast ?? {};
+    const recomputedStats = previewGen.stats ?? {};
+    const contrast = previewGen.contrast ?? recomputedStats.contrast ?? stats.contrast ?? {};
+    const rendererVersion = contrast?.rendererVersion ?? 'agronomic_contrast_v2_1';
     const rasterMetadata = buildNdviRasterMetadata({
       grid: { values: Array.from(raster.bands.ndvi), width: raster.width, height: raster.height },
       bounds,
       rasterUrl: null,
       resolutionM: raster.resolution_m ?? 10,
+    });
+    const sourceContext = {
+      ...(previewGen.sourceContext || {}),
+      cacheHit: true,
+      cacheTag: `${plotId}|${sceneId}|${resolvedVisual}|${rendererVersion}`,
+      rendererVersion,
+      rasterStorageKey: raster.raster_storage_key ?? raster.storageKey ?? null,
+      metadataComplete: Boolean(previewGen.stats),
+    };
+
+    console.log('[NDVI_RASTER_REUSE_METADATA]', {
+      sceneId,
+      visualMode: resolvedVisual,
+      rendererVersion,
+      metadataComplete: Boolean(previewGen.stats),
+      statsRecomputed: true,
+      validPixelCount: recomputedStats.validPixelCount ?? null,
+      mean: recomputedStats.ndvi_mean ?? null,
+      p05: recomputedStats.ndvi_p5 ?? null,
+      p50: recomputedStats.ndvi_p50 ?? null,
+      p95: recomputedStats.ndvi_p95 ?? null,
+      contrast: recomputedStats.contrast?.contrast ?? recomputedStats.contrast ?? null,
+      homogeneity: recomputedStats.homogeneity_score ?? null,
     });
 
     return {
@@ -233,8 +258,8 @@ class SentinelProcessClient {
       raster_bounds: bounds,
       raster_resolution_m: raster.resolution_m ?? 10,
       raster_available: true,
-      raster_storage_key: raster.raster_storage_key ?? null,
-      raster_storage_provider: raster.raster_storage_provider ?? null,
+      raster_storage_key: raster.raster_storage_key ?? raster.storageKey ?? null,
+      raster_storage_provider: raster.raster_storage_provider ?? raster.provider ?? null,
       raster_schema_version: raster.raster_schema_version ?? RASTER_SCHEMA_NUM,
       bounds,
       visual_mode: resolvedVisual,
@@ -246,11 +271,32 @@ class SentinelProcessClient {
       polygon_masked: true,
       available_visual_modes: VISUAL_MODES,
       contrast,
-      spatial_metrics: previewGen.spatial_metrics ?? stats.spatial_metrics,
-      rendering: stats.rendering,
+      spatial_metrics: recomputedStats.spatial_metrics ?? previewGen.spatial_metrics ?? stats.spatial_metrics,
+      rendering: recomputedStats.rendering ?? stats.rendering,
       zones: previewGen.zones ?? stats.zones ?? [],
+      diagnosis: previewGen.diagnosis ?? null,
+      legend: previewGen.legend ?? null,
+      sourceContext,
+      source_context: sourceContext,
+      rendererVersion,
+      renderer_version: rendererVersion,
+      cacheHit: true,
+      cache_hit: true,
+      cacheTag: sourceContext.cacheTag,
+      cache_tag: sourceContext.cacheTag,
+      generatedAt: new Date().toISOString(),
+      generated_at: new Date().toISOString(),
       rasterReuse: true,
+      stats: {
+        ...stats,
+        ...recomputedStats,
+        sourceContext,
+        source_context: sourceContext,
+        diagnosis: previewGen.diagnosis ?? null,
+        legend: previewGen.legend ?? null,
+      },
       ...stats,
+      ...recomputedStats,
     };
   }
 
@@ -555,7 +601,7 @@ class SentinelProcessClient {
         raster_bands: rasterMetadata.raster_bands,
         raster_bounds: rasterMetadata.raster_bounds,
         raster_resolution_m: rasterMetadata.raster_resolution_m,
-        raster_available: Boolean(rasterPersist?.storageKey),
+        raster_available: Boolean(rasterPersist?.raster_storage_key ?? rasterPersist?.storageKey),
         raster_storage_key: rasterPersist?.raster_storage_key ?? null,
         raster_storage_provider: rasterPersist?.raster_storage_provider ?? null,
         raster_schema_version: rasterPersist?.raster_schema_version ?? RASTER_SCHEMA_NUM,
