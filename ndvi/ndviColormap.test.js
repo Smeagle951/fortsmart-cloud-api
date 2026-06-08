@@ -57,4 +57,23 @@ describe('ndviColormap', () => {
     assert.ok(relLow && relHigh);
     assert.ok(!rgbClose(relLow, relHigh));
   });
+
+  it('contraste relativo usa p5/p95 e não escala fixa absoluta', () => {
+    const absoluteLow = ndviToPreviewRgb(0.6, { mode: 'absolute' });
+    const relativeLow = ndviToPreviewRgb(0.6, {
+      mode: 'relative',
+      vmin: 0.6,
+      vmax: 0.82,
+    });
+    const relativeHigh = ndviToPreviewRgb(0.82, {
+      mode: 'relative',
+      vmin: 0.6,
+      vmax: 0.82,
+    });
+    assert.ok(absoluteLow && relativeLow && relativeHigh);
+    assert.ok(!rgbClose(absoluteLow, relativeLow));
+    assert.ok(!rgbClose(relativeLow, relativeHigh));
+    assert.ok(relativeLow[0] > relativeLow[1], 'p5 deve ficar vermelho/laranja');
+    assert.ok(relativeHigh[1] > relativeHigh[0], 'p95 deve ficar verde');
+  });
 });

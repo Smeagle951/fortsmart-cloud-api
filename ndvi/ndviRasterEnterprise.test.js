@@ -93,6 +93,8 @@ test('generatePreviewFromRaster produz PNG sem Sentinel', () => {
   assert.equal(out.diagnosis != null, true);
   assert.equal(out.legend != null, true);
   assert.equal(out.sourceContext.statsRecomputed, true);
+  assert.equal(out.sourceContext.cloudMaskVersion, 'scl_v2');
+  assert.equal(out.sourceContext.statsVersion, 'stats_v2_inner_pixel_buffer');
 });
 
 test('generatePreviewFromRaster recalcula stats completas no reuse de raster', () => {
@@ -105,6 +107,22 @@ test('generatePreviewFromRaster recalcula stats completas no reuse de raster', (
   assert.equal(out.stats.ndvi_mean <= out.stats.ndvi_max, true);
   assert.equal(out.stats.contrast.rendererVersion != null, true);
   assert.equal(out.stats.validAreaHa > 0, true);
+});
+
+test('generatePreviewFromRaster salva alpha RGBA e metadata de buffer interno', () => {
+  const raster = deserializeInternalGridBuffer(
+    serializeInternalGridDocument(syntheticGrid()).buffer,
+  );
+  const out = generatePreviewFromRaster({ raster, visualMode: 'ndvi_contrast' });
+  const png = PNG.sync.read(out.buffer);
+  const visibleAlpha = [];
+  for (let i = 0; i < png.data.length; i += 4) {
+    if (png.data[i + 3] > 0) visibleAlpha.push(png.data[i + 3]);
+  }
+  assert.ok(visibleAlpha.length > 0);
+  assert.equal(Math.max(...visibleAlpha), 217);
+  assert.equal(out.sourceContext.usedInnerBuffer, true);
+  assert.equal(out.sourceContext.innerBufferPixels, 1);
 });
 
 test('generatePreviewFromRaster separa metadata por visualMode', () => {

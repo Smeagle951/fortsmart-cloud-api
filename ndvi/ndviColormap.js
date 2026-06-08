@@ -25,16 +25,28 @@ function colorFromNdviAbsolute(ndvi) {
 
 function colorFromTRelative(t) {
   const stops = [
-    { max: 0.15, rgb: [0.843, 0.188, 0.153] },
-    { max: 0.3, rgb: [0.988, 0.553, 0.349] },
-    { max: 0.45, rgb: [0.996, 0.878, 0.545] },
-    { max: 0.6, rgb: [0.569, 0.812, 0.376] },
-    { max: 0.8, rgb: [0.369, 0.788, 0.384] },
-    { max: 1.01, rgb: [0.102, 0.596, 0.314] },
+    { pos: 0.0, rgb: [0.608, 0.110, 0.110] }, // #9B1C1C
+    { pos: 0.2, rgb: [0.839, 0.227, 0.184] }, // #D63A2F
+    { pos: 0.4, rgb: [0.961, 0.620, 0.043] }, // #F59E0B
+    { pos: 0.55, rgb: [0.992, 0.878, 0.278] }, // #FDE047
+    { pos: 0.7, rgb: [0.639, 0.839, 0.361] }, // #A3D65C
+    { pos: 0.85, rgb: [0.247, 0.639, 0.302] }, // #3FA34D
+    { pos: 1.0, rgb: [0.043, 0.420, 0.208] }, // #0B6B35
   ];
   const x = Math.max(0, Math.min(1, t));
-  for (const stop of stops) {
-    if (x < stop.max) return stop.rgb;
+  if (x <= stops[0].pos) return stops[0].rgb;
+  for (let i = 1; i < stops.length; i += 1) {
+    const prev = stops[i - 1];
+    const next = stops[i];
+    if (x <= next.pos) {
+      const span = Math.max(next.pos - prev.pos, 0.000001);
+      const u = (x - prev.pos) / span;
+      return [
+        prev.rgb[0] + (next.rgb[0] - prev.rgb[0]) * u,
+        prev.rgb[1] + (next.rgb[1] - prev.rgb[1]) * u,
+        prev.rgb[2] + (next.rgb[2] - prev.rgb[2]) * u,
+      ];
+    }
   }
   return stops[stops.length - 1].rgb;
 }

@@ -135,6 +135,63 @@ export function maskValuesToPolygon({
   };
 }
 
+export function applyInnerPixelBufferToValues({
+  values,
+  width,
+  height,
+  radiusPx = 1,
+} = {}) {
+  if (!Array.isArray(values) || !width || !height || radiusPx <= 0) {
+    return { values, bufferStats: null };
+  }
+
+  const out = new Array(values.length).fill(null);
+  let keptPixels = 0;
+  let removedBoundaryPixels = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const idx = y * width + x;
+      const value = Number(values[idx]);
+      if (!Number.isFinite(value) || value < -1 || value > 1) {
+        continue;
+      }
+
+      let touchesBoundary = false;
+      for (let yy = y - radiusPx; yy <= y + radiusPx && !touchesBoundary; yy += 1) {
+        for (let xx = x - radiusPx; xx <= x + radiusPx; xx += 1) {
+          if (xx < 0 || yy < 0 || xx >= width || yy >= height) {
+            touchesBoundary = true;
+            break;
+          }
+          const neighbor = Number(values[yy * width + xx]);
+          if (!Number.isFinite(neighbor) || neighbor < -1 || neighbor > 1) {
+            touchesBoundary = true;
+            break;
+          }
+        }
+      }
+
+      if (touchesBoundary) {
+        removedBoundaryPixels += 1;
+        continue;
+      }
+      out[idx] = value;
+      keptPixels += 1;
+    }
+  }
+
+  return {
+    values: out,
+    bufferStats: {
+      usedInnerBuffer: true,
+      innerBufferPixels: radiusPx,
+      keptPixels,
+      removedBoundaryPixels,
+    },
+  };
+}
+
 function logMaskAlpha(stats) {
   if (!stats) return;
   console.log('[NDVI_MASK_ALPHA]');

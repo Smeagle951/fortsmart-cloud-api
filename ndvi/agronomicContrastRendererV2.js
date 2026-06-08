@@ -2,13 +2,9 @@ import {
   applyContrastStretch,
   calculatePercentiles,
 } from './ndviContrastEngine.js';
-import {
-  applyHistogramEqualization,
-  equalizationMetadata,
-} from './ndviHistogramEqualization.js';
-import { medianFilter3x3, bilinearUpscale } from './ndviSpatialSmoothing.js';
+import { bilinearUpscale } from './ndviSpatialSmoothing.js';
 
-const RENDERER_VERSION = 'agronomic_contrast_v2_1';
+const RENDERER_VERSION = 'agronomic_contrast_v7_inner_buffer';
 
 function finiteNdviValues(values) {
   return Array.isArray(values)
@@ -33,25 +29,25 @@ function std(values) {
 }
 
 function resolveStretch(percentiles) {
-  const p2 = Number(percentiles.p2);
   const p5 = Number(percentiles.p5);
+  const p50 = Number(percentiles.p50);
   const p95 = Number(percentiles.p95);
-  const p98 = Number(percentiles.p98);
-  if (Number.isFinite(p5) && Number.isFinite(p95) && p95 - p5 >= 0.05) {
+  if (Number.isFinite(p5) && Number.isFinite(p95) && p95 - p5 >= 0.01) {
     return {
       pLow: p5,
       pHigh: p95,
       stretchMode: 'p5_p95',
       lowContrastScene: false,
+      usedLowContrastFallback: false,
     };
   }
-  const lowContrastScene =
-    !(Number.isFinite(p2) && Number.isFinite(p98) && p98 - p2 >= 0.03);
+  const center = Number.isFinite(p50) ? p50 : Number(percentiles.mean ?? 0.5);
   return {
-    pLow: Number.isFinite(p2) ? p2 : p5,
-    pHigh: Number.isFinite(p98) ? p98 : p95,
-    stretchMode: 'p2_p98',
-    lowContrastScene,
+    pLow: center - 0.03,
+    pHigh: center + 0.03,
+    stretchMode: 'mean_window_0_06',
+    lowContrastScene: true,
+    usedLowContrastFallback: true,
   };
 }
 
@@ -94,14 +90,15 @@ function colorBuckets(values) {
 
 export function renderAgronomicContrastV2({
   values,
+  statsValues = null,
   width,
   height,
   visualMode = 'ndvi_contrast',
 } = {}) {
-  const rawValues = finiteNdviValues(values);
+  const rawValues = finiteNdviValues(statsValues ?? values);
   const percentiles = calculatePercentiles(rawValues);
   const stretch = resolveStretch(percentiles);
-  const gamma = gammaForDistribution(percentiles);
+  const gamma = visualMode === 'ndvi_contrast' ? 1 : gammaForDistribution(percentiles);
   const sourceValues = values.map((value) => {
     const n = Number(value);
     return Number.isFinite(n) && n >= -1 && n <= 1 ? n : null;
@@ -109,23 +106,11 @@ export function renderAgronomicContrastV2({
   const stretched = sourceValues.map((value) =>
     value == null ? null : applyContrastStretch(value, stretch.pLow, stretch.pHigh),
   );
-  const gammaCorrected = stretched.map((value) =>
+  const visualValues = stretched.map((value) =>
     value == null ? null : round(Math.pow(value, gamma), 4),
   );
-  // Low contrast scenes are agronomically homogeneous. Do not force CLAHE or a
-  // full red→green spread, otherwise a healthy high-NDVI field looks critical.
-  const equalized = stretch.lowContrastScene
-    ? sourceValues
-    : applyHistogramEqualization(gammaCorrected, {
-        p5: 0,
-        p95: 1,
-        visualMode,
-        clipLimit: 2.5,
-      });
   const smoothed =
-    width && height && width * height === equalized.length
-      ? medianFilter3x3(equalized, width, height)
-      : equalized;
+    width && height && width * height === visualValues.length ? visualValues : visualValues;
   const upscaled =
     width && height && width * height === smoothed.length
       ? bilinearUpscale(smoothed, width, height, 4)
@@ -136,17 +121,18 @@ export function renderAgronomicContrastV2({
     std: std(rawValues),
     lowContrastScene: stretch.lowContrastScene,
     stretchMode: stretch.stretchMode,
+    pLow: round(stretch.pLow, 4),
+    pHigh: round(stretch.pHigh, 4),
+    usedLowContrastFallback: stretch.usedLowContrastFallback,
     rendererVersion: RENDERER_VERSION,
     gamma,
-    equalization: equalizationMetadata({
-      visualMode,
-      p5: percentiles.p5,
-      p95: percentiles.p95,
-      clipLimit: 2.5,
-    }),
+    equalization: {
+      enabled: false,
+      method: 'disabled_percentile_direct',
+    },
     smoothing: {
       enabled: true,
-      median3x3: Boolean(width && height),
+      median3x3: false,
       interpolation: 'bilinear_4x',
     },
     colorBuckets: colorBuckets(upscaled.values),

@@ -530,6 +530,24 @@ class SentinelProcessClient {
       if (previewGen.contrast) {
         Object.assign(contrast, previewGen.contrast);
       }
+      const finalStats = {
+        ...enrichedStats,
+        ...(previewGen.stats ?? {}),
+        contrast,
+        spatial_metrics:
+          previewGen.stats?.spatial_metrics ??
+          enrichedStats.spatial_metrics,
+        rendering:
+          previewGen.stats?.rendering ??
+          enrichedStats.rendering,
+        zones: previewGen.zones ?? zoneResult.zones,
+        diagnosis: previewGen.diagnosis ?? null,
+        legend: previewGen.legend ?? null,
+        sourceContext: previewGen.sourceContext ?? null,
+        source_context: previewGen.sourceContext ?? null,
+        rendererVersion: contrast?.rendererVersion ?? null,
+        renderer_version: contrast?.rendererVersion ?? null,
+      };
 
       const preview_url = await storeNdviPreviewPng({
         farmId,
@@ -615,12 +633,24 @@ class SentinelProcessClient {
         polygon_masked: true,
         available_visual_modes: VISUAL_MODES,
         contrast,
-        spatial_metrics: enrichedStats.spatial_metrics,
-        rendering: stats.rendering,
-        zones: zoneResult.zones,
-        stats: enrichedStats,
+        spatial_metrics: finalStats.spatial_metrics,
+        rendering: finalStats.rendering,
+        zones: finalStats.zones,
+        diagnosis: previewGen.diagnosis ?? null,
+        legend: previewGen.legend ?? null,
+        sourceContext: previewGen.sourceContext ?? null,
+        source_context: previewGen.sourceContext ?? null,
+        rendererVersion: contrast?.rendererVersion ?? null,
+        renderer_version: contrast?.rendererVersion ?? null,
+        cacheTag: previewGen.sourceContext
+          ? `${plotId}|${sceneId}|${resolvedVisual}|${contrast?.rendererVersion ?? 'unknown'}|scl_v2|stats_v2_inner_pixel_buffer`
+          : null,
+        cache_tag: previewGen.sourceContext
+          ? `${plotId}|${sceneId}|${resolvedVisual}|${contrast?.rendererVersion ?? 'unknown'}|scl_v2|stats_v2_inner_pixel_buffer`
+          : null,
+        stats: finalStats,
         classes: stats.classes,
-        ...enrichedStats,
+        ...finalStats,
       };
     } catch (error) {
       console.warn(`⚠️ [NDVI][Process] falha sceneId=${sceneId}: ${error.message}`);

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  applyInnerPixelBufferToValues,
   applyPolygonMaskToPngBuffer,
   maskValuesToPolygon,
   pointInRing,
@@ -52,6 +53,25 @@ describe('ndviPolygonMask', () => {
     assert.ok(alphas.some((a) => a >= 180 && a <= 220), 'deve manter pixels dentro do talhão');
   });
 
+  it('applyPolygonMaskToPngBuffer usa alpha 217 para 85%', () => {
+    const png = new PNG({ width: 1, height: 1 });
+    png.data[0] = 20;
+    png.data[1] = 120;
+    png.data[2] = 40;
+    png.data[3] = 255;
+    const masked = applyPolygonMaskToPngBuffer(PNG.sync.write(png), {
+      bounds: { west: 0, south: 0, east: 1, north: 1 },
+      polygon: {
+        type: 'Polygon',
+        coordinates: [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
+      },
+      alphaInside: Math.round(0.85 * 255),
+      log: false,
+    });
+    const out = PNG.sync.read(masked);
+    assert.equal(out.data[3], 217);
+  });
+
   it('maskValuesToPolygon exclui fora do polígono antes dos percentis', () => {
     const polygon = {
       type: 'Polygon',
@@ -76,5 +96,25 @@ describe('ndviPolygonMask', () => {
     assert.equal(result.maskStats.outsidePolygonTransparent, true);
     assert.equal(result.maskStats.validPixels, 1);
     assert.equal(result.values.filter((value) => value != null).length, 1);
+  });
+
+  it('applyInnerPixelBufferToValues remove borda das estatísticas', () => {
+    const values = [
+      0.1, 0.1, 0.1, 0.1, 0.1,
+      0.1, 0.8, 0.8, 0.8, 0.1,
+      0.1, 0.8, 0.9, 0.8, 0.1,
+      0.1, 0.8, 0.8, 0.8, 0.1,
+      0.1, 0.1, 0.1, 0.1, 0.1,
+    ];
+    const result = applyInnerPixelBufferToValues({
+      values,
+      width: 5,
+      height: 5,
+      radiusPx: 1,
+    });
+    const kept = result.values.filter((value) => value != null);
+    assert.equal(result.bufferStats.usedInnerBuffer, true);
+    assert.equal(kept.length, 9);
+    assert.equal(Math.min(...kept), 0.8);
   });
 });
