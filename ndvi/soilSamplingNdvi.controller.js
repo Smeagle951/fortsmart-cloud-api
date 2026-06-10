@@ -66,6 +66,7 @@ class SoilSamplingNdviController {
     this.getScenes = this.getScenes.bind(this);
     this.searchScenes = this.searchScenes.bind(this);
     this.generate = this.generate.bind(this);
+    this.generatePackage = this.generatePackage.bind(this);
     this.attach = this.attach.bind(this);
     this.getActive = this.getActive.bind(this);
     this.refresh = this.refresh.bind(this);
@@ -398,6 +399,60 @@ class SoilSamplingNdviController {
 
       layer = normalizeSuccessLayer(layer);
       res.status(201).json({ success: true, layer });
+    } catch (error) {
+      this._sendError(res, error);
+    }
+  }
+
+  async generatePackage(req, res) {
+    try {
+      const { plotId } = req.params;
+      const {
+        farm_id: farmId,
+        campaign_id: campaignId,
+        scene_id: sceneId,
+        polygon,
+        image_date: imageDate,
+        cloud_coverage: cloudCoverage,
+        start_date: startDate,
+        end_date: endDate,
+        max_cloud: maxCloud,
+        colormap_mode: colormapMode,
+        modes,
+      } = req.body;
+      const isForce =
+        req.body.force === true || req.body.force_regenerate === true;
+
+      if (!farmId || !plotId) {
+        return this._sendError(
+          res,
+          Object.assign(new Error('farm_id e plot_id são obrigatórios'), {
+            code: 'farm_scope_required',
+            status: 400,
+          }),
+        );
+      }
+
+      const result = await this.service.generateLayerPackage({
+        farmId,
+        plotId,
+        campaignId,
+        sceneId,
+        polygon,
+        imageDate,
+        cloudCoverage,
+        startDate,
+        endDate,
+        maxCloud: maxCloud != null ? Number(maxCloud) : null,
+        colormapMode: colormapMode || 'auto',
+        modes,
+        force: isForce,
+      });
+
+      res.json({
+        success: true,
+        ...result,
+      });
     } catch (error) {
       this._sendError(res, error);
     }

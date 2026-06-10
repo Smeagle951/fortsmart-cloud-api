@@ -1,4 +1,5 @@
 import { storeNdviPreviewPng } from '../ndviPreviewStorage.js';
+import { NDVI_ENGINE_VERSION } from '../sentinelNdviReliability.js';
 
 const DATASET = 'COPERNICUS/S2_SR_HARMONIZED';
 const DEFAULT_MAX_CLOUD = 35;
@@ -44,7 +45,7 @@ function visualModes() {
 function rendererVersionFor(mode) {
   switch (mode) {
     case VISUAL_MODES.NDVI_CONTRAST:
-      return 'agronomic_contrast_v7_visual_quality';
+      return NDVI_ENGINE_VERSION;
     case VISUAL_MODES.NDVI_RELATIVE:
       return 'ndvi_relative_v2_gee_10m';
     case VISUAL_MODES.AGRONOMIC_CLASSES:
@@ -312,7 +313,6 @@ function buildSclValidMask(image) {
   return scl
     .neq(0)
     .and(scl.neq(1))
-    .and(scl.neq(2))
     .and(scl.neq(3))
     .and(scl.neq(6))
     .and(scl.neq(8))
@@ -964,6 +964,25 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         ndmi,
         geometry: statsGeometry.geometry,
       });
+      const minValidPixels = numberFromEnv('GEE_MIN_VALID_PIXELS', 20);
+      stats.validPixelCount = maskStats.validPixels;
+      stats.maskedPixelCount = maskStats.maskedPixels;
+      stats.sclExcludedPixelCount = maskStats.sclExcludedPixels;
+      stats.validAreaHa = roundOrNull((maskStats.validPixels * GEE_RENDER_SCALE_M * GEE_RENDER_SCALE_M) / 10000);
+      stats.maskedAreaHa = roundOrNull((maskStats.maskedPixels * GEE_RENDER_SCALE_M * GEE_RENDER_SCALE_M) / 10000);
+      if (maskStats.validPixels < minValidPixels) {
+        const err = new Error('insufficient_valid_ndvi_pixels');
+        err.code = 'ndvi_contrast_not_computed';
+        err.status = 422;
+        err.details = {
+          reason: 'insufficient_valid_pixels',
+          validPixelCount: maskStats.validPixels,
+          maskedPixelCount: maskStats.maskedPixels,
+          minValidPixels,
+          sclExcludedPixelCount: maskStats.sclExcludedPixels,
+        };
+        throw err;
+      }
       const p5 = stats.ndvi_p5 ?? stats.contrast?.p5;
       const p50 = stats.ndvi_p50 ?? stats.contrast?.p50;
       const p95 = stats.ndvi_p95 ?? stats.contrast?.p95;
@@ -1074,9 +1093,23 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       console.log('modeSupported=true');
       console.log('[NDVI_GEE_MASK]', {
         ...maskStats,
+        minValidPixels,
         p5,
         p50,
         p95,
+      });
+      console.log('[NDVI_SENTINEL_RELIABILITY]', {
+        ndviEngineVersion: rendererVersion,
+        dataset: DATASET,
+        productLevel: 'L2A',
+        redBand: 'B4',
+        nirBand: 'B8',
+        sclAvailable: true,
+        cloudMaskVersion: 'scl_v1',
+        validPixelCount: maskStats.validPixels,
+        maskedPixelCount: maskStats.maskedPixels,
+        sclExcludedPixelCount: maskStats.sclExcludedPixels,
+        bounds: polygonToBounds(polygon),
       });
       console.log('[NDVI_VISUAL_QUALITY]', {
         scale: GEE_RENDER_SCALE_M,
@@ -1134,6 +1167,27 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         gee_smoothing_radius_px: renderedPng.smoothingApplied
           ? numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX)
           : 0,
+        source_context: {
+          dataset: DATASET,
+          productLevel: 'L2A',
+          redBand: 'B4',
+          nirBand: 'B8',
+          sclAvailable: true,
+          usesUnclassifiedScl: true,
+          cloudMaskVersion: 'scl_v1',
+          ndviEngineVersion: rendererVersion,
+          rasterWidth: renderedPng.thumbSize,
+          rasterHeight: renderedPng.thumbSize,
+          bboxRequested: polygonToBounds(polygon),
+          bboxReturned: polygonToBounds(polygon),
+          crs: 'EPSG:4326',
+          resolutionMeters: GEE_RENDER_SCALE_M,
+          fieldPolygonBounds: polygonToBounds(polygon),
+          overlayBounds: polygonToBounds(polygon),
+          validPixelCount: maskStats.validPixels,
+          maskedPixelCount: maskStats.maskedPixels,
+          sclExcludedPixelCount: maskStats.sclExcludedPixels,
+        },
       };
 
       return {
@@ -1162,6 +1216,360 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         contrast: stats.contrast,
         agronomic_stats_json: agronomicStats,
         ...stats,
+      };
+    },
+
+    async generateGeeNdviLayerPackage({
+      sceneId,
+      polygon,
+      startDate,
+      endDate,
+      imageDate,
+      maxCloud,
+      farmId,
+      plotId,
+      modes = visualModes(),
+    }) {
+      const startedAt = Date.now();
+      const gee = await ensureGeeInitialized();
+      const requestedModes = Array.isArray(modes) && modes.length
+        ? modes.filter((mode) => visualModes().includes(mode))
+        : visualModes();
+      const uniqueModes = [...new Set(requestedModes)];
+      const geometry = geometryFromPolygon(gee, polygon);
+      const statsGeometry = await safeStatsGeometry(gee, geometry);
+      const plotGeometry = geometry;
+      const image = sceneId
+        ? gee.Image(sceneId)
+        : sentinelCollection(gee, {
+            geometry,
+            startDate: startDate || imageDate,
+            endDate: endDate || imageDate,
+            maxCloud,
+          }).first();
+      const selectedSceneId = await getInfo(image.id());
+      if (!selectedSceneId) {
+        const err = new Error('Nenhuma imagem adequada foi encontrada para o período selecionado');
+        err.code = 'empty_scenes';
+        err.status = 404;
+        throw err;
+      }
+
+      const selectedImageDate =
+        imageDate ||
+        new Date(Number(await getInfo(image.get('system:time_start')))).toISOString().slice(0, 10);
+      const cloudCoverage = await getInfo(image.get('CLOUDY_PIXEL_PERCENTAGE')).catch(() => null);
+      const maskedImage = maskClouds(image);
+
+      // Pacote único da cena: as bandas são selecionadas uma vez e todos os
+      // índices são derivados desse mesmo contexto GEE.
+      const rawNdvi = maskedImage.normalizedDifference(['B8', 'B4']);
+      const rawNdre = maskedImage.normalizedDifference(['B8A', 'B5']);
+      const rawSavi = maskedImage.expression('((nir - red) / (nir + red + 0.5)) * 1.5', {
+        nir: maskedImage.select('B8'),
+        red: maskedImage.select('B4'),
+      });
+      const rawNdmi = maskedImage.normalizedDifference(['B8', 'B11']);
+      const rawBsi = maskedImage.expression(
+        '((swir + red) - (nir + blue)) / ((swir + red) + (nir + blue))',
+        {
+          swir: maskedImage.select('B11'),
+          red: maskedImage.select('B4'),
+          nir: maskedImage.select('B8'),
+          blue: maskedImage.select('B2'),
+        },
+      );
+
+      const statsValidMask = buildNdviValidMask(gee, {
+        image,
+        ndvi: rawNdvi,
+        geometry: statsGeometry.geometry,
+      });
+      const renderValidMask = buildNdviValidMask(gee, {
+        image,
+        ndvi: rawNdvi,
+        geometry: plotGeometry,
+      });
+      const statsNdreMask = buildIndexValidMask(gee, {
+        image,
+        index: rawNdre,
+        geometry: statsGeometry.geometry,
+        bands: ['B8A', 'B5'],
+      });
+      const statsNdmiMask = buildIndexValidMask(gee, {
+        image,
+        index: rawNdmi,
+        geometry: statsGeometry.geometry,
+        bands: ['B8', 'B11'],
+      });
+      const renderNdreMask = buildIndexValidMask(gee, {
+        image,
+        index: rawNdre,
+        geometry: plotGeometry,
+        bands: ['B8A', 'B5'],
+      });
+      const renderNdmiMask = buildIndexValidMask(gee, {
+        image,
+        index: rawNdmi,
+        geometry: plotGeometry,
+        bands: ['B8', 'B11'],
+      });
+
+      const ndvi = maskIndexToGeometry(gee, rawNdvi.updateMask(statsValidMask), statsGeometry.geometry, 'NDVI');
+      const ndre = maskIndexToGeometry(gee, rawNdre.updateMask(statsNdreMask), statsGeometry.geometry, 'NDRE');
+      const savi = maskIndexToGeometry(gee, rawSavi.updateMask(statsValidMask), statsGeometry.geometry, 'SAVI');
+      const ndmi = maskIndexToGeometry(gee, rawNdmi.updateMask(statsNdmiMask), statsGeometry.geometry, 'NDMI');
+      const bsi = maskIndexToGeometry(gee, rawBsi.updateMask(statsValidMask), statsGeometry.geometry, 'BSI');
+      const renderNdvi = maskIndexToGeometry(gee, rawNdvi.updateMask(renderValidMask), plotGeometry, 'NDVI');
+      const renderNdre = maskIndexToGeometry(gee, rawNdre.updateMask(renderNdreMask), plotGeometry, 'NDRE');
+      const renderSavi = maskIndexToGeometry(gee, rawSavi.updateMask(renderValidMask), plotGeometry, 'SAVI');
+      const renderNdmi = maskIndexToGeometry(gee, rawNdmi.updateMask(renderNdmiMask), plotGeometry, 'NDMI');
+      const renderBsi = maskIndexToGeometry(gee, rawBsi.updateMask(renderValidMask), plotGeometry, 'BSI');
+
+      const maskStats = await calculateGeeMaskStats(gee, {
+        image,
+        validMask: renderValidMask,
+        geometry: plotGeometry,
+      });
+      const baseStats = await calculateGeeNdviStats(gee, {
+        ndvi,
+        ndre,
+        savi,
+        bsi,
+        ndmi,
+        geometry: statsGeometry.geometry,
+      });
+      const minValidPixels = numberFromEnv('GEE_MIN_VALID_PIXELS', 20);
+      baseStats.validPixelCount = maskStats.validPixels;
+      baseStats.maskedPixelCount = maskStats.maskedPixels;
+      baseStats.sclExcludedPixelCount = maskStats.sclExcludedPixels;
+      baseStats.validAreaHa = roundOrNull((maskStats.validPixels * GEE_RENDER_SCALE_M * GEE_RENDER_SCALE_M) / 10000);
+      baseStats.maskedAreaHa = roundOrNull((maskStats.maskedPixels * GEE_RENDER_SCALE_M * GEE_RENDER_SCALE_M) / 10000);
+      if (maskStats.validPixels < minValidPixels) {
+        const err = new Error('insufficient_valid_ndvi_pixels');
+        err.code = 'ndvi_contrast_not_computed';
+        err.status = 422;
+        err.details = {
+          reason: 'insufficient_valid_pixels',
+          validPixelCount: maskStats.validPixels,
+          maskedPixelCount: maskStats.maskedPixels,
+          minValidPixels,
+          sclExcludedPixelCount: maskStats.sclExcludedPixels,
+        };
+        throw err;
+      }
+
+      const p5 = baseStats.ndvi_p5 ?? baseStats.contrast?.p5;
+      const p50 = baseStats.ndvi_p50 ?? baseStats.contrast?.p50;
+      const p95 = baseStats.ndvi_p95 ?? baseStats.contrast?.p95;
+      const contrastStretch = resolveContrastStretch(baseStats);
+      const validContrast =
+        [p5, p50, p95].every((value) => Number.isFinite(Number(value))) &&
+        Number(p5) <= Number(p50) &&
+        Number(p50) <= Number(p95);
+      if (uniqueModes.includes(VISUAL_MODES.NDVI_CONTRAST) && !validContrast) {
+        const err = new Error('invalid_or_missing_percentiles');
+        err.code = 'ndvi_contrast_not_computed';
+        err.status = 422;
+        throw err;
+      }
+
+      const ndviMean = Number(baseStats.ndvi_mean);
+      const ndviP50 = Number(baseStats.ndvi_p50);
+      const ndmiMean = Number(baseStats.ndmi_mean);
+      const ndmiP5 = Number(baseStats.ndmi_p5);
+      const ndmiP95 = Number(baseStats.ndmi_p95);
+      const ndreMean = Number(baseStats.ndre_mean);
+      const ndreP25 = Number(baseStats.ndre_p25);
+      baseStats.evidence = {
+        hasProbableWaterStress:
+          Number(baseStats.waterStressPercent || 0) >= 5 ||
+          (Number.isFinite(ndmiMean) && ndmiMean < 0.1),
+        hasMoistureGradient:
+          Number.isFinite(ndmiP5) &&
+          Number.isFinite(ndmiP95) &&
+          ndmiP95 - ndmiP5 >= 0.12,
+        hasLocalizedDryZone: Number(baseStats.waterStressPercent || 0) >= 8,
+        waterStressPercent: baseStats.waterStressPercent ?? null,
+        hasLowChlorophyllZone: Number(baseStats.lowChlorophyllPercent || 0) >= 10,
+        hasNdreNdviMismatch:
+          Number.isFinite(ndviP50) &&
+          Number.isFinite(ndreMean) &&
+          ndviP50 >= 0.75 &&
+          ndreMean <= 0.28,
+        ndreMean: baseStats.ndre_mean ?? null,
+        lowChlorophyllPercent: baseStats.lowChlorophyllPercent ?? null,
+        ndviLowNdmiLow:
+          Number.isFinite(ndviMean) &&
+          Number.isFinite(ndmiMean) &&
+          ndviMean < 0.6 &&
+          ndmiMean < 0.1,
+        ndviHighNdreLow:
+          Number.isFinite(ndviP50) &&
+          Number.isFinite(ndreP25) &&
+          ndviP50 >= 0.75 &&
+          ndreP25 <= 0.25,
+      };
+
+      console.log('[Package] GEE scene package prepared', {
+        field: plotId,
+        scene: selectedSceneId,
+        resolution: 'preview',
+        bands: ['B02', 'B04', 'B05', 'B08', 'B8A', 'B11', 'SCL'],
+        modes: uniqueModes,
+        elapsedMs: Date.now() - startedAt,
+      });
+
+      const layersByMode = {};
+      const statusesByMode = {};
+      for (const mode of uniqueModes) {
+        const modeStartedAt = Date.now();
+        try {
+          const rendererVersion = rendererVersionFor(mode);
+          const stats = JSON.parse(JSON.stringify(baseStats));
+          if (mode === VISUAL_MODES.NDVI_CONTRAST) {
+            stats.contrast = {
+              ...(stats.contrast || {}),
+              p5,
+              p50,
+              p95,
+              rendererVersion,
+              stretchMode: contrastStretch.stretchMode,
+              stretchMin: roundOrNull(contrastStretch.min),
+              stretchMax: roundOrNull(contrastStretch.max),
+              gamma: contrastStretch.gamma,
+              lowContrastScene: contrastStretch.lowContrastScene,
+              edgeBufferM: statsGeometry.bufferAppliedM,
+              smoothingRadiusPx: numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX),
+            };
+          } else {
+            stats.contrast = stats.contrast
+              ? { ...stats.contrast, rendererVersion, edgeBufferM: statsGeometry.bufferAppliedM }
+              : { rendererVersion, edgeBufferM: statsGeometry.bufferAppliedM };
+          }
+
+          const rawRenderImage = resolveIndexImage({
+            mode,
+            ndvi: renderNdvi,
+            ndre: renderNdre,
+            savi: renderSavi,
+            bsi: renderBsi,
+            ndmi: renderNdmi,
+          });
+          const renderImage = smoothForPreview(rawRenderImage, plotGeometry);
+          const renderedPng = await renderVisualPngWithFallback({
+            image: renderImage,
+            fallbackImage: rawRenderImage,
+            stats,
+            mode,
+            geometry: plotGeometry,
+            areaHa: statsGeometry.fullAreaHa,
+            fetchImpl,
+          });
+          const pngBuffer = renderedPng.buffer;
+          const previewUrl = await storeNdviPreviewPng({
+            farmId,
+            plotId,
+            sceneId: selectedSceneId,
+            imageDate: selectedImageDate,
+            visualMode: mode,
+            rendererVersion,
+            buffer: pngBuffer,
+          });
+          const agronomicStats = {
+            ...stats,
+            schema_version: 'ndvi_v3',
+            ndvi_schema_version: 3,
+            visual_mode: mode,
+            renderer_version: rendererVersion,
+            available_visual_modes: visualModes(),
+            bounds: polygonToBounds(polygon),
+            provider: 'google_earth_engine',
+            processing_engine: 'google_earth_engine',
+            gee_render_scale_m: GEE_RENDER_SCALE_M,
+            gee_thumb_size: renderedPng.thumbSize,
+            gee_inner_buffer_m: statsGeometry.bufferAppliedM,
+            gee_smoothing_radius_px: renderedPng.smoothingApplied
+              ? numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX)
+              : 0,
+            source_context: {
+              dataset: DATASET,
+              productLevel: 'L2A',
+              redBand: 'B4',
+              nirBand: 'B8',
+              sclAvailable: true,
+              usesUnclassifiedScl: true,
+              cloudMaskVersion: 'scl_v1',
+              ndviEngineVersion: rendererVersion,
+              rasterWidth: renderedPng.thumbSize,
+              rasterHeight: renderedPng.thumbSize,
+              bboxRequested: polygonToBounds(polygon),
+              bboxReturned: polygonToBounds(polygon),
+              crs: 'EPSG:4326',
+              resolutionMeters: GEE_RENDER_SCALE_M,
+              fieldPolygonBounds: polygonToBounds(polygon),
+              overlayBounds: polygonToBounds(polygon),
+              validPixelCount: maskStats.validPixels,
+              maskedPixelCount: maskStats.maskedPixels,
+              sclExcludedPixelCount: maskStats.sclExcludedPixels,
+              packageVersion: 'scene_band_package_v1',
+              packageElapsedMs: Date.now() - startedAt,
+            },
+          };
+          layersByMode[mode] = {
+            scene_id: selectedSceneId,
+            provider: 'google_earth_engine',
+            provider_used: 'google_earth_engine',
+            source: 'gee_sentinel_2_l2a',
+            processing_engine: 'google_earth_engine',
+            image_date: selectedImageDate,
+            cloud_coverage:
+              cloudCoverage == null || Number.isNaN(Number(cloudCoverage))
+                ? null
+                : Number(cloudCoverage),
+            resolution_m: 10,
+            preview_url: previewUrl || (pngBuffer.length <= 900_000
+              ? `data:image/png;base64,${pngBuffer.toString('base64')}`
+              : null),
+            tile_url: null,
+            raster_url: null,
+            raster_available: false,
+            bounds: polygonToBounds(polygon),
+            polygon_masked: true,
+            status: previewUrl ? 'generated' : 'metadata_only',
+            visual_mode: mode,
+            available_visual_modes: visualModes(),
+            contrast: stats.contrast,
+            agronomic_stats_json: agronomicStats,
+            ...stats,
+          };
+          statusesByMode[mode] = {
+            status: 'ready',
+            elapsedMs: Date.now() - modeStartedAt,
+            preview: Boolean(layersByMode[mode].preview_url),
+          };
+          console.log(`[LayerBatch] ${mode} ready from single GEE package`, statusesByMode[mode]);
+        } catch (error) {
+          statusesByMode[mode] = {
+            status: error?.status === 422 ? 'unavailable' : 'failed',
+            code: error?.code || 'gee_layer_render_failed',
+            message: error?.message || String(error),
+            elapsedMs: Date.now() - modeStartedAt,
+          };
+          console.warn(`[LayerBatch] ${mode} failed from single GEE package`, statusesByMode[mode]);
+        }
+      }
+
+      return {
+        scene_id: selectedSceneId,
+        package_version: 'scene_band_package_v1',
+        resolution_kind: 'preview',
+        provider: 'google_earth_engine',
+        provider_used: 'google_earth_engine',
+        modes: uniqueModes,
+        layersByMode,
+        statusesByMode,
+        elapsedMs: Date.now() - startedAt,
       };
     },
   };

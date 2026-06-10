@@ -86,6 +86,7 @@ function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
   router.get('/plots/:plotId/scenes', controller.getScenes);
   router.get('/plots/:plotId/layers', controller.listLayers);
   router.post('/plots/:plotId/generate', controller.generate);
+  router.post('/plots/:plotId/generate-package', controller.generatePackage);
   router.post('/campaigns/:campaignId/attach', controller.attach);
   router.get('/campaigns/:campaignId/active', controller.getActive);
   router.post('/campaigns/:campaignId/refresh', controller.refresh);

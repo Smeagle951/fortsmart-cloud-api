@@ -78,6 +78,30 @@ export class GeeNdviProviderClient extends NdviProviderClient {
       processing_engine: 'google_earth_engine',
     };
   }
+
+  async generateLayerPackage(params) {
+    if (!this.engine) throw providerNotImplemented();
+    if (!this.engine.generateGeeNdviLayerPackage) {
+      throw providerNotImplemented();
+    }
+    const result = await this.engine.generateGeeNdviLayerPackage(params);
+    const layersByMode = {};
+    for (const [mode, layer] of Object.entries(result?.layersByMode || {})) {
+      layersByMode[mode] = {
+        ...layer,
+        provider: 'google_earth_engine',
+        provider_used: 'google_earth_engine',
+        source: layer?.source || 'gee_sentinel_2_l2a',
+        processing_engine: 'google_earth_engine',
+      };
+    }
+    return {
+      ...result,
+      provider: 'google_earth_engine',
+      provider_used: 'google_earth_engine',
+      layersByMode,
+    };
+  }
 }
 
 /**

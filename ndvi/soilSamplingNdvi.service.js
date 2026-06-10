@@ -390,6 +390,414 @@ class SoilSamplingNdviService {
     });
   }
 
+  async _persistGeneratedLayer({
+    dbReady,
+    farmId,
+    plotId,
+    campaignId,
+    targetSceneId,
+    targetDate,
+    targetCloud,
+    assets,
+    stats,
+    layerStatus,
+    polygon,
+    requestedVisualMode,
+    meta,
+    stage = 'persist',
+  }) {
+    const layerId = randomUUID();
+    const plotBounds = this._boundsFromPolygon(polygon);
+    if (!plotBounds) {
+      throw this._error(
+        'Bounds do talhão não puderam ser calculados a partir do polígono.',
+        'invalid_polygon_bounds',
+        422,
+        { plotId, sceneId: targetSceneId },
+      );
+    }
+    let saved = null;
+
+    if (dbReady) {
+      try {
+        saved = await this.repository.upsertLayer({
+          id: layerId,
+          scene_id: String(targetSceneId),
+          farm_id: farmId,
+          plot_id: plotId,
+          campaign_id: campaignId,
+          source: assets.source || 'sentinel-2_l2a',
+          image_date: targetDate,
+          cloud_coverage: targetCloud,
+          resolution_m: 10,
+          ...stats,
+          agronomic_stats: {
+            ...stats,
+            schema_version: 'ndvi_v3',
+            ndvi_schema_version: 3,
+            contrast: assets.contrast ?? stats.contrast,
+            classes: assets.classes ?? stats.classes,
+            visual_mode: assets.visual_mode ?? requestedVisualMode,
+            bounds: plotBounds,
+            renderer_version:
+              assets?.rendererVersion ??
+              assets?.renderer_version ??
+              assets?.contrast?.rendererVersion ??
+              null,
+            zones: assets.zones ?? stats.zones ?? [],
+            spatial_metrics: assets.spatial_metrics ?? stats.spatial_metrics,
+            rendering: assets.rendering ?? stats.rendering,
+            diagnosis: assets.diagnosis ?? stats.diagnosis ?? null,
+            legend: assets.legend ?? stats.legend ?? null,
+            sourceContext: assets.sourceContext ?? stats.sourceContext ?? null,
+            source_context: assets.source_context ?? stats.source_context ?? null,
+            cacheHit: assets.cacheHit ?? assets.cache_hit ?? false,
+            cacheTag: assets.cacheTag ?? assets.cache_tag ?? null,
+            generatedAt: assets.generatedAt ?? assets.generated_at ?? null,
+            raster_available: assets.raster_available ?? false,
+            raster_format: assets.raster_format ?? null,
+            raster_bands: assets.raster_bands ?? [],
+            raster_bounds: assets.raster_bounds ?? plotBounds,
+            raster_resolution_m: assets.raster_resolution_m ?? 10,
+            raster_storage_key: assets.raster_storage_key ?? null,
+            raster_storage_provider: assets.raster_storage_provider ?? null,
+            raster_schema_version: assets.raster_schema_version ?? null,
+          },
+          schema_version: 'ndvi_v3',
+          ndvi_schema_version: 3,
+          is_legacy_schema: false,
+          visual_mode: assets.visual_mode ?? requestedVisualMode,
+          processing_engine: assets.processing_engine ?? 'copernicus_process_api',
+          provider: assets.provider ?? 'copernicus_dataspace',
+          preview_url: assets.preview_url,
+          tile_url: assets.tile_url,
+          raster_url: assets.raster_url ?? null,
+          raster_format: assets.raster_format ?? null,
+          raster_bands: assets.raster_bands ?? [],
+          raster_bounds: assets.raster_bounds ?? plotBounds,
+          raster_resolution_m: assets.raster_resolution_m ?? 10,
+          raster_available: assets.raster_available ?? false,
+          raster_storage_key: assets.raster_storage_key ?? null,
+          raster_storage_provider: assets.raster_storage_provider ?? null,
+          raster_schema_version: assets.raster_schema_version ?? null,
+          is_active: false,
+          status: layerStatus,
+        });
+      } catch (persistError) {
+        console.error(
+          `❌ [NDVI] upsertLayer plotId=${plotId} sceneId=${targetSceneId}: ${persistError.message}`,
+        );
+        if (this._hasRenderableAssets(assets)) {
+          console.warn(
+            `⚠️ [NDVI] retornando camada efêmera (persist falhou) plotId=${plotId}`,
+          );
+          saved = this._buildEphemeralLayerRow({
+            layerId,
+            farmId,
+            plotId,
+            campaignId,
+            targetSceneId,
+            targetDate,
+            targetCloud,
+            layerStatus,
+            stats,
+            assets,
+            bounds: plotBounds,
+            requestedVisualMode,
+          });
+        } else {
+          throw this._error(
+            'Não foi possível salvar a camada NDVI no banco',
+            'layer_persist_failed',
+            503,
+            {
+              stage,
+              pg_code: persistError.code,
+              hint: persistError.hint,
+            },
+          );
+        }
+      }
+    } else if (this._hasRenderableAssets(assets)) {
+      console.warn(
+        `⚠️ [NDVI] retornando camada efêmera (banco indisponível) plotId=${plotId}`,
+      );
+      saved = this._buildEphemeralLayerRow({
+        layerId,
+        farmId,
+        plotId,
+        campaignId,
+        targetSceneId,
+        targetDate,
+        targetCloud,
+        layerStatus,
+        stats,
+        assets,
+        bounds: plotBounds,
+        requestedVisualMode,
+      });
+    } else {
+      throw this._error(
+        'Banco NDVI indisponível e nenhuma imagem foi gerada pelo provedor',
+        'ndvi_database_unavailable',
+        503,
+        { stage },
+      );
+    }
+
+    let mapped = NdviResponseMapper.mapLayer(saved);
+    if (!mapped) {
+      throw this._error(
+        'Camada NDVI salva mas resposta inválida',
+        'invalid_layer_response',
+        500,
+        { stage, layer_id: saved?.id },
+      );
+    }
+
+    mapped = this._mergeMappedLayerFromAssets(mapped, assets, {
+      polygon,
+      requestedVisualMode,
+    });
+
+    this._assertReadyLayerOrThrow(mapped, meta);
+    this._assertContrastContractOrThrow(mapped, meta, {
+      requestedVisualMode,
+      polygon,
+    });
+    return mapped;
+  }
+
+  async generateLayerPackage({
+    farmId,
+    plotId,
+    campaignId = null,
+    sceneId,
+    polygon,
+    imageDate,
+    cloudCoverage = null,
+    startDate = null,
+    endDate = null,
+    maxCloud = null,
+    colormapMode = 'auto',
+    modes = null,
+    force = false,
+  }) {
+    const defaultModes = [
+      'ndvi_contrast',
+      'ndvi_absolute',
+      'agronomic_classes',
+      'ndvi_relative',
+      'ndmi_water_stress',
+      'ndre',
+      'bsi_soil',
+    ];
+    const requestedModes = Array.isArray(modes) && modes.length
+      ? modes.map((mode) => resolveRequestedVisualMode(mode)).filter(Boolean)
+      : defaultModes;
+    const uniqueModes = [...new Set(requestedModes)];
+    const startedAt = Date.now();
+    const layersByMode = {};
+    const statusesByMode = {};
+
+    console.log('[NDVI_PACKAGE_GENERATE_START]', {
+      farmId,
+      plotId,
+      sceneId,
+      imageDate,
+      modes: uniqueModes,
+      force,
+    });
+    console.log('[Package] generate-package request', {
+      field: plotId,
+      scene: sceneId,
+      resolution: 'preview',
+      expectedBands: ['B02', 'B04', 'B05', 'B08', 'B8A', 'B11', 'SCL'],
+      modes: uniqueModes,
+    });
+
+    this._requireScope({ farmId, plotId });
+    if (!polygon || polygon.type !== 'Polygon') {
+      throw this._error('Talhão sem polígono válido', 'plot_polygon_missing', 400);
+    }
+    const dbReady = await this._tryEnsureSchema('generateLayerPackage');
+    if (this._geeReady() && this.geeClient?.generateLayerPackage) {
+      try {
+        console.log('[Package] using single-pass GEE package renderer', {
+          field: plotId,
+          scene: sceneId,
+          modes: uniqueModes,
+        });
+        const packageResult = await this.geeClient.generateLayerPackage({
+          sceneId,
+          polygon,
+          imageDate,
+          startDate,
+          endDate,
+          maxCloud,
+          farmId,
+          plotId,
+          modes: uniqueModes,
+        });
+        for (const mode of uniqueModes) {
+          const modeStartedAt = Date.now();
+          const assets = packageResult.layersByMode?.[mode];
+          if (!assets) {
+            statusesByMode[mode] = packageResult.statusesByMode?.[mode] || {
+              status: 'unavailable',
+              code: 'layer_not_returned',
+              message: 'Camada não retornada pelo pacote GEE.',
+              elapsedMs: 0,
+            };
+            continue;
+          }
+          try {
+            const stats = NdviStatsService.buildStatsForAssets(assets);
+            const hasRaster = this._hasRenderableAssets(assets);
+            const statsValid =
+              isValidNdviStats(stats) || hasCoreRenderableNdviStats(stats);
+            if (!hasRaster || !statsValid) {
+              throw this._error(
+                'NDVI não foi calculado com estatísticas válidas.',
+                'ndvi_not_computed',
+                422,
+                { mode, previewGenerated: hasRaster, statsComputed: statsValid },
+              );
+            }
+            const targetSceneId = assets.scene_id || sceneId;
+            const targetDate = normalizeImageDate(assets.image_date) || normalizeImageDate(imageDate);
+            const targetCloud = assets.cloud_coverage ?? cloudCoverage;
+            const mapped = await this._persistGeneratedLayer({
+              dbReady,
+              farmId,
+              plotId,
+              campaignId,
+              targetSceneId,
+              targetDate,
+              targetCloud,
+              assets,
+              stats,
+              layerStatus: 'generated',
+              polygon,
+              requestedVisualMode: mode,
+              meta: {
+                plotId,
+                farmId,
+                campaignId,
+                sceneId: targetSceneId,
+                imageDate: targetDate,
+              },
+              stage: 'persist_package',
+            });
+            layersByMode[mode] = mapped;
+            statusesByMode[mode] = {
+              status: 'ready',
+              elapsedMs: Date.now() - modeStartedAt,
+              preview: Boolean(mapped?.preview_url || mapped?.previewUrl),
+            };
+            console.log(`[LayerBatch] ${mode} persisted from single GEE package`, statusesByMode[mode]);
+          } catch (error) {
+            statusesByMode[mode] = {
+              status: error?.status === 422 ? 'unavailable' : 'failed',
+              code: error?.code || 'layer_package_persist_failed',
+              message: error?.message || String(error),
+              elapsedMs: Date.now() - modeStartedAt,
+            };
+            console.warn(`[LayerBatch] ${mode} persist failed from single GEE package`, statusesByMode[mode]);
+          }
+        }
+        console.log('[Package] ready', {
+          field: plotId,
+          scene: packageResult.scene_id || sceneId,
+          provider: 'google_earth_engine',
+          readyModes: Object.keys(layersByMode),
+          elapsedMs: Date.now() - startedAt,
+        });
+        return {
+          scene_id: packageResult.scene_id || sceneId,
+          package_version: packageResult.package_version || 'scene_band_package_v1',
+          resolution_kind: packageResult.resolution_kind || 'preview',
+          provider: 'google_earth_engine',
+          modes: uniqueModes,
+          layersByMode,
+          statusesByMode,
+          elapsedMs: Date.now() - startedAt,
+        };
+      } catch (error) {
+        console.warn('[Package] single-pass GEE package failed; falling back to per-mode orchestration', {
+          code: error?.code,
+          message: error?.message || String(error),
+        });
+      }
+    }
+
+    for (const mode of uniqueModes) {
+      const modeStartedAt = Date.now();
+      try {
+        console.log(`[LayerBatch] generating ${mode} from package request`);
+        const layer = await this.generateLayer({
+          farmId,
+          plotId,
+          campaignId,
+          sceneId,
+          polygon,
+          imageDate,
+          cloudCoverage,
+          startDate,
+          endDate,
+          maxCloud,
+          colormapMode,
+          visualMode: mode,
+          force,
+        });
+        layersByMode[mode] = layer;
+        statusesByMode[mode] = {
+          status: 'ready',
+          elapsedMs: Date.now() - modeStartedAt,
+          preview: Boolean(layer?.preview_url || layer?.previewUrl),
+        };
+        console.log(`[LayerBatch] ${mode} ready preview`, statusesByMode[mode]);
+      } catch (error) {
+        statusesByMode[mode] = {
+          status: error?.status === 422 ? 'unavailable' : 'failed',
+          code: error?.code || 'layer_generation_failed',
+          message: error?.message || String(error),
+          elapsedMs: Date.now() - modeStartedAt,
+        };
+        console.warn('[NDVI_PACKAGE_MODE_SKIP]', {
+          mode,
+          code: statusesByMode[mode].code,
+          message: statusesByMode[mode].message,
+        });
+        console.warn(`[LayerBatch] ${mode} unavailable/failed`, statusesByMode[mode]);
+      }
+    }
+
+    console.log('[NDVI_PACKAGE_GENERATE_DONE]', {
+      farmId,
+      plotId,
+      sceneId,
+      readyModes: Object.keys(layersByMode),
+      elapsedMs: Date.now() - startedAt,
+    });
+    console.log('[Package] ready', {
+      field: plotId,
+      scene: sceneId,
+      readyModes: Object.keys(layersByMode),
+      elapsedMs: Date.now() - startedAt,
+    });
+
+    return {
+      scene_id: sceneId,
+      package_version: 'scene_band_package_v1',
+      resolution_kind: 'preview',
+      modes: uniqueModes,
+      layersByMode,
+      statusesByMode,
+      elapsedMs: Date.now() - startedAt,
+    };
+  }
+
   async generateLayer({
     farmId,
     plotId,
@@ -800,165 +1208,21 @@ class SoilSamplingNdviService {
 
       stage = 'persist';
       logGenerateStage(meta, stage, `status=${layerStatus} dbReady=${dbReady}`);
-      const layerId = randomUUID();
-      const plotBounds = this._boundsFromPolygon(polygon);
-      if (!plotBounds) {
-        throw this._error(
-          'Bounds do talhão não puderam ser calculados a partir do polígono.',
-          'invalid_polygon_bounds',
-          422,
-          { plotId, sceneId: targetSceneId },
-        );
-      }
-      let saved = null;
-
-      if (dbReady) {
-        try {
-          saved = await this.repository.upsertLayer({
-            id: layerId,
-            scene_id: String(targetSceneId),
-            farm_id: farmId,
-            plot_id: plotId,
-            campaign_id: campaignId,
-            source: assets.source || 'sentinel-2_l2a',
-            image_date: targetDate,
-            cloud_coverage: targetCloud,
-            resolution_m: 10,
-            ...stats,
-            agronomic_stats: {
-              ...stats,
-              schema_version: 'ndvi_v3',
-              ndvi_schema_version: 3,
-              contrast: assets.contrast ?? stats.contrast,
-              classes: assets.classes ?? stats.classes,
-              visual_mode: assets.visual_mode ?? requestedVisualMode,
-              bounds: plotBounds,
-              renderer_version:
-                assets?.rendererVersion ??
-                assets?.renderer_version ??
-                assets?.contrast?.rendererVersion ??
-                null,
-              zones: assets.zones ?? stats.zones ?? [],
-              spatial_metrics: assets.spatial_metrics ?? stats.spatial_metrics,
-              rendering: assets.rendering ?? stats.rendering,
-              diagnosis: assets.diagnosis ?? stats.diagnosis ?? null,
-              legend: assets.legend ?? stats.legend ?? null,
-              sourceContext: assets.sourceContext ?? stats.sourceContext ?? null,
-              source_context: assets.source_context ?? stats.source_context ?? null,
-              cacheHit: assets.cacheHit ?? assets.cache_hit ?? false,
-              cacheTag: assets.cacheTag ?? assets.cache_tag ?? null,
-              generatedAt: assets.generatedAt ?? assets.generated_at ?? null,
-              raster_available: assets.raster_available ?? false,
-              raster_format: assets.raster_format ?? null,
-              raster_bands: assets.raster_bands ?? [],
-              raster_bounds: assets.raster_bounds ?? plotBounds,
-              raster_resolution_m: assets.raster_resolution_m ?? 10,
-              raster_storage_key: assets.raster_storage_key ?? null,
-              raster_storage_provider: assets.raster_storage_provider ?? null,
-              raster_schema_version: assets.raster_schema_version ?? null,
-            },
-            schema_version: 'ndvi_v3',
-            ndvi_schema_version: 3,
-            is_legacy_schema: false,
-            visual_mode: assets.visual_mode ?? requestedVisualMode,
-            processing_engine: assets.processing_engine ?? 'copernicus_process_api',
-            provider: assets.provider ?? 'copernicus_dataspace',
-            preview_url: assets.preview_url,
-            tile_url: assets.tile_url,
-            raster_url: assets.raster_url ?? null,
-            raster_format: assets.raster_format ?? null,
-            raster_bands: assets.raster_bands ?? [],
-            raster_bounds: assets.raster_bounds ?? plotBounds,
-            raster_resolution_m: assets.raster_resolution_m ?? 10,
-            raster_available: assets.raster_available ?? false,
-            raster_storage_key: assets.raster_storage_key ?? null,
-            raster_storage_provider: assets.raster_storage_provider ?? null,
-            raster_schema_version: assets.raster_schema_version ?? null,
-            is_active: false,
-            status: layerStatus,
-          });
-        } catch (persistError) {
-          console.error(
-            `❌ [NDVI] upsertLayer plotId=${plotId} sceneId=${targetSceneId}: ${persistError.message}`,
-          );
-          if (this._hasRenderableAssets(assets)) {
-            console.warn(
-              `⚠️ [NDVI] retornando camada efêmera (persist falhou) plotId=${plotId}`,
-            );
-            saved = this._buildEphemeralLayerRow({
-              layerId,
-              farmId,
-              plotId,
-              campaignId,
-              targetSceneId,
-              targetDate,
-              targetCloud,
-              layerStatus,
-              stats,
-              assets,
-              bounds: plotBounds,
-              requestedVisualMode,
-            });
-          } else {
-            throw this._error(
-              'Não foi possível salvar a camada NDVI no banco',
-              'layer_persist_failed',
-              503,
-              {
-                stage,
-                pg_code: persistError.code,
-                hint: persistError.hint,
-              },
-            );
-          }
-        }
-      } else if (this._hasRenderableAssets(assets)) {
-        console.warn(
-          `⚠️ [NDVI] retornando camada efêmera (banco indisponível) plotId=${plotId}`,
-        );
-        saved = this._buildEphemeralLayerRow({
-          layerId,
-          farmId,
-          plotId,
-          campaignId,
-          targetSceneId,
-          targetDate,
-          targetCloud,
-          layerStatus,
-          stats,
-          assets,
-          bounds: plotBounds,
-          requestedVisualMode,
-        });
-      } else {
-        throw this._error(
-          'Banco NDVI indisponível e nenhuma imagem foi gerada pelo provedor',
-          'ndvi_database_unavailable',
-          503,
-          { stage },
-        );
-      }
-
-      stage = 'map_response';
-      let mapped = NdviResponseMapper.mapLayer(saved);
-      if (!mapped) {
-        throw this._error(
-          'Camada NDVI salva mas resposta inválida',
-          'invalid_layer_response',
-          500,
-          { stage, layer_id: saved?.id },
-        );
-      }
-
-      mapped = this._mergeMappedLayerFromAssets(mapped, assets, {
+      const mapped = await this._persistGeneratedLayer({
+        dbReady,
+        farmId,
+        plotId,
+        campaignId,
+        targetSceneId,
+        targetDate,
+        targetCloud,
+        assets,
+        stats,
+        layerStatus,
         polygon,
         requestedVisualMode,
-      });
-
-      this._assertReadyLayerOrThrow(mapped, meta);
-      this._assertContrastContractOrThrow(mapped, meta, {
-        requestedVisualMode,
-        polygon,
+        meta,
+        stage,
       });
       logGenerateOk(meta, mapped, {
         rasterGenerated: hasRaster ? 'yes' : 'no',
