@@ -5,6 +5,8 @@ import SoilSamplingNdviController from './soilSamplingNdvi.controller.js';
 import CdseAuthClient from './cdseAuth.client.js';
 import SentinelCatalogClient from './sentinelCatalog.client.js';
 import SentinelProcessClient from './sentinelProcess.client.js';
+import { GeeNdviProviderClient } from './NdviProviderClient.js';
+import { getNdviProviderStatus } from './ndviEnv.js';
 
 function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
   const router = express.Router();
@@ -25,12 +27,34 @@ function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
 
   const repository = new SoilSamplingNdviRepository(pool);
 
+  // Seam GEE-primary: começa dormente (engine=null → isImplemented()=false),
+  // então o serviço usa Copernicus normalmente. Quando GEE está habilitado e
+  // configurado, carregamos o engine real dinamicamente (precisa portar
+  // ./gee/geeNdviEngine.js e instalar @google/earthengine). Se o engine não
+  // estiver disponível, mantém-se o fallback Copernicus sem quebrar produção.
+  const geeClient = new GeeNdviProviderClient({ engine: null });
+
   const service = new SoilSamplingNdviService({
     repository,
     catalogClient,
     processClient,
     authClient,
+    geeClient,
   });
+
+  const geeReady = (async () => {
+    const status = getNdviProviderStatus();
+    if (!status.gee_primary) return;
+    try {
+      const mod = await import('./gee/geeNdviEngine.js');
+      geeClient.engine = await mod.createGeeNdviEngine({ publicBaseUrl });
+      console.log('✅ [NDVI] Google Earth Engine ativo como provider principal');
+    } catch (error) {
+      console.warn(
+        `⚠️ [NDVI] GEE habilitado mas engine indisponível — fallback Copernicus: ${error?.message || error}`,
+      );
+    }
+  })();
 
   const controller = new SoilSamplingNdviController(service, { authClient });
 
@@ -49,12 +73,14 @@ function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
     });
 
   router.use(async (req, res, next) => {
-    await schemaReady;
+    await Promise.all([schemaReady, geeReady]);
     req.ndviSchemaAvailable = schemaAvailable;
     next();
   });
 
   router.get('/health', controller.getStatus);
+  router.get('/gee-health', controller.getGeeHealth);
+  router.get('/gee-test', controller.getGeeTest);
   router.get('/copernicus/test-token', controller.testCopernicusToken);
   router.get('/status', controller.getStatus);
 

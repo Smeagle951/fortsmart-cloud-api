@@ -1,0 +1,17 @@
+title = "FortSmart Cloud API secret scanning"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allow documented placeholders and sample values only"
+paths = [
+  '''(^|/)\.env\.example$''',
+  '''(^|/)README\.md$''',
+  '''(^|/)ENV_MIGRATION_CHECKLIST\.md$''',
+  '''(^|/)RENDER_DEPLOY\.md$''',
+]
+regexes = [
+  '''(?i)<[^>\s]*(key|token|secret|password|url)[^>\s]*>''',
+  '''(?i)(your|example|placeholder|changeme|replace_me|set_in_dashboard)''',
+]

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import SoilSamplingNdviService from './soilSamplingNdvi.service.js';
+import createSoilSamplingNdviRouter from './soilSamplingNdvi.routes.js';
 import * as NdviResponseMapper from './ndviResponse.mapper.js';
 
 const polygon = {
@@ -336,5 +337,115 @@ describe('SoilSamplingNdviService.generateLayer', () => {
     assert.equal(layer.status, 'ready');
     assert.equal(layer.preview_url, 'https://cdn.example/ndvi.png');
     assert.ok(layer.id);
+  });
+});
+
+describe('SceneBandPackage generate-package', () => {
+  it('registra rotas compatíveis para generate-package', () => {
+    const router = createSoilSamplingNdviRouter({
+      pool: { query: async () => ({ rows: [] }) },
+      publicBaseUrl: '',
+    });
+    const paths = router.stack
+      .map((layer) => layer.route?.path)
+      .filter(Boolean);
+
+    assert.ok(paths.includes('/plots/:plotId/generate-package'));
+    assert.ok(paths.includes('/generate-package'));
+    assert.ok(paths.includes('/ndvi/generate-package'));
+  });
+
+  it('retorna ndviContrast ready e mantém moisture como failed/unavailable', async () => {
+    const calls = [];
+    const service = new SoilSamplingNdviService({
+      repository: {
+        ensureSchema: async () => {},
+        findRecentCache: async () => null,
+        upsertLayer: async (data) => ({ ...data, id: `${data.visual_mode}-layer` }),
+      },
+      catalogClient: { polygonToBbox: () => [-54.48, -15.38, -54.47, -15.37] },
+      processClient: {
+        generateNdviLayer: async (params) => {
+          calls.push(params.visualMode);
+          if (params.visualMode === 'ndmi_water_stress') {
+            throw Object.assign(new Error('Banda B11 ausente para Umidade.'), {
+              code: 'missingBands',
+              status: 422,
+            });
+          }
+          return {
+            preview_url: `https://cdn.example/${params.visualMode}.png`,
+            ndvi_mean: 0.62,
+            ndvi_min: 0.35,
+            ndvi_max: 0.81,
+            very_low_percent: 5,
+            low_percent: 25,
+            medium_percent: 40,
+            high_percent: 30,
+            contrast,
+            visual_mode: params.visualMode,
+            status: 'generated',
+          };
+        },
+      },
+      authClient: { isConfigured: () => true },
+    });
+
+    const result = await service.generateLayerPackage({
+      farmId: 'f1',
+      plotId: 'p1',
+      campaignId: '16',
+      sceneId: 'scene-abc',
+      polygon,
+      imageDate: '2026-05-25',
+      modes: ['ndvi_contrast', 'ndmi_water_stress'],
+    });
+
+    assert.equal(result.packageStatus, 'partial');
+    assert.ok(result.packageCacheKey);
+    assert.deepEqual(calls, ['ndvi_contrast', 'ndmi_water_stress']);
+    assert.equal(result.layersByMode.ndvi_contrast.status, 'ready');
+    assert.equal(result.statusesByMode.ndvi_contrast.status, 'ready');
+    assert.equal(result.layersByMode.ndmi_water_stress, undefined);
+    assert.match(
+      result.statusesByMode.ndmi_water_stress.status,
+      /^(failed|unavailable)$/,
+    );
+  });
+
+  it('marca pacote como failed quando nenhum modo fica pronto', async () => {
+    const service = new SoilSamplingNdviService({
+      repository: {
+        ensureSchema: async () => {},
+        findRecentCache: async () => null,
+        upsertLayer: async () => {
+          throw new Error('should not persist empty package');
+        },
+      },
+      catalogClient: { polygonToBbox: () => [-54.48, -15.38, -54.47, -15.37] },
+      processClient: {
+        generateNdviLayer: async () => {
+          throw Object.assign(new Error('Não foi possível gerar NDVI no provedor de imagens'), {
+            code: 'NDVI_PROVIDER_ERROR',
+            status: 502,
+          });
+        },
+      },
+      authClient: { isConfigured: () => true },
+    });
+
+    const result = await service.generateLayerPackage({
+      farmId: 'f1',
+      plotId: 'p1',
+      campaignId: '16',
+      sceneId: 'scene-abc',
+      polygon,
+      imageDate: '2026-05-25',
+      modes: ['ndre'],
+    });
+
+    assert.equal(result.packageStatus, 'failed');
+    assert.deepEqual(Object.keys(result.layersByMode), []);
+    assert.equal(result.statusesByMode.ndre.status, 'failed');
   });
 });

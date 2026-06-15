@@ -4,9 +4,11 @@ import { isObjectStorageConfigured } from '../services/objectStorage.service.js'
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { jsonOk } from '../utils/response.js';
 /** Versão de capacidades — subir quando expor novas rotas (ex.: upload de imagens). */
-export const API_CAPABILITIES_VERSION = 4;
-/** Versão da validação NDVI HTTP (v2 = valida stats antes do 201). */
-export const NDVI_VALIDATION_VERSION = 'v2';
+export const API_CAPABILITIES_VERSION = 5;
+/** Versão da validação NDVI HTTP (v3 = ready agronômico multibandas). */
+export const NDVI_VALIDATION_VERSION = 'v3';
+/** Versão do gate do /generate para ndvi_contrast (bloqueia 201 legacy). */
+export const NDVI_GENERATE_CONTRAST_GATE_VERSION = 'gate_v1';
 export const healthRouter = Router();
 function formatUptime(seconds) {
     const total = Math.floor(seconds);
@@ -39,6 +41,7 @@ healthRouter.get('/health', asyncHandler(async (_req, res) => {
         uptime: formatUptime(process.uptime()),
         capabilities_version: API_CAPABILITIES_VERSION,
         ndvi_validation_version: NDVI_VALIDATION_VERSION,
+        ndvi_generate_contrast_gate_version: NDVI_GENERATE_CONTRAST_GATE_VERSION,
         database,
         r2: isObjectStorageConfigured() ? 'ok' : 'missing',
         image_routes: true,
@@ -55,6 +58,7 @@ healthRouter.get('/ping', (_req, res) => {
     jsonOk(res, {
         status: 'ok',
         capabilities_version: API_CAPABILITIES_VERSION,
+        ndvi_generate_contrast_gate_version: NDVI_GENERATE_CONTRAST_GATE_VERSION,
     });
 });
 //# sourceMappingURL=health.routes.js.map

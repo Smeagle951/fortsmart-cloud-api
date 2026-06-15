@@ -326,6 +326,180 @@ class SentinelProcessClient {
     });
   }
 
+  async generateLayerPackage({
+    sceneId,
+    polygon,
+    imageDate,
+    farmId,
+    plotId,
+    modes = VISUAL_MODES,
+  }) {
+    const requestedModes = [...new Set(
+      (Array.isArray(modes) && modes.length ? modes : VISUAL_MODES)
+        .map((mode) => normalizeVisualMode(mode, null)),
+    )];
+    const date = String(imageDate || '').slice(0, 10);
+    const started = Date.now();
+    const layersByMode = {};
+    const statusesByMode = {};
+
+    console.log('[NDVI][Process][package] start', {
+      sceneId,
+      plotId,
+      modes: requestedModes,
+      date,
+    });
+
+    if (!date) {
+      for (const mode of requestedModes) {
+        statusesByMode[mode] = {
+          status: 'failed',
+          code: 'invalidImageDate',
+          message: 'Data da cena inválida para gerar pacote Sentinel.',
+          elapsedMs: 0,
+        };
+      }
+      return {
+        scene_id: sceneId,
+        resolution_kind: 'preview',
+        package_version: 'scene_band_package_v1',
+        layersByMode,
+        statusesByMode,
+        elapsedMs: Date.now() - started,
+      };
+    }
+
+    console.log('[NDVI] cache raster lookup', {
+      plotId,
+      sceneId,
+      key: [plotId, sceneId || '-', 'internal_grid_v1'].join('|'),
+    });
+    let raster = await loadInternalGrid({
+      plotId,
+      sceneId,
+      schemaVersion: RASTER_SCHEMA_NUM,
+    });
+
+    if (!raster?.bands?.ndvi?.length) {
+      console.log('[NDVI] raster miss', { plotId, sceneId });
+      console.log('[NDVI][Process][package] raster miss; generating base raster', {
+        sceneId,
+        plotId,
+      });
+      const base = await this.generateNdviLayer({
+        sceneId,
+        polygon,
+        imageDate: date,
+        farmId,
+        plotId,
+        visualMode: 'ndvi_contrast',
+        forceRemote: false,
+      });
+      if (base?.raster_storage_key || base?.raster_available) {
+        raster = await loadInternalGrid({
+          plotId,
+          sceneId,
+          schemaVersion: RASTER_SCHEMA_NUM,
+        });
+      }
+    } else {
+      console.log('[NDVI] raster hit', { plotId, sceneId });
+    }
+
+    if (!raster?.bands?.ndvi?.length) {
+      for (const mode of requestedModes) {
+        statusesByMode[mode] = {
+          status: 'failed',
+          code: 'packageRasterNotComputed',
+          message: 'Pacote Sentinel não gerou raster interno reutilizável.',
+          elapsedMs: Date.now() - started,
+        };
+      }
+      return {
+        scene_id: sceneId,
+        resolution_kind: 'preview',
+        package_version: 'scene_band_package_v1',
+        layersByMode,
+        statusesByMode,
+        elapsedMs: Date.now() - started,
+      };
+    }
+
+    for (const mode of requestedModes) {
+      const modeStarted = Date.now();
+      try {
+        console.log('[NDVI] render layer started', {
+          plotId,
+          sceneId,
+          mode,
+        });
+        const layer = await this._layerFromPersistedRaster({
+          raster,
+          sceneId,
+          farmId,
+          plotId,
+          imageDate: date,
+          polygon,
+          visualMode: mode,
+        });
+        if (!layer?.preview_url) {
+          statusesByMode[mode] = {
+            status: 'unavailable',
+            code: 'layerPreviewNotComputed',
+            message: `Camada ${mode} não retornou preview reutilizável.`,
+            elapsedMs: Date.now() - modeStarted,
+          };
+          continue;
+        }
+        layersByMode[mode] = layer;
+        statusesByMode[mode] = {
+          status: 'ready',
+          elapsedMs: Date.now() - modeStarted,
+          preview: true,
+          source: 'internal_grid_package',
+        };
+        console.log('[NDVI] render layer finished', {
+          plotId,
+          sceneId,
+          mode,
+          elapsedMs: Date.now() - modeStarted,
+          bytes: layer?.preview_url ? String(layer.preview_url).length : 0,
+        });
+      } catch (error) {
+        statusesByMode[mode] = {
+          status: 'failed',
+          code: error?.code || 'packageLayerRenderFailed',
+          message: error?.message || String(error),
+          elapsedMs: Date.now() - modeStarted,
+        };
+      }
+    }
+
+    console.log('[NDVI][Process][package] done', {
+      sceneId,
+      plotId,
+      readyModes: Object.keys(layersByMode),
+      elapsedMs: Date.now() - started,
+    });
+    console.log('[NDVI] package saved', {
+      key: [plotId, sceneId || '-', 'preview'].join('|'),
+      layers: Object.keys(layersByMode),
+    });
+
+    return {
+      scene_id: sceneId,
+      packageCacheKey: [plotId, sceneId || '-', 'preview'].join('|'),
+      package_version: 'scene_band_package_v1',
+      resolution_kind: 'preview',
+      generatedAt: new Date().toISOString(),
+      provider: 'copernicus_dataspace',
+      modes: requestedModes,
+      layersByMode,
+      statusesByMode,
+      elapsedMs: Date.now() - started,
+    };
+  }
+
   async generateNdviLayer({
     sceneId,
     polygon,

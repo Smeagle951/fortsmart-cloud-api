@@ -1,3 +1,8 @@
+import {
+  hasAgronomicClassPercents,
+  isValidAgronomicNdviStats,
+} from './ndviAgronomicValidity.js';
+
 /**
  * Regras de validade NDVI — sem stats nem status "ready" falsos.
  */
@@ -28,6 +33,7 @@ export function isValidNdviMean(value, { hasRaster = false } = {}) {
  */
 export function isValidNdviStats(stats) {
   if (!stats || typeof stats !== 'object') return false;
+  if (isValidAgronomicNdviStats(stats)) return true;
 
   const mean = toNum(stats.ndvi_mean ?? stats.ndviMean);
   let min = toNum(stats.ndvi_min ?? stats.ndviMin);
@@ -92,16 +98,38 @@ export function invalidNdviStatsReason(stats) {
 export function isValidNdviLayerRow(row) {
   if (!row) return false;
   if (!layerHasRaster(row)) return false;
-  return isValidNdviStats({
+  const agro =
+    row.agronomic_stats && typeof row.agronomic_stats === 'object'
+      ? row.agronomic_stats
+      : null;
+  const merged = {
     ndvi_mean: row.ndvi_mean,
     ndvi_min: row.ndvi_min,
     ndvi_max: row.ndvi_max,
+    ndvi_std: row.ndvi_std ?? agro?.ndvi_std,
     very_low_percent: row.very_low_percent,
     low_percent: row.low_percent,
     medium_percent: row.medium_percent,
     high_percent: row.high_percent,
-  });
+    bare_soil_percent: row.bare_soil_percent ?? agro?.bare_soil_percent,
+    straw_percent: row.straw_percent ?? agro?.straw_percent,
+    low_vigor_percent: row.low_vigor_percent ?? agro?.low_vigor_percent,
+    medium_vigor_percent: row.medium_vigor_percent ?? agro?.medium_vigor_percent,
+    high_vigor_percent: row.high_vigor_percent ?? agro?.high_vigor_percent,
+    very_high_vigor_percent:
+      row.very_high_vigor_percent ?? agro?.very_high_vigor_percent,
+    stress_candidate_percent:
+      row.stress_candidate_percent ?? agro?.stress_candidate_percent,
+    ndre_mean: row.ndre_mean ?? agro?.ndre_mean,
+    savi_mean: row.savi_mean ?? agro?.savi_mean,
+    bsi_mean: row.bsi_mean ?? agro?.bsi_mean,
+    ndmi_mean: row.ndmi_mean ?? agro?.ndmi_mean,
+    classes: row.classes ?? agro?.classes,
+  };
+  return isValidNdviStats(merged);
 }
+
+export { hasAgronomicClassPercents, isValidAgronomicNdviStats };
 
 export function resolveLayerStatus(row) {
   const stored = String(row?.status || '').toLowerCase();

@@ -7,6 +7,7 @@ import {
   deserializeInternalGridBuffer,
   RASTER_SCHEMA_VERSION,
 } from './ndviRasterSerializer.js';
+import { storeInternalGrid } from './ndviRasterStore.js';
 
 function syntheticRaster(w = 8, h = 8) {
   const cellCount = w * h;
@@ -105,4 +106,49 @@ test('raster reuse nao mistura metadata de visualModes diferentes', async () => 
   assert.equal(moisture.visual_mode, 'ndmi_water_stress');
   assert.notEqual(contrast.cacheTag, moisture.cacheTag);
   assert.notEqual(contrast.legend.title, moisture.legend.title);
+});
+
+test('package renderer monta modos avançados a partir do raster persistido', async () => {
+  const client = new SentinelProcessClient({ authClient: null, enableDevMock: true });
+  const raster = deserializeInternalGridBuffer(
+    serializeInternalGridDocument(syntheticRaster()).buffer,
+  );
+  await storeInternalGrid({
+    plotId: 'plot-1',
+    sceneId: 'scene-1',
+    document: raster,
+  });
+  const original = client.generateNdviLayer.bind(client);
+  client.generateNdviLayer = async () => {
+    throw new Error('generateNdviLayer should not be called when raster exists');
+  };
+  const polygon = {
+    type: 'Polygon',
+    coordinates: [[
+      [-54.5, -15.4],
+      [-54.4, -15.4],
+      [-54.4, -15.3],
+      [-54.5, -15.3],
+      [-54.5, -15.4],
+    ]],
+  };
+
+  const result = await client.generateLayerPackage({
+    sceneId: 'scene-1',
+    farmId: 'farm-1',
+    plotId: 'plot-1',
+    polygon,
+    imageDate: '2026-06-05',
+    modes: ['ndvi_contrast', 'ndmi_water_stress', 'ndre'],
+  });
+
+  client.generateNdviLayer = original;
+
+  assert.deepEqual(Object.keys(result.layersByMode).sort(), [
+    'ndmi_water_stress',
+    'ndre',
+    'ndvi_contrast',
+  ]);
+  assert.equal(result.statusesByMode.ndre.status, 'ready');
+  assert.equal(result.statusesByMode.ndmi_water_stress.status, 'ready');
 });

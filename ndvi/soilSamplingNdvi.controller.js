@@ -58,6 +58,75 @@ function normalizeSuccessLayer(layer) {
   };
 }
 
+function normalizePackageModeFailure(mode, status = {}) {
+  const code = status.code || 'layer_generation_failed';
+  const message = status.message || 'Camada não retornada pelo pacote.';
+  const normalized = { ...status };
+  if (code === 'missingBands' || code === 'missing_bands') {
+    normalized.status = 'unavailable';
+    if (mode === 'ndre') {
+      normalized.code = /b8a/i.test(message) ? 'missingBandB8A' : 'missingBandB05';
+      normalized.message =
+        message.includes('Banda') ? message : 'Banda B05/B8A ausente para Red Edge.';
+    } else if (mode === 'ndmi_water_stress') {
+      normalized.code = 'missingBandB11';
+      normalized.message =
+        message.includes('Banda') ? message : 'Banda B11 ausente para Umidade.';
+    } else if (mode === 'bsi_soil') {
+      normalized.code = /b02/i.test(message) ? 'missingBandB02' : 'missingBandB11';
+      normalized.message =
+        message.includes('Banda') ? message : 'Banda B02/B11 ausente para Solo/Palhada.';
+    }
+  } else if (code === 'NDVI_PROVIDER_ERROR' || code === 'ndvi_provider_error') {
+    if (mode === 'ndre') {
+      normalized.code = 'redEdgeProviderError';
+      normalized.message =
+        message.includes('NDVI')
+          ? 'Não foi possível gerar Red Edge/NDRE no provedor de imagens.'
+          : message;
+    } else if (mode === 'ndmi_water_stress') {
+      normalized.code = 'moistureProviderError';
+      normalized.message =
+        message.includes('NDVI')
+          ? 'Não foi possível gerar Umidade/NDMI no provedor de imagens.'
+          : message;
+    } else if (mode === 'bsi_soil') {
+      normalized.code = 'soilPlantProviderError';
+      normalized.message =
+        message.includes('NDVI')
+          ? 'Não foi possível gerar Solo/Planta no provedor de imagens.'
+          : message;
+    } else {
+      normalized.code = 'ndviProviderError';
+      normalized.message = message;
+    }
+  }
+  return normalized;
+}
+
+function normalizePackageStatuses(statusesByMode = {}) {
+  return Object.fromEntries(
+    Object.entries(statusesByMode).map(([mode, status]) => [
+      mode,
+      normalizePackageModeFailure(mode, status || {}),
+    ]),
+  );
+}
+
+function resolvePackageStatus({ layersByMode, statusesByMode, serviceStatus }) {
+  const readyModes = Object.keys(layersByMode || {});
+  const statuses = Object.values(statusesByMode || {});
+  const unavailableModes = statuses.filter((status) => status?.status === 'unavailable');
+  const failedModes = statuses.filter((status) => status?.status === 'failed');
+  if (readyModes.length > 0 && failedModes.length === 0 && unavailableModes.length === 0) {
+    return 'ready';
+  }
+  if (readyModes.length > 0) return 'partial';
+  if (unavailableModes.length > 0 && failedModes.length === 0) return 'unavailable';
+  if (failedModes.length > 0 || serviceStatus === 'failed') return 'failed';
+  return serviceStatus || 'failed';
+}
+
 class SoilSamplingNdviController {
   constructor(service, { authClient } = {}) {
     this.service = service;
@@ -406,24 +475,60 @@ class SoilSamplingNdviController {
 
   async generatePackage(req, res) {
     try {
-      const { plotId } = req.params;
+      const { plotId: routePlotId } = req.params;
       const {
+        fieldId,
+        plot_id: plotIdSnake,
+        plotId: plotIdCamel,
         farm_id: farmId,
+        farmId: farmIdCamel,
         campaign_id: campaignId,
+        campaignId: campaignIdCamel,
         scene_id: sceneId,
+        sceneId: sceneIdCamel,
         polygon,
         image_date: imageDate,
+        imageDate: imageDateCamel,
         cloud_coverage: cloudCoverage,
+        cloudCoverage: cloudCoverageCamel,
         start_date: startDate,
+        startDate: startDateCamel,
         end_date: endDate,
+        endDate: endDateCamel,
         max_cloud: maxCloud,
+        maxCloud: maxCloudCamel,
         colormap_mode: colormapMode,
+        colormapMode: colormapModeCamel,
         modes,
+        requestedModes,
+        resolution_kind: resolutionKind,
+        resolutionKind: resolutionKindCamel,
       } = req.body;
       const isForce =
         req.body.force === true || req.body.force_regenerate === true;
+      const plotId = routePlotId || plotIdSnake || plotIdCamel || fieldId;
+      const resolvedFarmId = farmId || farmIdCamel;
+      const resolvedCampaignId = campaignId || campaignIdCamel;
+      const resolvedSceneId = sceneId || sceneIdCamel;
+      const resolvedImageDate = imageDate || imageDateCamel;
+      const resolvedCloudCoverage = cloudCoverage ?? cloudCoverageCamel;
+      const resolvedStartDate = startDate || startDateCamel;
+      const resolvedEndDate = endDate || endDateCamel;
+      const resolvedMaxCloud = maxCloud ?? maxCloudCamel;
+      const resolvedColormapMode = colormapMode || colormapModeCamel || 'auto';
+      const resolvedModes = Array.isArray(requestedModes) ? requestedModes : modes;
+      const resolvedResolutionKind = resolutionKind || resolutionKindCamel || 'preview';
 
-      if (!farmId || !plotId) {
+      console.log('[NDVI_GENERATE_PACKAGE_ROUTE_HIT]', {
+        path: req.originalUrl,
+        method: req.method,
+        fieldId: plotId,
+        sceneId: resolvedSceneId,
+        resolutionKind: resolvedResolutionKind,
+        modes: resolvedModes,
+      });
+
+      if (!resolvedFarmId || !plotId) {
         return this._sendError(
           res,
           Object.assign(new Error('farm_id e plot_id são obrigatórios'), {
@@ -434,24 +539,90 @@ class SoilSamplingNdviController {
       }
 
       const result = await this.service.generateLayerPackage({
-        farmId,
+        farmId: resolvedFarmId,
         plotId,
-        campaignId,
-        sceneId,
+        campaignId: resolvedCampaignId,
+        sceneId: resolvedSceneId,
         polygon,
-        imageDate,
-        cloudCoverage,
-        startDate,
-        endDate,
-        maxCloud: maxCloud != null ? Number(maxCloud) : null,
-        colormapMode: colormapMode || 'auto',
-        modes,
+        imageDate: resolvedImageDate,
+        cloudCoverage: resolvedCloudCoverage,
+        startDate: resolvedStartDate,
+        endDate: resolvedEndDate,
+        maxCloud: resolvedMaxCloud != null ? Number(resolvedMaxCloud) : null,
+        colormapMode: resolvedColormapMode,
+        modes: resolvedModes,
         force: isForce,
       });
+      const layersByMode = result.layersByMode || {};
+      const statusesByMode = normalizePackageStatuses(result.statusesByMode || {});
+      const readyModes = Object.keys(layersByMode);
+      const unavailableModes = Object.entries(statusesByMode)
+        .filter(([, status]) => status?.status === 'unavailable')
+        .map(([mode]) => mode);
+      const failedModes = Object.entries(statusesByMode)
+        .filter(([, status]) => status?.status === 'failed')
+        .map(([mode]) => mode);
+      const packageStatus = resolvePackageStatus({
+        layersByMode,
+        statusesByMode,
+        serviceStatus: result.packageStatus,
+      });
+      const packageCacheKey = readyModes.length > 0 || packageStatus !== 'failed'
+        ? (result.packageCacheKey ||
+            [
+              plotId,
+              result.scene_id || resolvedSceneId || '-',
+              result.resolution_kind || resolvedResolutionKind,
+            ].join('|'))
+        : null;
+
+      console.log('[NDVI_GENERATE_PACKAGE_RESPONSE]', {
+        fieldId: plotId,
+        sceneId: result.scene_id || resolvedSceneId || null,
+        packageCacheKey,
+        packageStatus,
+        requestedModes: resolvedModes,
+        readyModes,
+        unavailableModes,
+        failedModes,
+        elapsedMs: result.elapsedMs,
+      });
+
+      if (packageStatus === 'failed' && readyModes.length === 0) {
+        return res.status(502).json({
+          success: false,
+          code: 'packageGenerationFailed',
+          message: 'Não foi possível gerar pacote de camadas no provedor de imagens.',
+          fieldId: plotId,
+          sceneId: result.scene_id || resolvedSceneId || null,
+          packageCacheKey: null,
+          packageStatus,
+          resolutionKind: result.resolution_kind || resolvedResolutionKind,
+          layers: layersByMode,
+          layersByMode,
+          statuses: statusesByMode,
+          statusesByMode,
+          readyModes,
+          unavailableModes,
+          failedModes,
+        });
+      }
 
       res.json({
         success: true,
         ...result,
+        fieldId: plotId,
+        sceneId: result.scene_id || resolvedSceneId || null,
+        packageCacheKey,
+        packageStatus,
+        resolutionKind: result.resolution_kind || resolvedResolutionKind,
+        layers: layersByMode,
+        layersByMode,
+        statuses: statusesByMode,
+        statusesByMode,
+        readyModes,
+        unavailableModes,
+        failedModes,
       });
     } catch (error) {
       this._sendError(res, error);

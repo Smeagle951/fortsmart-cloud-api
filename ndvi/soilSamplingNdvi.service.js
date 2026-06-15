@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import NdviStatsService from './ndviStats.service.js';
 import * as NdviResponseMapper from './ndviResponse.mapper.js';
 import { assertCopernicusReady, getNdviProviderStatus } from './ndviEnv.js';
@@ -39,10 +39,94 @@ function normalizeImageDate(value) {
   return text;
 }
 
+function hashPolygonForPackage(polygon) {
+  const coordinates = polygon?.coordinates?.[0];
+  const raw = Array.isArray(coordinates) && coordinates.length
+    ? coordinates
+        .map((point) => `${Number(point?.[0]).toFixed(6)},${Number(point?.[1]).toFixed(6)}`)
+        .join('|')
+    : JSON.stringify(polygon || {});
+  return createHash('sha256').update(raw).digest('hex').slice(0, 12);
+}
+
+function buildScenePackageKey({
+  farmId,
+  plotId,
+  sceneId,
+  acquisitionDate,
+  polygonHash,
+  resolutionKind = 'preview',
+  cloudMaskVersion = 'scl_v2',
+  rendererVersion = 'agronomic_contrast_v7_inner_buffer',
+}) {
+  return [
+    farmId,
+    plotId,
+    sceneId || '-',
+    acquisitionDate || '-',
+    polygonHash || '-',
+    resolutionKind,
+    cloudMaskVersion,
+    rendererVersion,
+  ].join('_');
+}
+
 function num(value) {
   if (value == null || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function normalizePackageModeError(mode, error) {
+  const rawCode = error?.code || 'layer_generation_failed';
+  const rawMessage = error?.message || String(error);
+  const status = error?.status === 422 ? 'unavailable' : 'failed';
+  const out = {
+    status,
+    code: rawCode,
+    message: rawMessage,
+  };
+
+  if (rawCode === 'missingBands' || rawCode === 'missing_bands') {
+    out.status = 'unavailable';
+    if (mode === 'ndre') {
+      out.code = /b8a/i.test(rawMessage) ? 'missingBandB8A' : 'missingBandB05';
+      out.message = /banda/i.test(rawMessage)
+        ? rawMessage
+        : 'Banda B05/B8A ausente para Red Edge.';
+    } else if (mode === 'ndmi_water_stress') {
+      out.code = 'missingBandB11';
+      out.message = /banda/i.test(rawMessage)
+        ? rawMessage
+        : 'Banda B11 ausente para Umidade.';
+    } else if (mode === 'bsi_soil') {
+      out.code = /b02/i.test(rawMessage) ? 'missingBandB02' : 'missingBandB11';
+      out.message = /banda/i.test(rawMessage)
+        ? rawMessage
+        : 'Banda B02/B11 ausente para Solo/Palhada.';
+    }
+  } else if (rawCode === 'NDVI_PROVIDER_ERROR' || rawCode === 'ndvi_provider_error') {
+    if (mode === 'ndre') {
+      out.code = 'redEdgeProviderError';
+      out.message = rawMessage.includes('NDVI')
+        ? 'Não foi possível gerar Red Edge/NDRE no provedor de imagens.'
+        : rawMessage;
+    } else if (mode === 'ndmi_water_stress') {
+      out.code = 'moistureProviderError';
+      out.message = rawMessage.includes('NDVI')
+        ? 'Não foi possível gerar Umidade/NDMI no provedor de imagens.'
+        : rawMessage;
+    } else if (mode === 'bsi_soil') {
+      out.code = 'soilPlantProviderError';
+      out.message = rawMessage.includes('NDVI')
+        ? 'Não foi possível gerar Solo/Palhada no provedor de imagens.'
+        : rawMessage;
+    } else {
+      out.code = 'ndviProviderError';
+    }
+  }
+
+  return out;
 }
 
 function hasCoreRenderableNdviStats(stats) {
@@ -65,6 +149,20 @@ function hasCoreRenderableNdviStats(stats) {
   if (p5 > p50 || p50 > p95) return false;
   if (validPixels != null && validPixels < 24) return false;
   return true;
+}
+
+function resolvePackageStatus(layersByMode = {}, statusesByMode = {}) {
+  const readyCount = Object.keys(layersByMode).length;
+  const statuses = Object.values(statusesByMode);
+  const failedCount = statuses.filter((status) => status?.status === 'failed').length;
+  const unavailableCount = statuses.filter(
+    (status) => status?.status === 'unavailable',
+  ).length;
+  if (readyCount > 0 && failedCount === 0 && unavailableCount === 0) return 'ready';
+  if (readyCount > 0) return 'partial';
+  if (unavailableCount > 0 && failedCount === 0) return 'unavailable';
+  if (failedCount > 0) return 'failed';
+  return 'failed';
 }
 
 class SoilSamplingNdviService {
@@ -568,6 +666,90 @@ class SoilSamplingNdviService {
     return mapped;
   }
 
+  async _readCachedPackageLayers({
+    dbReady,
+    farmId,
+    plotId,
+    imageDate,
+    sceneId,
+    maxCloud,
+    polygon,
+    modes,
+  }) {
+    const layersByMode = {};
+    const statusesByMode = {};
+    if (!dbReady || !this.repository?.findRecentCache) {
+      return { layersByMode, statusesByMode };
+    }
+
+    for (const mode of modes) {
+      const startedAt = Date.now();
+      console.log('[NDVI] render cache lookup', {
+        plotId,
+        sceneId,
+        mode,
+      });
+      try {
+        const cached = await this.repository.findRecentCache({
+          farmId,
+          plotId,
+          imageDate,
+          sceneId,
+          maxCloud,
+          visualMode: mode,
+        });
+        if (!cached || !isValidNdviLayerRow(cached)) {
+          console.log('[NDVI] render cache miss', {
+            plotId,
+            sceneId,
+            mode,
+            reason: cached ? invalidNdviStatsReason(cached) : 'not_found',
+          });
+          continue;
+        }
+        let mapped = NdviResponseMapper.mapLayer(cached);
+        const contractOk = layerMeetsContrastContract(mapped, mode, {
+          requestBounds: this._boundsFromPolygon(polygon),
+        });
+        if (!contractOk) {
+          console.log('[NDVI] render cache miss', {
+            plotId,
+            sceneId,
+            mode,
+            reason: 'contract_mismatch',
+          });
+          continue;
+        }
+        mapped = this._mergeMappedLayerFromAssets(mapped, null, {
+          polygon,
+          requestedVisualMode: mode,
+        });
+        layersByMode[mode] = mapped;
+        statusesByMode[mode] = {
+          status: 'ready',
+          elapsedMs: Date.now() - startedAt,
+          preview: Boolean(mapped?.preview_url || mapped?.previewUrl),
+          source: 'render_cache',
+        };
+        console.log('[NDVI] render cache hit', {
+          plotId,
+          sceneId,
+          mode,
+          elapsedMs: Date.now() - startedAt,
+        });
+      } catch (error) {
+        console.warn('[NDVI] render cache lookup failed', {
+          plotId,
+          sceneId,
+          mode,
+          message: error?.message || String(error),
+        });
+      }
+    }
+
+    return { layersByMode, statusesByMode };
+  }
+
   async generateLayerPackage({
     farmId,
     plotId,
@@ -621,12 +803,68 @@ class SoilSamplingNdviService {
       throw this._error('Talhão sem polígono válido', 'plot_polygon_missing', 400);
     }
     const dbReady = await this._tryEnsureSchema('generateLayerPackage');
+    const normalizedImageDate = normalizeImageDate(imageDate);
+    const polygonHash = hashPolygonForPackage(polygon);
+    const packageCacheKey = buildScenePackageKey({
+      farmId,
+      plotId,
+      sceneId,
+      acquisitionDate: normalizedImageDate,
+      polygonHash,
+      resolutionKind: 'preview',
+    });
+    console.log('[NDVI] CACHE_PACKAGE_LOOKUP', {
+      key: packageCacheKey,
+      sceneId,
+      plotId,
+      modes: uniqueModes,
+    });
+    const cachedPackage = await this._readCachedPackageLayers({
+      dbReady,
+      farmId,
+      plotId,
+      imageDate: normalizedImageDate || imageDate,
+      sceneId,
+      maxCloud,
+      polygon,
+      modes: uniqueModes,
+    });
+    Object.assign(layersByMode, cachedPackage.layersByMode);
+    Object.assign(statusesByMode, cachedPackage.statusesByMode);
+    const pendingModes = uniqueModes.filter((mode) => !layersByMode[mode]);
+    if (pendingModes.length === 0) {
+      console.log('[NDVI] CACHE_PACKAGE_HIT', {
+        key: packageCacheKey,
+        sceneId,
+        modes: uniqueModes,
+        elapsedMs: Date.now() - startedAt,
+      });
+      return {
+        scene_id: sceneId,
+        packageCacheKey,
+        packageStatus: 'ready',
+        package_version: 'scene_band_package_v1',
+        resolution_kind: 'preview',
+        generatedAt: new Date().toISOString(),
+        provider: 'render_cache',
+        modes: uniqueModes,
+        layersByMode,
+        statusesByMode,
+        elapsedMs: Date.now() - startedAt,
+      };
+    }
+    console.log('[NDVI] CACHE_PACKAGE_MISS', {
+      key: packageCacheKey,
+      sceneId,
+      readyModes: Object.keys(layersByMode),
+      pendingModes,
+    });
     if (this._geeReady() && this.geeClient?.generateLayerPackage) {
       try {
         console.log('[Package] using single-pass GEE package renderer', {
           field: plotId,
           scene: sceneId,
-          modes: uniqueModes,
+          modes: pendingModes,
         });
         const packageResult = await this.geeClient.generateLayerPackage({
           sceneId,
@@ -637,9 +875,9 @@ class SoilSamplingNdviService {
           maxCloud,
           farmId,
           plotId,
-          modes: uniqueModes,
+          modes: pendingModes,
         });
-        for (const mode of uniqueModes) {
+        for (const mode of pendingModes) {
           const modeStartedAt = Date.now();
           const assets = packageResult.layersByMode?.[mode];
           if (!assets) {
@@ -713,10 +951,14 @@ class SoilSamplingNdviService {
           readyModes: Object.keys(layersByMode),
           elapsedMs: Date.now() - startedAt,
         });
+        const packageStatus = resolvePackageStatus(layersByMode, statusesByMode);
         return {
           scene_id: packageResult.scene_id || sceneId,
+          packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
+          packageStatus,
           package_version: packageResult.package_version || 'scene_band_package_v1',
           resolution_kind: packageResult.resolution_kind || 'preview',
+          generatedAt: new Date().toISOString(),
           provider: 'google_earth_engine',
           modes: uniqueModes,
           layersByMode,
@@ -731,7 +973,117 @@ class SoilSamplingNdviService {
       }
     }
 
-    for (const mode of uniqueModes) {
+    if (this.processClient?.generateLayerPackage) {
+      try {
+        console.log('[Package] using Copernicus internal-grid package renderer', {
+          field: plotId,
+          scene: sceneId,
+          modes: pendingModes,
+        });
+        const packageResult = await this.processClient.generateLayerPackage({
+          sceneId,
+          polygon,
+          imageDate,
+          farmId,
+          plotId,
+          modes: pendingModes,
+        });
+        for (const mode of pendingModes) {
+          const modeStartedAt = Date.now();
+          const assets = packageResult.layersByMode?.[mode];
+          if (!assets) {
+            statusesByMode[mode] = packageResult.statusesByMode?.[mode] || {
+              status: 'unavailable',
+              code: 'layer_not_returned',
+              message: 'Camada não retornada pelo pacote Copernicus.',
+              elapsedMs: 0,
+            };
+            continue;
+          }
+          try {
+            const stats = NdviStatsService.buildStatsForAssets(assets);
+            const hasRaster = this._hasRenderableAssets(assets);
+            const statsValid =
+              isValidNdviStats(stats) || hasCoreRenderableNdviStats(stats);
+            if (!hasRaster || !statsValid) {
+              throw this._error(
+                'Camada do pacote Copernicus sem raster ou estatísticas válidas.',
+                'package_layer_not_computed',
+                422,
+                { mode, previewGenerated: hasRaster, statsComputed: statsValid },
+              );
+            }
+            const targetSceneId = assets.scene_id || sceneId;
+            const targetDate = normalizeImageDate(assets.image_date) || normalizeImageDate(imageDate);
+            const targetCloud = assets.cloud_coverage ?? cloudCoverage;
+            const mapped = await this._persistGeneratedLayer({
+              dbReady,
+              farmId,
+              plotId,
+              campaignId,
+              targetSceneId,
+              targetDate,
+              targetCloud,
+              assets,
+              stats,
+              layerStatus: 'generated',
+              polygon,
+              requestedVisualMode: mode,
+              meta: {
+                plotId,
+                farmId,
+                campaignId,
+                sceneId: targetSceneId,
+                imageDate: targetDate,
+              },
+              stage: 'persist_copernicus_package',
+            });
+            layersByMode[mode] = mapped;
+            statusesByMode[mode] = {
+              status: 'ready',
+              elapsedMs: Date.now() - modeStartedAt,
+              preview: Boolean(mapped?.preview_url || mapped?.previewUrl),
+              source: 'copernicus_internal_grid_package',
+            };
+          } catch (error) {
+            statusesByMode[mode] = {
+              status: error?.status === 422 ? 'unavailable' : 'failed',
+              code: error?.code || 'layer_package_persist_failed',
+              message: error?.message || String(error),
+              elapsedMs: Date.now() - modeStartedAt,
+            };
+          }
+        }
+        const packageStatus = resolvePackageStatus(layersByMode, statusesByMode);
+        if (Object.keys(layersByMode).length > 0 || packageStatus !== 'failed') {
+          return {
+            scene_id: packageResult.scene_id || sceneId,
+            packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
+            packageStatus,
+            package_version: packageResult.package_version || 'scene_band_package_v1',
+            resolution_kind: packageResult.resolution_kind || 'preview',
+            generatedAt: packageResult.generatedAt || new Date().toISOString(),
+            provider: packageResult.provider || 'copernicus_dataspace',
+            modes: uniqueModes,
+            layersByMode,
+            statusesByMode,
+            elapsedMs: Date.now() - startedAt,
+          };
+        }
+        console.warn('[Package] Copernicus package renderer returned no ready layers; falling back', {
+          field: plotId,
+          scene: sceneId,
+          statusesByMode,
+        });
+      } catch (error) {
+        console.warn('[Package] Copernicus package renderer failed; falling back to per-mode orchestration', {
+          code: error?.code,
+          message: error?.message || String(error),
+        });
+      }
+    }
+
+    for (const mode of pendingModes) {
       const modeStartedAt = Date.now();
       try {
         console.log(`[LayerBatch] generating ${mode} from package request`);
@@ -787,10 +1139,14 @@ class SoilSamplingNdviService {
       elapsedMs: Date.now() - startedAt,
     });
 
+    const packageStatus = resolvePackageStatus(layersByMode, statusesByMode);
     return {
       scene_id: sceneId,
+      packageCacheKey,
+      packageStatus,
       package_version: 'scene_band_package_v1',
       resolution_kind: 'preview',
+      generatedAt: new Date().toISOString(),
       modes: uniqueModes,
       layersByMode,
       statusesByMode,

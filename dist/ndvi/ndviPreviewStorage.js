@@ -59,21 +59,31 @@ function buildS3Client() {
 /**
  * Faz upload do PNG NDVI e retorna URL pública, ou data URL se storage indisponível.
  */
+function safePathSegment(value, fallback = 'unknown') {
+  const text = String(value || fallback).trim();
+  return text.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96) || fallback;
+}
+
 export async function storeNdviPreviewPng({
   farmId,
   plotId,
   sceneId,
   imageDate,
+  visualMode = 'ndvi_contrast',
+  rendererVersion = 'agronomic_contrast_v2',
   buffer,
 }) {
   if (!buffer?.length) return null;
 
   const stamp = String(imageDate || '').slice(0, 10).replace(/-/g, '') || 'unknown';
+  const mode = safePathSegment(visualMode, 'ndvi_contrast');
+  const renderer = safePathSegment(rendererVersion, 'agronomic_contrast_v2');
+  const sceneKey = safePathSegment(sceneId, stamp);
   const hash = createHash('sha256')
-    .update(`${farmId}|${plotId}|${sceneId}|${stamp}`)
+    .update(`${farmId}|${plotId}|${sceneId}|${stamp}|${mode}|${renderer}`)
     .digest('hex')
-    .slice(0, 16);
-  const key = `ndvi/previews/${plotId}/${stamp}_${hash}.png`;
+    .slice(0, 12);
+  const key = `ndvi/previews/${plotId}/${sceneKey}/${mode}_${renderer}_${hash}.png`;
 
   if (isStorageConfigured()) {
     try {

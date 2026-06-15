@@ -6,15 +6,16 @@ const INPUT_BANDS =
   '["B02","B03","B04","B05","B06","B07","B08","B8A","B11","B12","SCL","dataMask"]';
 
 const INDEX_HELPERS = `
-function safeDiv(a,b){return b===0?0:a/b;}
-function ndvi(s){return safeDiv(s.B08-s.B04,s.B08+s.B04);}
-function ndre(s){return safeDiv(s.B8A-s.B05,s.B8A+s.B05);}
-function savi(s){return safeDiv(s.B08-s.B04,s.B08+s.B04+0.5)*1.5;}
-function bsi(s){return safeDiv((s.B11+s.B04)-(s.B08+s.B02),(s.B11+s.B04)+(s.B08+s.B02));}
-function ndmi(s){return safeDiv(s.B08-s.B11,s.B08+s.B11);}
-function swirRatio(s){return safeDiv(s.B11,s.B08+0.000001);}
+function normalizeReflectance(v){if(!isFinite(v))return NaN;return v>2?v/10000:v;}
+function safeDiv(a,b){return Math.abs(b)<0.000001?NaN:a/b;}
+function ndvi(s){const n=normalizeReflectance(s.B08);const r=normalizeReflectance(s.B04);const v=safeDiv(n-r,n+r);return v>=-1&&v<=1?v:NaN;}
+function ndre(s){const n=normalizeReflectance(s.B8A);const r=normalizeReflectance(s.B05);const v=safeDiv(n-r,n+r);return v>=-1&&v<=1?v:NaN;}
+function savi(s){const n=normalizeReflectance(s.B08);const r=normalizeReflectance(s.B04);return safeDiv(n-r,n+r+0.5)*1.5;}
+function bsi(s){const sw=normalizeReflectance(s.B11);const r=normalizeReflectance(s.B04);const n=normalizeReflectance(s.B08);const b=normalizeReflectance(s.B02);return safeDiv((sw+r)-(n+b),(sw+r)+(n+b));}
+function ndmi(s){const n=normalizeReflectance(s.B08);const sw=normalizeReflectance(s.B11);const v=safeDiv(n-sw,n+sw);return v>=-1&&v<=1?v:NaN;}
+function swirRatio(s){const sw=normalizeReflectance(s.B11);const n=normalizeReflectance(s.B08);return safeDiv(sw,n+0.000001);}
 function isWaterCloud(scl){
-  return [0,1,2,3,6,8,9,10,11].indexOf(scl)>=0;
+  return [0,1,3,6,8,9,10,11].indexOf(scl)>=0;
 }
 function classify(sample){
   if(sample.dataMask===0) return 0;
@@ -35,7 +36,7 @@ function classify(sample){
   return 7;
 }
 function colorForClass(cid){
-  if(cid===1) return [0.45,0.48,0.62,1];
+  if(cid===1) return [0,0,0,0];
   if(cid===2) return [0.82,0.71,0.55,1];
   if(cid===3) return [0.90,0.82,0.62,1];
   if(cid===4) return [0.84,0.19,0.15,1];
@@ -59,7 +60,7 @@ function evaluatePixel(sample){
   const n=ndvi(sample);
   if(!isFinite(n)) return [0,0,0,0];
   const cid=classify(sample);
-  if(cid===0) return [0,0,0,0];
+  if(cid===0 || cid===1) return [0,0,0,0];
   const r=(Math.max(-1,Math.min(1,n))+1)/2;
   const g=cid/8;
   const re=ndre(sample);
@@ -116,14 +117,15 @@ export function buildNdviAbsolutePreviewEvalscript() {
   return `//VERSION=3
 const STOPS=${JSON.stringify(stops)};
 function setup(){return {input:["B04","B08","SCL","dataMask"],output:{bands:4,sampleType:'AUTO'}};}
-function isWaterCloud(scl){return [0,1,2,3,6,8,9,10,11].indexOf(scl)>=0;}
+function isWaterCloud(scl){return [0,1,3,6,8,9,10,11].indexOf(scl)>=0;}
+${INDEX_HELPERS}
 function colorAbs(v){
   for(let i=0;i<STOPS.length;i++){if(v<STOPS[i].m)return [STOPS[i].r,STOPS[i].g,STOPS[i].b,1];}
   const s=STOPS[STOPS.length-1];return [s.r,s.g,s.b,1];
 }
 function evaluatePixel(s){
-  if(s.dataMask===0||isWaterCloud(s.SCL)) return [0.45,0.48,0.62,1];
-  const n=(s.B08-s.B04)/(s.B08+s.B04);
+  if(s.dataMask===0||isWaterCloud(s.SCL)) return [0,0,0,0];
+  const n=ndvi(s);
   if(!isFinite(n)) return [0,0,0,0];
   return colorAbs(Math.max(-1,Math.min(1,n)));
 }`;
@@ -145,15 +147,16 @@ const VMIN=${vMin};
 const SPAN=${span};
 const STOPS=${JSON.stringify(stops)};
 function setup(){return {input:["B04","B08","SCL","dataMask"],output:{bands:4,sampleType:'AUTO'}};}
-function isWaterCloud(scl){return [0,1,2,3,6,8,9,10,11].indexOf(scl)>=0;}
+function isWaterCloud(scl){return [0,1,3,6,8,9,10,11].indexOf(scl)>=0;}
+${INDEX_HELPERS}
 function colorRel(t){
   const x=Math.max(0,Math.min(1,t));
   for(let i=0;i<STOPS.length;i++){if(x<STOPS[i].m)return [STOPS[i].r,STOPS[i].g,STOPS[i].b,1];}
   const s=STOPS[STOPS.length-1];return [s.r,s.g,s.b,1];
 }
 function evaluatePixel(s){
-  if(s.dataMask===0||isWaterCloud(s.SCL)) return [0.45,0.48,0.62,1];
-  const n=(s.B08-s.B04)/(s.B08+s.B04);
+  if(s.dataMask===0||isWaterCloud(s.SCL)) return [0,0,0,0];
+  const n=ndvi(s);
   if(!isFinite(n)) return [0,0,0,0];
   return colorRel((n-VMIN)/SPAN);
 }`;
@@ -163,7 +166,7 @@ function buildIndexPreview(evalExpr, stops) {
   return `//VERSION=3
 const STOPS=${JSON.stringify(stops)};
 function setup(){return {input:${INPUT_BANDS},output:{bands:4,sampleType:'AUTO'}};}
-function isWaterCloud(scl){return [0,1,2,3,6,8,9,10,11].indexOf(scl)>=0;}
+function isWaterCloud(scl){return [0,1,3,6,8,9,10,11].indexOf(scl)>=0;}
 function colorT(t){
   const x=Math.max(0,Math.min(1,t));
   for(let i=0;i<STOPS.length;i++){if(x<STOPS[i].m)return [STOPS[i].r,STOPS[i].g,STOPS[i].b,1];}
@@ -171,7 +174,7 @@ function colorT(t){
 }
 ${INDEX_HELPERS}
 function evaluatePixel(s){
-  if(s.dataMask===0||isWaterCloud(s.SCL)) return [0.45,0.48,0.62,1];
+  if(s.dataMask===0||isWaterCloud(s.SCL)) return [0,0,0,0];
   const v=${evalExpr};
   if(!isFinite(v)) return [0,0,0,0];
   const t=(v+1)/2;
@@ -226,7 +229,8 @@ const ABS_STOPS=[
   {m:1.01,r:0.102,g:0.596,b:0.314}
 ];
 function setup(){return {input:["B04","B08","SCL","dataMask"],output:{bands:4,sampleType:'AUTO'}};}
-function isWaterCloud(scl){return [0,1,2,3,6,8,9,10,11].indexOf(scl)>=0;}
+function isWaterCloud(scl){return [0,1,3,6,8,9,10,11].indexOf(scl)>=0;}
+${INDEX_HELPERS}
 function colorAbs(v){
   const x=Math.max(-1,Math.min(1,v));
   for(let i=0;i<ABS_STOPS.length;i++){if(x<ABS_STOPS[i].m)return [ABS_STOPS[i].r,ABS_STOPS[i].g,ABS_STOPS[i].b,1];}
@@ -247,7 +251,7 @@ function colorContrast(t){
 }
 function evaluatePixel(s){
   if(s.dataMask===0||isWaterCloud(s.SCL)) return [0,0,0,0];
-  const n=(s.B08-s.B04)/(s.B08+s.B04);
+  const n=ndvi(s);
   if(!isFinite(n)) return [0,0,0,0];
   if(LOW_CONTRAST) return colorAbs(n);
   return colorContrast((n-VLOW)/SPAN);
