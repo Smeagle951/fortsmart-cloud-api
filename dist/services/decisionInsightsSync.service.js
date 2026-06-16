@@ -1,6 +1,7 @@
 import { HttpError } from '../middleware/errorHandler.js';
 import { upsertDecisionInsight, } from '../repositories/decisionInsightsSync.repository.js';
 import { normalizePushItem, parseDecisionInsightsPushBody, } from '../validators/decisionInsightsSync.validator.js';
+import { assertPlotBelongsToFarm, assertSeasonBelongsToFarm, } from '../lib/resourceAccessGuard.js';
 async function validateFarmLink(client, apiKeyId, body) {
     const { rows: keyRows } = await client.query(`SELECT farm_id FROM api_keys WHERE id = $1 FOR UPDATE`, [apiKeyId]);
     const linkedFarmId = keyRows[0]?.farm_id ?? null;
@@ -25,6 +26,16 @@ export async function pushDecisionInsightsSync(pool, apiKeyId, rawBody) {
         const farmCloudId = await validateFarmLink(client, apiKeyId, body);
         for (const rawItem of body.items) {
             const normalized = normalizePushItem(rawItem);
+            await assertPlotBelongsToFarm(client, {
+                farmId: farmCloudId,
+                plotCloudId: normalized.talhao_cloud_id,
+                plotLocalId: normalized.talhao_local_id,
+                required: true,
+            });
+            await assertSeasonBelongsToFarm(client, {
+                farmId: farmCloudId,
+                seasonCloudId: normalized.safra_id,
+            });
             const result = await upsertDecisionInsight(client, farmCloudId, body.farm_local_id, normalized);
             counters[result]++;
         }

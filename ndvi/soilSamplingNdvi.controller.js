@@ -73,9 +73,9 @@ function normalizePackageModeFailure(mode, status = {}) {
       normalized.message =
         message.includes('Banda') ? message : 'Banda B11 ausente para Umidade.';
     } else if (mode === 'bsi_soil') {
-      normalized.code = /b02/i.test(message) ? 'missingBandB02' : 'missingBandB11';
+      normalized.code = 'missingRequiredSoilPlantBand';
       normalized.message =
-        message.includes('Banda') ? message : 'Banda B02/B11 ausente para Solo/Palhada.';
+        message.includes('Banda') ? message : 'Banda B04/B08/B11 ausente para Solo/Palhada.';
     }
   } else if (code === 'NDVI_PROVIDER_ERROR' || code === 'ndvi_provider_error') {
     if (mode === 'ndre') {
@@ -586,6 +586,12 @@ class SoilSamplingNdviController {
         unavailableModes,
         failedModes,
         elapsedMs: result.elapsedMs,
+      });
+      console.log('[NDVI_API] PACKAGE_RESPONSE', {
+        scene: result.scene_id || resolvedSceneId || null,
+        layers: readyModes,
+        zonesStatus: result.zones?.status ?? null,
+        packageStatus,
       });
 
       if (packageStatus === 'failed' && readyModes.length === 0) {

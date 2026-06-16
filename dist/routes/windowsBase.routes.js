@@ -5,23 +5,10 @@ import { loadWindowsBase } from '../services/windowsBase.service.js';
 import { getPool } from '../db/pool.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { jsonOk } from '../utils/response.js';
+import { assertApiKeyCanAccessFarm } from '../lib/resourceAccessGuard.js';
 export const windowsBaseRouter = Router();
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-function isUuid(s) {
-    return UUID_RE.test(s);
-}
 windowsBaseRouter.get('/windows/base/:farmId', requireApiKey, asyncHandler(async (req, res) => {
-    const farmId = req.params.farmId?.trim() ?? '';
-    if (!isUuid(farmId)) {
-        throw new HttpError('farmId must be the cloud farm UUID', 400);
-    }
-    const auth = req.cloudAuth;
-    if (!auth?.farmId) {
-        throw new HttpError('API key not linked to a farm yet', 403);
-    }
-    if (auth.farmId.toLowerCase() !== farmId.toLowerCase()) {
-        throw new HttpError('Forbidden', 403);
-    }
+    const farmId = assertApiKeyCanAccessFarm(req, req.params.farmId);
     const pool = getPool();
     const data = await loadWindowsBase(pool, farmId);
     if (!data) {

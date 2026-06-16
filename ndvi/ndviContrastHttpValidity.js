@@ -33,10 +33,44 @@ export function resolveRequestedVisualMode(value) {
   if (value && typeof value === 'object') {
     const fromBody =
       value.visual_mode ?? value.visualMode ?? value.colormap_mode ?? value.colormapMode;
-    if (fromBody != null) return String(fromBody).trim() || 'ndvi_contrast';
+    if (fromBody != null) return normalizeVisualModeAlias(fromBody);
   }
-  const mode = String(value || 'ndvi_contrast').trim();
-  return mode || 'ndvi_contrast';
+  return normalizeVisualModeAlias(value);
+}
+
+function normalizeVisualModeAlias(value) {
+  const mode = String(value || 'ndvi_contrast')
+    .trim()
+    .replace(/[-\s]+/g, '_')
+    .toLowerCase();
+  if (!mode) return 'ndvi_contrast';
+  switch (mode) {
+    case 'ndvi':
+    case 'contrast':
+      return 'ndvi_contrast';
+    case 'absolute':
+      return 'ndvi_absolute';
+    case 'relative':
+      return 'ndvi_relative';
+    case 'vigor':
+    case 'auto':
+      return 'agronomic_classes';
+    case 'ndmi':
+    case 'moisture':
+    case 'umidade':
+      return 'ndmi_water_stress';
+    case 'rededge':
+    case 'red_edge':
+      return 'ndre';
+    case 'soilplant':
+    case 'soil_plant':
+    case 'soil_palhada':
+    case 'solo_palhada':
+    case 'solo_planta':
+      return 'bsi_soil';
+    default:
+      return mode;
+  }
 }
 
 function readLayerSchemaVersion(layer) {

@@ -9,6 +9,10 @@ import {
   parseDecisionInsightsPushBody,
   type DecisionInsightPushBody,
 } from '../validators/decisionInsightsSync.validator.js';
+import {
+  assertPlotBelongsToFarm,
+  assertSeasonBelongsToFarm,
+} from '../lib/resourceAccessGuard.js';
 
 export type DecisionInsightsPushResult = {
   farm_cloud_id: string;
@@ -57,6 +61,16 @@ export async function pushDecisionInsightsSync(
 
     for (const rawItem of body.items) {
       const normalized = normalizePushItem(rawItem);
+      await assertPlotBelongsToFarm(client, {
+        farmId: farmCloudId,
+        plotCloudId: normalized.talhao_cloud_id,
+        plotLocalId: normalized.talhao_local_id,
+        required: true,
+      });
+      await assertSeasonBelongsToFarm(client, {
+        farmId: farmCloudId,
+        seasonCloudId: normalized.safra_id,
+      });
       const result = await upsertDecisionInsight(
         client,
         farmCloudId,

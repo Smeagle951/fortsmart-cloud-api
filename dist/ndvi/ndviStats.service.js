@@ -22,15 +22,34 @@ class NdviStatsService {
       ndvi_min: num(raw?.ndvi_min ?? raw?.ndviMin),
       ndvi_max: num(raw?.ndvi_max ?? raw?.ndviMax),
       ndvi_std: num(raw?.ndvi_std ?? raw?.ndviStd),
+      ndvi_p2: num(raw?.ndvi_p2 ?? raw?.ndviP2),
+      ndvi_p5: num(raw?.ndvi_p5 ?? raw?.ndviP5 ?? raw?.p05),
       ndvi_p10: num(raw?.ndvi_p10 ?? raw?.ndviP10),
       ndvi_p25: num(raw?.ndvi_p25 ?? raw?.ndviP25),
       ndvi_p50: num(raw?.ndvi_p50 ?? raw?.ndviP50),
       ndvi_p75: num(raw?.ndvi_p75 ?? raw?.ndviP75),
       ndvi_p90: num(raw?.ndvi_p90 ?? raw?.ndviP90),
+      ndvi_p95: num(raw?.ndvi_p95 ?? raw?.ndviP95 ?? raw?.p95),
+      ndvi_p98: num(raw?.ndvi_p98 ?? raw?.ndviP98),
       ndre_mean: num(raw?.ndre_mean ?? raw?.ndreMean),
+      ndre_min: num(raw?.ndre_min ?? raw?.ndreMin),
+      ndre_max: num(raw?.ndre_max ?? raw?.ndreMax),
+      ndre_p5: num(raw?.ndre_p5 ?? raw?.ndreP5),
+      ndre_p50: num(raw?.ndre_p50 ?? raw?.ndreP50),
+      ndre_p95: num(raw?.ndre_p95 ?? raw?.ndreP95),
+      lowChlorophyllPercent: num(raw?.lowChlorophyllPercent ?? raw?.low_chlorophyll_percent),
+      highChlorophyllPercent: num(raw?.highChlorophyllPercent ?? raw?.high_chlorophyll_percent),
       savi_mean: num(raw?.savi_mean ?? raw?.saviMean),
       bsi_mean: num(raw?.bsi_mean ?? raw?.bsiMean),
       ndmi_mean: num(raw?.ndmi_mean ?? raw?.ndmiMean),
+      ndmi_min: num(raw?.ndmi_min ?? raw?.ndmiMin),
+      ndmi_max: num(raw?.ndmi_max ?? raw?.ndmiMax),
+      ndmi_p5: num(raw?.ndmi_p5 ?? raw?.ndmiP5),
+      ndmi_p50: num(raw?.ndmi_p50 ?? raw?.ndmiP50),
+      ndmi_p95: num(raw?.ndmi_p95 ?? raw?.ndmiP95),
+      waterStressPercent: num(raw?.waterStressPercent ?? raw?.water_stress_percent),
+      adequateMoisturePercent: num(raw?.adequateMoisturePercent ?? raw?.adequate_moisture_percent),
+      highMoisturePercent: num(raw?.highMoisturePercent ?? raw?.high_moisture_percent),
       very_low_percent: num(raw?.very_low_percent ?? raw?.veryLowPercent),
       low_percent: num(raw?.low_percent ?? raw?.lowPercent),
       medium_percent: num(raw?.medium_percent ?? raw?.mediumPercent),
@@ -51,6 +70,33 @@ class NdviStatsService {
       water_percent: num(raw?.water_percent) ?? num(classes?.waterPercent),
       visual_mode: assets?.visual_mode ?? raw?.visual_mode ?? null,
       processing_engine: assets?.processing_engine ?? null,
+      contrast: assets?.contrast ?? raw?.contrast ?? null,
+      spatial_metrics: assets?.spatial_metrics ?? raw?.spatial_metrics ?? null,
+      zones: assets?.zones ?? raw?.zones ?? [],
+      diagnosis: assets?.diagnosis ?? raw?.diagnosis ?? null,
+      legend: assets?.legend ?? raw?.legend ?? null,
+      sourceContext:
+        assets?.sourceContext ?? assets?.source_context ?? raw?.sourceContext ?? raw?.source_context ?? null,
+      source_context:
+        assets?.source_context ?? assets?.sourceContext ?? raw?.source_context ?? raw?.sourceContext ?? null,
+      rendererVersion:
+        assets?.rendererVersion ??
+        assets?.renderer_version ??
+        raw?.rendererVersion ??
+        raw?.renderer_version ??
+        raw?.contrast?.rendererVersion ??
+        null,
+      renderer_version:
+        assets?.renderer_version ??
+        assets?.rendererVersion ??
+        raw?.renderer_version ??
+        raw?.rendererVersion ??
+        raw?.contrast?.rendererVersion ??
+        null,
+      validPixelCount: num(raw?.validPixelCount ?? raw?.valid_pixel_count ?? raw?.valid_pixels),
+      maskedPixelCount: num(raw?.maskedPixelCount ?? raw?.masked_pixel_count ?? raw?.masked_pixels),
+      validAreaHa: num(raw?.validAreaHa ?? raw?.valid_area_ha),
+      maskedAreaHa: num(raw?.maskedAreaHa ?? raw?.masked_area_ha),
       classes,
       has_raster: hasRaster,
     };

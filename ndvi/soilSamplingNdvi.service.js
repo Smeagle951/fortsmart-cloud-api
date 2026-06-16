@@ -85,6 +85,10 @@ function normalizePackageModeError(mode, error) {
     status,
     code: rawCode,
     message: rawMessage,
+    sourceBands: sourceBandsForMode(mode),
+    missingBands: Array.isArray(error?.details?.missingBands)
+      ? error.details.missingBands
+      : [],
   };
 
   if (rawCode === 'missingBands' || rawCode === 'missing_bands') {
@@ -100,10 +104,10 @@ function normalizePackageModeError(mode, error) {
         ? rawMessage
         : 'Banda B11 ausente para Umidade.';
     } else if (mode === 'bsi_soil') {
-      out.code = /b02/i.test(rawMessage) ? 'missingBandB02' : 'missingBandB11';
+      out.code = 'missingRequiredSoilPlantBand';
       out.message = /banda/i.test(rawMessage)
         ? rawMessage
-        : 'Banda B02/B11 ausente para Solo/Palhada.';
+        : 'Banda B04/B08/B11 ausente para Solo/Palhada.';
     }
   } else if (rawCode === 'NDVI_PROVIDER_ERROR' || rawCode === 'ndvi_provider_error') {
     if (mode === 'ndre') {
@@ -127,6 +131,23 @@ function normalizePackageModeError(mode, error) {
   }
 
   return out;
+}
+
+function sourceBandsForMode(mode) {
+  switch (mode) {
+    case 'ndmi_water_stress':
+      return ['B08', 'B11'];
+    case 'ndre':
+      return ['B8A', 'B05'];
+    case 'bsi_soil':
+      return ['B04', 'B08', 'B11'];
+    case 'ndvi_contrast':
+    case 'ndvi_absolute':
+    case 'ndvi_relative':
+    case 'agronomic_classes':
+    default:
+      return ['B04', 'B08'];
+  }
 }
 
 function hasCoreRenderableNdviStats(stats) {
@@ -730,7 +751,9 @@ class SoilSamplingNdviService {
           elapsedMs: Date.now() - startedAt,
           preview: Boolean(mapped?.preview_url || mapped?.previewUrl),
           source: 'render_cache',
+          sourceBands: sourceBandsForMode(mode),
         };
+        console.log(`[NDVI_LAYER] READY mode=${mode}`, statusesByMode[mode]);
         console.log('[NDVI] render cache hit', {
           plotId,
           sceneId,
@@ -932,15 +955,16 @@ class SoilSamplingNdviService {
               status: 'ready',
               elapsedMs: Date.now() - modeStartedAt,
               preview: Boolean(mapped?.preview_url || mapped?.previewUrl),
+              sourceBands: sourceBandsForMode(mode),
             };
+            console.log(`[NDVI_LAYER] READY mode=${mode}`, statusesByMode[mode]);
             console.log(`[LayerBatch] ${mode} persisted from single GEE package`, statusesByMode[mode]);
           } catch (error) {
             statusesByMode[mode] = {
-              status: error?.status === 422 ? 'unavailable' : 'failed',
-              code: error?.code || 'layer_package_persist_failed',
-              message: error?.message || String(error),
+              ...normalizePackageModeError(mode, error),
               elapsedMs: Date.now() - modeStartedAt,
             };
+            console.warn(`[NDVI_LAYER] ${statusesByMode[mode].status === 'unavailable' ? 'UNAVAILABLE' : 'FAILED'} mode=${mode}`, statusesByMode[mode]);
             console.warn(`[LayerBatch] ${mode} persist failed from single GEE package`, statusesByMode[mode]);
           }
         }
@@ -1044,14 +1068,15 @@ class SoilSamplingNdviService {
               elapsedMs: Date.now() - modeStartedAt,
               preview: Boolean(mapped?.preview_url || mapped?.previewUrl),
               source: 'copernicus_internal_grid_package',
+              sourceBands: sourceBandsForMode(mode),
             };
+            console.log(`[NDVI_LAYER] READY mode=${mode}`, statusesByMode[mode]);
           } catch (error) {
             statusesByMode[mode] = {
-              status: error?.status === 422 ? 'unavailable' : 'failed',
-              code: error?.code || 'layer_package_persist_failed',
-              message: error?.message || String(error),
+              ...normalizePackageModeError(mode, error),
               elapsedMs: Date.now() - modeStartedAt,
             };
+            console.warn(`[NDVI_LAYER] ${statusesByMode[mode].status === 'unavailable' ? 'UNAVAILABLE' : 'FAILED'} mode=${mode}`, statusesByMode[mode]);
           }
         }
         const packageStatus = resolvePackageStatus(layersByMode, statusesByMode);
@@ -1107,15 +1132,16 @@ class SoilSamplingNdviService {
           status: 'ready',
           elapsedMs: Date.now() - modeStartedAt,
           preview: Boolean(layer?.preview_url || layer?.previewUrl),
+          sourceBands: sourceBandsForMode(mode),
         };
+        console.log(`[NDVI_LAYER] READY mode=${mode}`, statusesByMode[mode]);
         console.log(`[LayerBatch] ${mode} ready preview`, statusesByMode[mode]);
       } catch (error) {
         statusesByMode[mode] = {
-          status: error?.status === 422 ? 'unavailable' : 'failed',
-          code: error?.code || 'layer_generation_failed',
-          message: error?.message || String(error),
+          ...normalizePackageModeError(mode, error),
           elapsedMs: Date.now() - modeStartedAt,
         };
+        console.warn(`[NDVI_LAYER] ${statusesByMode[mode].status === 'unavailable' ? 'UNAVAILABLE' : 'FAILED'} mode=${mode}`, statusesByMode[mode]);
         console.warn('[NDVI_PACKAGE_MODE_SKIP]', {
           mode,
           code: statusesByMode[mode].code,

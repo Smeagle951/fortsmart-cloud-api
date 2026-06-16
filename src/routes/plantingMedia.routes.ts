@@ -7,12 +7,15 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { jsonOk } from '../utils/response.js';
 import { resolveFarmIdForApiKey } from '../services/monitoringMedia.service.js';
 import { uploadPlantingImage } from '../services/plantingMedia.service.js';
+import { assertAllowedImageMimeType, imageFileFilter } from '../middleware/imageUploadPolicy.js';
+import { assertPlotBelongsToFarm } from '../lib/resourceAccessGuard.js';
 
 export const plantingMediaRouter = Router();
 
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024 },
+  fileFilter: imageFileFilter,
 });
 
 /**
@@ -35,6 +38,7 @@ plantingMediaRouter.post(
     if (!req.file?.buffer?.length) {
       throw new HttpError('Campo multipart "file" é obrigatório.', 400);
     }
+    assertAllowedImageMimeType(req.file.mimetype);
 
     const farmCloudId = String(req.body?.farm_cloud_id ?? '').trim();
     const imageLocalId = String(req.body?.image_local_id ?? '').trim();
@@ -43,9 +47,14 @@ plantingMediaRouter.post(
       throw new HttpError('farm_cloud_id, image_local_id e planting_local_id são obrigatórios.', 400);
     }
 
-    const farmId = await resolveFarmIdForApiKey(getPool(), auth.apiKeyId, farmCloudId);
+    const pool = getPool();
+    const farmId = await resolveFarmIdForApiKey(pool, auth.apiKeyId, farmCloudId);
+    await assertPlotBelongsToFarm(pool, {
+      farmId,
+      plotLocalId: req.body?.plot_local_id,
+    });
 
-    const result = await uploadPlantingImage(getPool(), {
+    const result = await uploadPlantingImage(pool, {
       farmId,
       farmCloudId,
       imageLocalId,

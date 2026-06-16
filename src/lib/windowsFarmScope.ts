@@ -1,6 +1,5 @@
 import type { Request } from 'express';
-import { HttpError } from '../middleware/errorHandler.js';
-import { isCloudFarmUuid } from './cloudFarmUuid.js';
+import { assertApiKeyCanAccessFarm } from './resourceAccessGuard.js';
 
 /**
  * Mesma regra para `/windows/base`, `/windows/planting`, `/windows/monitoring`, etc.:
@@ -10,15 +9,5 @@ import { isCloudFarmUuid } from './cloudFarmUuid.js';
  */
 export function assertWindowsFarmScope(req: Request): string {
   const farmId = req.params.farmId?.trim() ?? '';
-  if (!isCloudFarmUuid(farmId)) {
-    throw new HttpError('farmId must be the cloud farm UUID', 400);
-  }
-  const auth = req.cloudAuth;
-  if (!auth?.farmId) {
-    throw new HttpError('API key not linked to a farm yet', 403);
-  }
-  if (auth.farmId.toLowerCase() !== farmId.toLowerCase()) {
-    throw new HttpError('Forbidden', 403);
-  }
-  return farmId;
+  return assertApiKeyCanAccessFarm(req, farmId);
 }

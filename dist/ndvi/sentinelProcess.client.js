@@ -216,12 +216,37 @@ class SentinelProcessClient {
       buffer: previewGen.buffer,
     });
 
-    const contrast = previewGen.contrast ?? stats.contrast ?? {};
+    const recomputedStats = previewGen.stats ?? {};
+    const contrast = previewGen.contrast ?? recomputedStats.contrast ?? stats.contrast ?? {};
+    const rendererVersion = contrast?.rendererVersion ?? 'agronomic_contrast_v2_1';
     const rasterMetadata = buildNdviRasterMetadata({
       grid: { values: Array.from(raster.bands.ndvi), width: raster.width, height: raster.height },
       bounds,
       rasterUrl: null,
       resolutionM: raster.resolution_m ?? 10,
+    });
+    const sourceContext = {
+      ...(previewGen.sourceContext || {}),
+      cacheHit: true,
+      cacheTag: `${plotId}|${sceneId}|${resolvedVisual}|${rendererVersion}`,
+      rendererVersion,
+      rasterStorageKey: raster.raster_storage_key ?? raster.storageKey ?? null,
+      metadataComplete: Boolean(previewGen.stats),
+    };
+
+    console.log('[NDVI_RASTER_REUSE_METADATA]', {
+      sceneId,
+      visualMode: resolvedVisual,
+      rendererVersion,
+      metadataComplete: Boolean(previewGen.stats),
+      statsRecomputed: true,
+      validPixelCount: recomputedStats.validPixelCount ?? null,
+      mean: recomputedStats.ndvi_mean ?? null,
+      p05: recomputedStats.ndvi_p5 ?? null,
+      p50: recomputedStats.ndvi_p50 ?? null,
+      p95: recomputedStats.ndvi_p95 ?? null,
+      contrast: recomputedStats.contrast?.contrast ?? recomputedStats.contrast ?? null,
+      homogeneity: recomputedStats.homogeneity_score ?? null,
     });
 
     return {
@@ -233,8 +258,8 @@ class SentinelProcessClient {
       raster_bounds: bounds,
       raster_resolution_m: raster.resolution_m ?? 10,
       raster_available: true,
-      raster_storage_key: raster.raster_storage_key ?? null,
-      raster_storage_provider: raster.raster_storage_provider ?? null,
+      raster_storage_key: raster.raster_storage_key ?? raster.storageKey ?? null,
+      raster_storage_provider: raster.raster_storage_provider ?? raster.provider ?? null,
       raster_schema_version: raster.raster_schema_version ?? RASTER_SCHEMA_NUM,
       bounds,
       visual_mode: resolvedVisual,
@@ -246,11 +271,32 @@ class SentinelProcessClient {
       polygon_masked: true,
       available_visual_modes: VISUAL_MODES,
       contrast,
-      spatial_metrics: previewGen.spatial_metrics ?? stats.spatial_metrics,
-      rendering: stats.rendering,
+      spatial_metrics: recomputedStats.spatial_metrics ?? previewGen.spatial_metrics ?? stats.spatial_metrics,
+      rendering: recomputedStats.rendering ?? stats.rendering,
       zones: previewGen.zones ?? stats.zones ?? [],
+      diagnosis: previewGen.diagnosis ?? null,
+      legend: previewGen.legend ?? null,
+      sourceContext,
+      source_context: sourceContext,
+      rendererVersion,
+      renderer_version: rendererVersion,
+      cacheHit: true,
+      cache_hit: true,
+      cacheTag: sourceContext.cacheTag,
+      cache_tag: sourceContext.cacheTag,
+      generatedAt: new Date().toISOString(),
+      generated_at: new Date().toISOString(),
       rasterReuse: true,
+      stats: {
+        ...stats,
+        ...recomputedStats,
+        sourceContext,
+        source_context: sourceContext,
+        diagnosis: previewGen.diagnosis ?? null,
+        legend: previewGen.legend ?? null,
+      },
       ...stats,
+      ...recomputedStats,
     };
   }
 
@@ -278,6 +324,180 @@ class SentinelProcessClient {
       polygon,
       visualMode: normalizeVisualMode(visualMode, colormapMode),
     });
+  }
+
+  async generateLayerPackage({
+    sceneId,
+    polygon,
+    imageDate,
+    farmId,
+    plotId,
+    modes = VISUAL_MODES,
+  }) {
+    const requestedModes = [...new Set(
+      (Array.isArray(modes) && modes.length ? modes : VISUAL_MODES)
+        .map((mode) => normalizeVisualMode(mode, null)),
+    )];
+    const date = String(imageDate || '').slice(0, 10);
+    const started = Date.now();
+    const layersByMode = {};
+    const statusesByMode = {};
+
+    console.log('[NDVI][Process][package] start', {
+      sceneId,
+      plotId,
+      modes: requestedModes,
+      date,
+    });
+
+    if (!date) {
+      for (const mode of requestedModes) {
+        statusesByMode[mode] = {
+          status: 'failed',
+          code: 'invalidImageDate',
+          message: 'Data da cena inválida para gerar pacote Sentinel.',
+          elapsedMs: 0,
+        };
+      }
+      return {
+        scene_id: sceneId,
+        resolution_kind: 'preview',
+        package_version: 'scene_band_package_v1',
+        layersByMode,
+        statusesByMode,
+        elapsedMs: Date.now() - started,
+      };
+    }
+
+    console.log('[NDVI] cache raster lookup', {
+      plotId,
+      sceneId,
+      key: [plotId, sceneId || '-', 'internal_grid_v1'].join('|'),
+    });
+    let raster = await loadInternalGrid({
+      plotId,
+      sceneId,
+      schemaVersion: RASTER_SCHEMA_NUM,
+    });
+
+    if (!raster?.bands?.ndvi?.length) {
+      console.log('[NDVI] raster miss', { plotId, sceneId });
+      console.log('[NDVI][Process][package] raster miss; generating base raster', {
+        sceneId,
+        plotId,
+      });
+      const base = await this.generateNdviLayer({
+        sceneId,
+        polygon,
+        imageDate: date,
+        farmId,
+        plotId,
+        visualMode: 'ndvi_contrast',
+        forceRemote: false,
+      });
+      if (base?.raster_storage_key || base?.raster_available) {
+        raster = await loadInternalGrid({
+          plotId,
+          sceneId,
+          schemaVersion: RASTER_SCHEMA_NUM,
+        });
+      }
+    } else {
+      console.log('[NDVI] raster hit', { plotId, sceneId });
+    }
+
+    if (!raster?.bands?.ndvi?.length) {
+      for (const mode of requestedModes) {
+        statusesByMode[mode] = {
+          status: 'failed',
+          code: 'packageRasterNotComputed',
+          message: 'Pacote Sentinel não gerou raster interno reutilizável.',
+          elapsedMs: Date.now() - started,
+        };
+      }
+      return {
+        scene_id: sceneId,
+        resolution_kind: 'preview',
+        package_version: 'scene_band_package_v1',
+        layersByMode,
+        statusesByMode,
+        elapsedMs: Date.now() - started,
+      };
+    }
+
+    for (const mode of requestedModes) {
+      const modeStarted = Date.now();
+      try {
+        console.log('[NDVI] render layer started', {
+          plotId,
+          sceneId,
+          mode,
+        });
+        const layer = await this._layerFromPersistedRaster({
+          raster,
+          sceneId,
+          farmId,
+          plotId,
+          imageDate: date,
+          polygon,
+          visualMode: mode,
+        });
+        if (!layer?.preview_url) {
+          statusesByMode[mode] = {
+            status: 'unavailable',
+            code: 'layerPreviewNotComputed',
+            message: `Camada ${mode} não retornou preview reutilizável.`,
+            elapsedMs: Date.now() - modeStarted,
+          };
+          continue;
+        }
+        layersByMode[mode] = layer;
+        statusesByMode[mode] = {
+          status: 'ready',
+          elapsedMs: Date.now() - modeStarted,
+          preview: true,
+          source: 'internal_grid_package',
+        };
+        console.log('[NDVI] render layer finished', {
+          plotId,
+          sceneId,
+          mode,
+          elapsedMs: Date.now() - modeStarted,
+          bytes: layer?.preview_url ? String(layer.preview_url).length : 0,
+        });
+      } catch (error) {
+        statusesByMode[mode] = {
+          status: 'failed',
+          code: error?.code || 'packageLayerRenderFailed',
+          message: error?.message || String(error),
+          elapsedMs: Date.now() - modeStarted,
+        };
+      }
+    }
+
+    console.log('[NDVI][Process][package] done', {
+      sceneId,
+      plotId,
+      readyModes: Object.keys(layersByMode),
+      elapsedMs: Date.now() - started,
+    });
+    console.log('[NDVI] package saved', {
+      key: [plotId, sceneId || '-', 'preview'].join('|'),
+      layers: Object.keys(layersByMode),
+    });
+
+    return {
+      scene_id: sceneId,
+      packageCacheKey: [plotId, sceneId || '-', 'preview'].join('|'),
+      package_version: 'scene_band_package_v1',
+      resolution_kind: 'preview',
+      generatedAt: new Date().toISOString(),
+      provider: 'copernicus_dataspace',
+      modes: requestedModes,
+      layersByMode,
+      statusesByMode,
+      elapsedMs: Date.now() - started,
+    };
   }
 
   async generateNdviLayer({
@@ -484,6 +704,24 @@ class SentinelProcessClient {
       if (previewGen.contrast) {
         Object.assign(contrast, previewGen.contrast);
       }
+      const finalStats = {
+        ...enrichedStats,
+        ...(previewGen.stats ?? {}),
+        contrast,
+        spatial_metrics:
+          previewGen.stats?.spatial_metrics ??
+          enrichedStats.spatial_metrics,
+        rendering:
+          previewGen.stats?.rendering ??
+          enrichedStats.rendering,
+        zones: previewGen.zones ?? zoneResult.zones,
+        diagnosis: previewGen.diagnosis ?? null,
+        legend: previewGen.legend ?? null,
+        sourceContext: previewGen.sourceContext ?? null,
+        source_context: previewGen.sourceContext ?? null,
+        rendererVersion: contrast?.rendererVersion ?? null,
+        renderer_version: contrast?.rendererVersion ?? null,
+      };
 
       const preview_url = await storeNdviPreviewPng({
         farmId,
@@ -555,7 +793,7 @@ class SentinelProcessClient {
         raster_bands: rasterMetadata.raster_bands,
         raster_bounds: rasterMetadata.raster_bounds,
         raster_resolution_m: rasterMetadata.raster_resolution_m,
-        raster_available: Boolean(rasterPersist?.storageKey),
+        raster_available: Boolean(rasterPersist?.raster_storage_key ?? rasterPersist?.storageKey),
         raster_storage_key: rasterPersist?.raster_storage_key ?? null,
         raster_storage_provider: rasterPersist?.raster_storage_provider ?? null,
         raster_schema_version: rasterPersist?.raster_schema_version ?? RASTER_SCHEMA_NUM,
@@ -569,12 +807,24 @@ class SentinelProcessClient {
         polygon_masked: true,
         available_visual_modes: VISUAL_MODES,
         contrast,
-        spatial_metrics: enrichedStats.spatial_metrics,
-        rendering: stats.rendering,
-        zones: zoneResult.zones,
-        stats: enrichedStats,
+        spatial_metrics: finalStats.spatial_metrics,
+        rendering: finalStats.rendering,
+        zones: finalStats.zones,
+        diagnosis: previewGen.diagnosis ?? null,
+        legend: previewGen.legend ?? null,
+        sourceContext: previewGen.sourceContext ?? null,
+        source_context: previewGen.sourceContext ?? null,
+        rendererVersion: contrast?.rendererVersion ?? null,
+        renderer_version: contrast?.rendererVersion ?? null,
+        cacheTag: previewGen.sourceContext
+          ? `${plotId}|${sceneId}|${resolvedVisual}|${contrast?.rendererVersion ?? 'unknown'}|scl_v2|stats_v2_inner_pixel_buffer`
+          : null,
+        cache_tag: previewGen.sourceContext
+          ? `${plotId}|${sceneId}|${resolvedVisual}|${contrast?.rendererVersion ?? 'unknown'}|scl_v2|stats_v2_inner_pixel_buffer`
+          : null,
+        stats: finalStats,
         classes: stats.classes,
-        ...enrichedStats,
+        ...finalStats,
       };
     } catch (error) {
       console.warn(`⚠️ [NDVI][Process] falha sceneId=${sceneId}: ${error.message}`);

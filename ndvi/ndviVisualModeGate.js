@@ -13,8 +13,27 @@ export const RASTER_VISUAL_MODES = Object.freeze([
 ]);
 
 export function normalizeVisualModeKey(value) {
-  const mode = String(value || 'ndvi_contrast').trim().toLowerCase();
-  return mode || 'ndvi_contrast';
+  const mode = String(value || 'ndvi_contrast').trim().replace(/[-\s]+/g, '_').toLowerCase();
+  switch (mode) {
+    case 'ndvi':
+    case 'contrast':
+      return 'ndvi_contrast';
+    case 'ndmi':
+    case 'moisture':
+    case 'umidade':
+      return 'ndmi_water_stress';
+    case 'rededge':
+    case 'red_edge':
+      return 'ndre';
+    case 'soilplant':
+    case 'soil_plant':
+    case 'soil_palhada':
+    case 'solo_palhada':
+    case 'solo_planta':
+      return 'bsi_soil';
+    default:
+      return mode || 'ndvi_contrast';
+  }
 }
 
 export function canRenderFromPersistedRaster(visualMode, raster) {
@@ -33,9 +52,9 @@ export function missingBandsForVisualMode(visualMode, raster) {
   const bands = raster?.bands || {};
   const missing = [];
   if (!bands.ndvi?.length) missing.push('B04/B08');
-  if (mode === 'ndre' && !bands.ndre?.length) missing.push('B05/B8A ou B05/B08');
+  if (mode === 'ndre' && !bands.ndre?.length) missing.push('B05/B8A');
   if (mode === 'savi' && !bands.savi?.length) missing.push('B04/B08');
-  if (mode === 'bsi_soil' && !bands.bsi?.length) missing.push('B02/B04/B08/B11');
+  if (mode === 'bsi_soil' && !bands.bsi?.length) missing.push('B04/B08/B11');
   if (mode === 'ndmi_water_stress' && !bands.ndmi?.length) missing.push('B08/B11');
   return missing;
 }
