@@ -62,10 +62,16 @@ function normalizePackageModeFailure(mode, status = {}) {
   const code = status.code || 'layer_generation_failed';
   const message = status.message || 'Camada não retornada pelo pacote.';
   const normalized = { ...status };
-  if (code === 'missingBands' || code === 'missing_bands') {
+  const missingBands = Array.isArray(status.missingBands)
+    ? status.missingBands
+    : [];
+  if (code === 'missingBands' || code === 'missing_bands' || missingBands.length > 0) {
     normalized.status = 'unavailable';
     if (mode === 'ndre') {
-      normalized.code = /b8a/i.test(message) ? 'missingBandB8A' : 'missingBandB05';
+      normalized.code =
+        /b8a/i.test(message) || missingBands.includes('B8A')
+          ? 'missingBandB8A'
+          : 'missingBandB05';
       normalized.message =
         message.includes('Banda') ? message : 'Banda B05/B8A ausente para Red Edge.';
     } else if (mode === 'ndmi_water_stress') {

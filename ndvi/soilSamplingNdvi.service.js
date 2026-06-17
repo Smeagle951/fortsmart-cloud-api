@@ -91,10 +91,17 @@ function normalizePackageModeError(mode, error) {
       : [],
   };
 
-  if (rawCode === 'missingBands' || rawCode === 'missing_bands') {
+  if (
+    rawCode === 'missingBands' ||
+    rawCode === 'missing_bands' ||
+    out.missingBands.length > 0
+  ) {
     out.status = 'unavailable';
     if (mode === 'ndre') {
-      out.code = /b8a/i.test(rawMessage) ? 'missingBandB8A' : 'missingBandB05';
+      out.code =
+        /b8a/i.test(rawMessage) || out.missingBands.includes('B8A')
+          ? 'missingBandB8A'
+          : 'missingBandB05';
       out.message = /banda/i.test(rawMessage)
         ? rawMessage
         : 'Banda B05/B8A ausente para Red Edge.';
