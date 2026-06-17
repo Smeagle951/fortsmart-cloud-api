@@ -39,6 +39,19 @@ function normalizeImageDate(value) {
   return text;
 }
 
+function imageDateFromSentinelSceneId(sceneId) {
+  const text = String(sceneId || '').trim();
+  const match = text.match(/MSIL2A_(\d{4})(\d{2})(\d{2})T/i);
+  if (!match) return null;
+  return `${match[1]}-${match[2]}-${match[3]}`;
+}
+
+function resolveSceneAcquisitionDate({ sceneId, imageDate }) {
+  const fromSceneId = imageDateFromSentinelSceneId(sceneId);
+  const normalizedImageDate = normalizeImageDate(imageDate);
+  return fromSceneId || normalizedImageDate;
+}
+
 function hashPolygonForPackage(polygon) {
   const coordinates = polygon?.coordinates?.[0];
   const raw = Array.isArray(coordinates) && coordinates.length
@@ -834,12 +847,20 @@ class SoilSamplingNdviService {
     }
     const dbReady = await this._tryEnsureSchema('generateLayerPackage');
     const normalizedImageDate = normalizeImageDate(imageDate);
+    const effectiveImageDate = resolveSceneAcquisitionDate({ sceneId, imageDate });
+    if (effectiveImageDate && normalizedImageDate && effectiveImageDate !== normalizedImageDate) {
+      console.warn('[NDVI_PACKAGE_DATE_MISMATCH]', {
+        sceneId,
+        requestImageDate: normalizedImageDate,
+        effectiveImageDate,
+      });
+    }
     const polygonHash = hashPolygonForPackage(polygon);
     const packageCacheKey = buildScenePackageKey({
       farmId,
       plotId,
       sceneId,
-      acquisitionDate: normalizedImageDate,
+      acquisitionDate: effectiveImageDate || normalizedImageDate,
       polygonHash,
       resolutionKind: 'preview',
     });
@@ -853,7 +874,7 @@ class SoilSamplingNdviService {
       dbReady,
       farmId,
       plotId,
-      imageDate: normalizedImageDate || imageDate,
+      imageDate: effectiveImageDate || normalizedImageDate || imageDate,
       sceneId,
       maxCloud,
       polygon,
@@ -899,7 +920,7 @@ class SoilSamplingNdviService {
         const packageResult = await this.geeClient.generateLayerPackage({
           sceneId,
           polygon,
-          imageDate,
+          imageDate: effectiveImageDate || normalizedImageDate || imageDate,
           startDate,
           endDate,
           maxCloud,
@@ -933,7 +954,10 @@ class SoilSamplingNdviService {
               );
             }
             const targetSceneId = assets.scene_id || sceneId;
-            const targetDate = normalizeImageDate(assets.image_date) || normalizeImageDate(imageDate);
+            const targetDate =
+              normalizeImageDate(assets.image_date) ||
+              effectiveImageDate ||
+              normalizedImageDate;
             const targetCloud = assets.cloud_coverage ?? cloudCoverage;
             const mapped = await this._persistGeneratedLayer({
               dbReady,
@@ -1014,7 +1038,7 @@ class SoilSamplingNdviService {
         const packageResult = await this.processClient.generateLayerPackage({
           sceneId,
           polygon,
-          imageDate,
+          imageDate: effectiveImageDate || normalizedImageDate || imageDate,
           farmId,
           plotId,
           modes: pendingModes,
@@ -1045,7 +1069,10 @@ class SoilSamplingNdviService {
               );
             }
             const targetSceneId = assets.scene_id || sceneId;
-            const targetDate = normalizeImageDate(assets.image_date) || normalizeImageDate(imageDate);
+            const targetDate =
+              normalizeImageDate(assets.image_date) ||
+              effectiveImageDate ||
+              normalizedImageDate;
             const targetCloud = assets.cloud_coverage ?? cloudCoverage;
             const mapped = await this._persistGeneratedLayer({
               dbReady,
@@ -1125,7 +1152,7 @@ class SoilSamplingNdviService {
           campaignId,
           sceneId,
           polygon,
-          imageDate,
+          imageDate: effectiveImageDate || normalizedImageDate || imageDate,
           cloudCoverage,
           startDate,
           endDate,
@@ -1210,7 +1237,7 @@ class SoilSamplingNdviService {
       farmId,
       campaignId,
       sceneId: sceneId || null,
-      imageDate: normalizeImageDate(imageDate),
+      imageDate: resolveSceneAcquisitionDate({ sceneId, imageDate }),
     };
     let stage = 'init';
 
@@ -1260,6 +1287,15 @@ class SoilSamplingNdviService {
       let targetSceneId = sceneId ? String(sceneId).trim() : null;
       let targetDate = meta.imageDate;
       let targetCloud = cloudCoverage;
+      const requestImageDate = normalizeImageDate(imageDate);
+      if (targetDate && requestImageDate && targetDate !== requestImageDate) {
+        console.warn('[NDVI_GENERATE_DATE_MISMATCH]', {
+          sceneId: targetSceneId,
+          requestImageDate,
+          effectiveImageDate: targetDate,
+          visualMode: requestedVisualMode,
+        });
+      }
 
       if (!targetSceneId) {
         stage = 'search_fallback';
@@ -1800,6 +1836,7 @@ class SoilSamplingNdviService {
       err.status =
         error.status === 504 ? 504 : error.status >= 500 ? 502 : error.status;
       err.details = {
+        ...(error.details && typeof error.details === 'object' ? error.details : {}),
         provider_code: error.code,
         provider_message: error.message,
       };

@@ -366,7 +366,7 @@ describe('SceneBandPackage generate-package', () => {
       catalogClient: { polygonToBbox: () => [-54.48, -15.38, -54.47, -15.37] },
       processClient: {
         generateNdviLayer: async (params) => {
-          calls.push(params.visualMode);
+          calls.push({ mode: params.visualMode, imageDate: params.imageDate });
           if (params.visualMode === 'ndmi_water_stress') {
             throw Object.assign(new Error('Banda B11 ausente para Umidade.'), {
               code: 'missingBands',
@@ -395,15 +395,18 @@ describe('SceneBandPackage generate-package', () => {
       farmId: 'f1',
       plotId: 'p1',
       campaignId: '16',
-      sceneId: 'scene-abc',
+      sceneId: 'S2A_MSIL2A_20260608T135131_N0512_R024_T21LYD_20260608T212815',
       polygon,
-      imageDate: '2026-05-25',
+      imageDate: '2026-06-15',
       modes: ['ndvi_contrast', 'ndmi_water_stress'],
     });
 
     assert.equal(result.packageStatus, 'partial');
     assert.ok(result.packageCacheKey);
-    assert.deepEqual(calls, ['ndvi_contrast', 'ndmi_water_stress']);
+    assert.deepEqual(calls, [
+      { mode: 'ndvi_contrast', imageDate: '2026-06-08' },
+      { mode: 'ndmi_water_stress', imageDate: '2026-06-08' },
+    ]);
     assert.equal(result.layersByMode.ndvi_contrast.status, 'ready');
     assert.equal(result.statusesByMode.ndvi_contrast.status, 'ready');
     assert.equal(result.layersByMode.ndmi_water_stress, undefined);
