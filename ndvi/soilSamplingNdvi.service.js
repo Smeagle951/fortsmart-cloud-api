@@ -1584,10 +1584,38 @@ class SoilSamplingNdviService {
           assets = await this.processClient.generateNdviLayer(processParams);
           assetProvider = 'copernicus_dataspace';
         } catch (processError) {
-          throw this._providerError(
-            processError,
-            'Não foi possível gerar NDVI no provedor de imagens',
-          );
+          const alternative = await this._tryGenerateAlternativeSceneLayer({
+            farmId,
+            plotId,
+            polygon,
+            failedSceneId: targetSceneId,
+            targetDate,
+            startDate,
+            endDate,
+            maxCloud,
+            requestedVisualMode,
+            colormapMode,
+            originalError: processError,
+          });
+          if (alternative) {
+            assets = alternative.assets;
+            targetSceneId = alternative.sceneId;
+            targetDate = alternative.imageDate;
+            targetCloud = alternative.cloudCoverage ?? targetCloud;
+            meta.sceneId = targetSceneId;
+            meta.imageDate = targetDate;
+            assetProvider = 'copernicus_dataspace_alternative_scene';
+            logGenerateStage(
+              meta,
+              'process_fallback',
+              `alternativeSceneId=${targetSceneId} alternativeDate=${targetDate}`,
+            );
+          } else {
+            throw this._providerError(
+              processError,
+              'Não foi possível gerar NDVI no provedor de imagens',
+            );
+          }
         }
       }
       logGenerateStage(meta, 'provider_used', assetProvider);
@@ -1608,6 +1636,65 @@ class SoilSamplingNdviService {
         hasRaster && statsValid ? 'generated' : 'metadata_only';
 
       if (!hasRaster || !statsValid) {
+        const alternative = await this._tryGenerateAlternativeSceneLayer({
+          farmId,
+          plotId,
+          polygon,
+          failedSceneId: targetSceneId,
+          targetDate,
+          startDate,
+          endDate,
+          maxCloud,
+          requestedVisualMode,
+          colormapMode,
+          originalError: new Error('Camada sem preview ou estatísticas válidas.'),
+        });
+        if (alternative) {
+          assets = alternative.assets;
+          targetSceneId = alternative.sceneId;
+          targetDate = alternative.imageDate;
+          targetCloud = alternative.cloudCoverage ?? targetCloud;
+          meta.sceneId = targetSceneId;
+          meta.imageDate = targetDate;
+          assetProvider = 'copernicus_dataspace_alternative_scene';
+          logGenerateStage(
+            meta,
+            'stats_fallback',
+            `alternativeSceneId=${targetSceneId} alternativeDate=${targetDate}`,
+          );
+          const fallbackStats = NdviStatsService.buildStatsForAssets(assets);
+          const fallbackHasRaster = this._hasRenderableAssets(assets);
+          const fallbackStatsValid =
+            isValidNdviStats(fallbackStats) ||
+            hasCoreRenderableNdviStats(fallbackStats);
+          if (fallbackHasRaster && fallbackStatsValid) {
+            stage = 'persist';
+            logGenerateStage(meta, stage, 'status=generated dbReady=' + dbReady);
+            const mapped = await this._persistGeneratedLayer({
+              dbReady,
+              farmId,
+              plotId,
+              campaignId,
+              targetSceneId,
+              targetDate,
+              targetCloud,
+              assets,
+              stats: fallbackStats,
+              layerStatus: 'generated',
+              polygon,
+              requestedVisualMode,
+              meta,
+              stage,
+            });
+            logGenerateOk(meta, mapped, {
+              rasterGenerated: 'yes',
+              statsComputed: 'yes',
+              colormapMode: assets?.colormap_mode ?? '-',
+              fallbackScene: 'yes',
+            });
+            return mapped;
+          }
+        }
         const reason =
           invalidNdviStatsReason(rawStatsProbe) ||
           invalidNdviStatsReason(stats) ||
@@ -1665,6 +1752,127 @@ class SoilSamplingNdviService {
         { stage, cause: error?.message },
       );
     }
+  }
+
+  async _tryGenerateAlternativeSceneLayer({
+    farmId,
+    plotId,
+    polygon,
+    failedSceneId,
+    targetDate,
+    startDate,
+    endDate,
+    maxCloud,
+    requestedVisualMode,
+    colormapMode,
+    originalError,
+  }) {
+    if (!this.catalogClient?.searchSentinelScenes || !this.processClient?.generateNdviLayer) {
+      return null;
+    }
+    if (!polygon || polygon.type !== 'Polygon') return null;
+
+    const centerDate = normalizeImageDate(targetDate);
+    const fromText = normalizeImageDate(startDate) || centerDate;
+    const toText = normalizeImageDate(endDate) || centerDate;
+    const from = fromText ? new Date(`${fromText}T00:00:00Z`) : null;
+    const to = toText ? new Date(`${toText}T00:00:00Z`) : null;
+    const fallbackStart = from
+      ? new Date(from.getTime() - 3 * 24 * 60 * 60 * 1000)
+      : null;
+    const fallbackEnd = to
+      ? new Date(to.getTime() + 3 * 24 * 60 * 60 * 1000)
+      : null;
+    const start = fallbackStart?.toISOString().slice(0, 10) || centerDate;
+    const end = fallbackEnd?.toISOString().slice(0, 10) || centerDate;
+    if (!start || !end) return null;
+
+    console.warn('[NDVI_PROVIDER_FALLBACK_SCENE_SEARCH]', {
+      plotId,
+      failedSceneId,
+      targetDate,
+      requestedVisualMode,
+      originalError: originalError?.message || String(originalError || ''),
+      start,
+      end,
+    });
+
+    let scenes = [];
+    try {
+      scenes = await this.catalogClient.searchSentinelScenes({
+        polygon,
+        startDate: start,
+        endDate: end,
+        maxCloud: maxCloud ?? 20,
+      });
+    } catch (searchError) {
+      console.warn('[NDVI_PROVIDER_FALLBACK_SCENE_SEARCH_FAILED]', {
+        plotId,
+        failedSceneId,
+        message: searchError?.message || String(searchError),
+      });
+      return null;
+    }
+
+    const failedKey = String(failedSceneId || '').trim();
+    const candidates = scenes
+      .map((scene) => ({
+        sceneId: String(scene.scene_id || scene.id || '').trim(),
+        imageDate: normalizeImageDate(scene.image_date || scene.date || scene.datetime),
+        cloudCoverage: scene.cloud_coverage ?? scene.cloudCoverage ?? null,
+      }))
+      .filter((scene) => scene.sceneId && scene.sceneId !== failedKey && scene.imageDate)
+      .sort((a, b) => Number(a.cloudCoverage ?? 100) - Number(b.cloudCoverage ?? 100))
+      .slice(0, 3);
+
+    for (const candidate of candidates) {
+      try {
+        console.warn('[NDVI_PROVIDER_FALLBACK_SCENE_TRY]', {
+          plotId,
+          failedSceneId,
+          candidateSceneId: candidate.sceneId,
+          candidateDate: candidate.imageDate,
+          candidateCloud: candidate.cloudCoverage,
+        });
+        const assets = await this.processClient.generateNdviLayer({
+          sceneId: candidate.sceneId,
+          polygon,
+          imageDate: candidate.imageDate,
+          farmId,
+          plotId,
+          colormapMode,
+          visualMode: requestedVisualMode,
+          forceRemote: true,
+        });
+        const stats = NdviStatsService.buildStatsForAssets(assets);
+        const ok =
+          this._hasRenderableAssets(assets) &&
+          (isValidNdviStats(stats) || hasCoreRenderableNdviStats(stats));
+        if (!ok) {
+          console.warn('[NDVI_PROVIDER_FALLBACK_SCENE_REJECTED]', {
+            plotId,
+            candidateSceneId: candidate.sceneId,
+            preview: this._hasRenderableAssets(assets),
+            ndviMean: stats?.ndvi_mean ?? null,
+          });
+          continue;
+        }
+        return {
+          assets,
+          sceneId: candidate.sceneId,
+          imageDate: candidate.imageDate,
+          cloudCoverage: candidate.cloudCoverage,
+        };
+      } catch (candidateError) {
+        console.warn('[NDVI_PROVIDER_FALLBACK_SCENE_FAILED]', {
+          plotId,
+          candidateSceneId: candidate.sceneId,
+          message: candidateError?.message || String(candidateError),
+        });
+      }
+    }
+
+    return null;
   }
 
   async attachLayer({ campaignId, farmId, plotId, layerId, payload = {} }) {

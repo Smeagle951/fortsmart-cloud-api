@@ -101,6 +101,75 @@ describe('SoilSamplingNdviService.generateLayer', () => {
     assert.ok(NdviResponseMapper.mapLayer(savedRow));
   });
 
+  it('tenta cena alternativa quando a cena selecionada falha no provedor', async () => {
+    const calls = [];
+    const service = new SoilSamplingNdviService({
+      repository: {
+        ensureSchema: async () => {},
+        findRecentCache: async () => null,
+        upsertLayer: async (data) => ({
+          ...data,
+          id: 'fallback-layer',
+          status: 'generated',
+        }),
+      },
+      catalogClient: {
+        polygonToBbox: () => [-54.48, -15.38, -54.47, -15.37],
+        searchSentinelScenes: async () => [
+          {
+            scene_id: 'failed-scene',
+            image_date: '2026-06-08',
+            cloud_coverage: 2,
+          },
+          {
+            scene_id: 'fallback-scene',
+            image_date: '2026-06-06',
+            cloud_coverage: 4,
+          },
+        ],
+      },
+      processClient: {
+        generateNdviLayer: async (params) => {
+          calls.push(params.sceneId);
+          if (params.sceneId === 'failed-scene') {
+            throw Object.assign(new Error('Copernicus falhou para a cena'), {
+              code: 'copernicus_error',
+              status: 502,
+            });
+          }
+          return {
+            preview_url: 'https://cdn.example/fallback.png',
+            ndvi_mean: 0.62,
+            ndvi_min: 0.35,
+            ndvi_max: 0.81,
+            very_low_percent: 5,
+            low_percent: 25,
+            medium_percent: 40,
+            high_percent: 30,
+            contrast,
+            visual_mode: params.visualMode,
+            status: 'generated',
+          };
+        },
+      },
+      authClient: { isConfigured: () => true },
+    });
+
+    const layer = await service.generateLayer({
+      farmId: 'f1',
+      plotId: 'p1',
+      campaignId: '16',
+      sceneId: 'failed-scene',
+      polygon,
+      imageDate: '2026-06-08',
+      visualMode: 'ndvi_contrast',
+    });
+
+    assert.deepEqual(calls, ['failed-scene', 'fallback-scene']);
+    assert.equal(layer.scene_id, 'fallback-scene');
+    assert.equal(layer.preview_url, 'https://cdn.example/fallback.png');
+  });
+
   it('gera modo avançado via Copernicus quando raster persistido ainda não existe', async () => {
     let requestedMode = null;
     const savedRow = {
