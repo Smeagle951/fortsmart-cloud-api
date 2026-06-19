@@ -772,6 +772,36 @@ function thumbnailSizes(areaHa) {
     .map((size) => Math.round(size));
 }
 
+function packageThumbSizes(areaHa, modeCount = 1) {
+  const configured = numberFromEnv('GEE_PACKAGE_THUMB_SIZE', NaN);
+  if (Number.isFinite(configured) && configured > 0) {
+    return [Math.round(configured)];
+  }
+  if (modeCount <= 1) {
+    return thumbnailSizes(areaHa);
+  }
+  const preferred = preferredThumbSize(areaHa);
+  const cap = Math.min(preferred, 1024);
+  const sizes = thumbnailSizes(areaHa).filter((size) => size <= cap);
+  return sizes.length ? sizes : [768, 512];
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const limit = Math.max(1, Math.min(concurrency, items.length));
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: limit }, () => worker()));
+  return results;
+}
+
 async function renderVisualPngWithFallback({
   image,
   fallbackImage,
@@ -780,14 +810,18 @@ async function renderVisualPngWithFallback({
   geometry,
   areaHa,
   fetchImpl,
+  thumbSizes = null,
 }) {
   let lastError = null;
   const candidates = [
     { image, smoothingApplied: true },
     fallbackImage ? { image: fallbackImage, smoothingApplied: false } : null,
   ].filter(Boolean);
+  const sizesToTry = Array.isArray(thumbSizes) && thumbSizes.length
+    ? thumbSizes
+    : thumbnailSizes(areaHa);
   for (const candidate of candidates) {
-    for (const size of thumbnailSizes(areaHa)) {
+    for (const size of sizesToTry) {
       try {
         const visual = candidate.image
           .visualize(visualizationFor({ mode, stats }))
@@ -1422,141 +1456,168 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
 
       const layersByMode = {};
       const statusesByMode = {};
-      for (const mode of uniqueModes) {
-        const modeStartedAt = Date.now();
-        try {
-          const rendererVersion = rendererVersionFor(mode);
-          const stats = JSON.parse(JSON.stringify(baseStats));
-          if (mode === VISUAL_MODES.NDVI_CONTRAST) {
-            stats.contrast = {
-              ...(stats.contrast || {}),
-              p5,
-              p50,
-              p95,
-              rendererVersion,
-              stretchMode: contrastStretch.stretchMode,
-              stretchMin: roundOrNull(contrastStretch.min),
-              stretchMax: roundOrNull(contrastStretch.max),
-              gamma: contrastStretch.gamma,
-              lowContrastScene: contrastStretch.lowContrastScene,
-              edgeBufferM: statsGeometry.bufferAppliedM,
-              smoothingRadiusPx: numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX),
-            };
-          } else {
-            stats.contrast = stats.contrast
-              ? { ...stats.contrast, rendererVersion, edgeBufferM: statsGeometry.bufferAppliedM }
-              : { rendererVersion, edgeBufferM: statsGeometry.bufferAppliedM };
-          }
+      const packageThumbSizesToUse = packageThumbSizes(
+        statsGeometry.fullAreaHa,
+        uniqueModes.length,
+      );
+      const renderConcurrency = numberFromEnv('GEE_PACKAGE_RENDER_CONCURRENCY', 4);
+      console.log('[Package] GEE parallel mode render', {
+        field: plotId,
+        scene: selectedSceneId,
+        modes: uniqueModes,
+        concurrency: renderConcurrency,
+        thumbSizes: packageThumbSizesToUse,
+      });
+      const modeResults = await mapWithConcurrency(
+        uniqueModes,
+        renderConcurrency,
+        async (mode) => {
+          const modeStartedAt = Date.now();
+          try {
+            const rendererVersion = rendererVersionFor(mode);
+            const stats = JSON.parse(JSON.stringify(baseStats));
+            if (mode === VISUAL_MODES.NDVI_CONTRAST) {
+              stats.contrast = {
+                ...(stats.contrast || {}),
+                p5,
+                p50,
+                p95,
+                rendererVersion,
+                stretchMode: contrastStretch.stretchMode,
+                stretchMin: roundOrNull(contrastStretch.min),
+                stretchMax: roundOrNull(contrastStretch.max),
+                gamma: contrastStretch.gamma,
+                lowContrastScene: contrastStretch.lowContrastScene,
+                edgeBufferM: statsGeometry.bufferAppliedM,
+                smoothingRadiusPx: numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX),
+              };
+            } else {
+              stats.contrast = stats.contrast
+                ? { ...stats.contrast, rendererVersion, edgeBufferM: statsGeometry.bufferAppliedM }
+                : { rendererVersion, edgeBufferM: statsGeometry.bufferAppliedM };
+            }
 
-          const rawRenderImage = resolveIndexImage({
-            mode,
-            ndvi: renderNdvi,
-            ndre: renderNdre,
-            savi: renderSavi,
-            bsi: renderBsi,
-            ndmi: renderNdmi,
-          });
-          const renderImage = smoothForPreview(rawRenderImage, plotGeometry);
-          const renderedPng = await renderVisualPngWithFallback({
-            image: renderImage,
-            fallbackImage: rawRenderImage,
-            stats,
-            mode,
-            geometry: plotGeometry,
-            areaHa: statsGeometry.fullAreaHa,
-            fetchImpl,
-          });
-          const pngBuffer = renderedPng.buffer;
-          const previewUrl = await storeNdviPreviewPng({
-            farmId,
-            plotId,
-            sceneId: selectedSceneId,
-            imageDate: selectedImageDate,
-            visualMode: mode,
-            rendererVersion,
-            buffer: pngBuffer,
-          });
-          const agronomicStats = {
-            ...stats,
-            schema_version: 'ndvi_v3',
-            ndvi_schema_version: 3,
-            visual_mode: mode,
-            renderer_version: rendererVersion,
-            available_visual_modes: visualModes(),
-            bounds: polygonToBounds(polygon),
-            provider: 'google_earth_engine',
-            processing_engine: 'google_earth_engine',
-            gee_render_scale_m: GEE_RENDER_SCALE_M,
-            gee_thumb_size: renderedPng.thumbSize,
-            gee_inner_buffer_m: statsGeometry.bufferAppliedM,
-            gee_smoothing_radius_px: renderedPng.smoothingApplied
-              ? numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX)
-              : 0,
-            source_context: {
-              dataset: DATASET,
-              productLevel: 'L2A',
-              redBand: 'B4',
-              nirBand: 'B8',
-              sclAvailable: true,
-              usesUnclassifiedScl: true,
-              cloudMaskVersion: 'scl_v1',
-              ndviEngineVersion: rendererVersion,
-              rasterWidth: renderedPng.thumbSize,
-              rasterHeight: renderedPng.thumbSize,
-              bboxRequested: polygonToBounds(polygon),
-              bboxReturned: polygonToBounds(polygon),
-              crs: 'EPSG:4326',
-              resolutionMeters: GEE_RENDER_SCALE_M,
-              fieldPolygonBounds: polygonToBounds(polygon),
-              overlayBounds: polygonToBounds(polygon),
-              validPixelCount: maskStats.validPixels,
-              maskedPixelCount: maskStats.maskedPixels,
-              sclExcludedPixelCount: maskStats.sclExcludedPixels,
-              packageVersion: 'scene_band_package_v1',
-              packageElapsedMs: Date.now() - startedAt,
-            },
-          };
-          layersByMode[mode] = {
-            scene_id: selectedSceneId,
-            provider: 'google_earth_engine',
-            provider_used: 'google_earth_engine',
-            source: 'gee_sentinel_2_l2a',
-            processing_engine: 'google_earth_engine',
-            image_date: selectedImageDate,
-            cloud_coverage:
-              cloudCoverage == null || Number.isNaN(Number(cloudCoverage))
-                ? null
-                : Number(cloudCoverage),
-            resolution_m: 10,
-            preview_url: previewUrl || (pngBuffer.length <= 900_000
-              ? `data:image/png;base64,${pngBuffer.toString('base64')}`
-              : null),
-            tile_url: null,
-            raster_url: null,
-            raster_available: false,
-            bounds: polygonToBounds(polygon),
-            polygon_masked: true,
-            status: previewUrl ? 'generated' : 'metadata_only',
-            visual_mode: mode,
-            available_visual_modes: visualModes(),
-            contrast: stats.contrast,
-            agronomic_stats_json: agronomicStats,
-            ...stats,
-          };
-          statusesByMode[mode] = {
-            status: 'ready',
-            elapsedMs: Date.now() - modeStartedAt,
-            preview: Boolean(layersByMode[mode].preview_url),
-          };
-          console.log(`[LayerBatch] ${mode} ready from single GEE package`, statusesByMode[mode]);
-        } catch (error) {
-          statusesByMode[mode] = {
-            status: error?.status === 422 ? 'unavailable' : 'failed',
-            code: error?.code || 'gee_layer_render_failed',
-            message: error?.message || String(error),
-            elapsedMs: Date.now() - modeStartedAt,
-          };
-          console.warn(`[LayerBatch] ${mode} failed from single GEE package`, statusesByMode[mode]);
+            const rawRenderImage = resolveIndexImage({
+              mode,
+              ndvi: renderNdvi,
+              ndre: renderNdre,
+              savi: renderSavi,
+              bsi: renderBsi,
+              ndmi: renderNdmi,
+            });
+            const renderImage = smoothForPreview(rawRenderImage, plotGeometry);
+            const renderedPng = await renderVisualPngWithFallback({
+              image: renderImage,
+              fallbackImage: rawRenderImage,
+              stats,
+              mode,
+              geometry: plotGeometry,
+              areaHa: statsGeometry.fullAreaHa,
+              fetchImpl,
+              thumbSizes: packageThumbSizesToUse,
+            });
+            const pngBuffer = renderedPng.buffer;
+            const previewUrl = await storeNdviPreviewPng({
+              farmId,
+              plotId,
+              sceneId: selectedSceneId,
+              imageDate: selectedImageDate,
+              visualMode: mode,
+              rendererVersion,
+              buffer: pngBuffer,
+            });
+            const agronomicStats = {
+              ...stats,
+              schema_version: 'ndvi_v3',
+              ndvi_schema_version: 3,
+              visual_mode: mode,
+              renderer_version: rendererVersion,
+              available_visual_modes: visualModes(),
+              bounds: polygonToBounds(polygon),
+              provider: 'google_earth_engine',
+              processing_engine: 'google_earth_engine',
+              gee_render_scale_m: GEE_RENDER_SCALE_M,
+              gee_thumb_size: renderedPng.thumbSize,
+              gee_inner_buffer_m: statsGeometry.bufferAppliedM,
+              gee_smoothing_radius_px: renderedPng.smoothingApplied
+                ? numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX)
+                : 0,
+              source_context: {
+                dataset: DATASET,
+                productLevel: 'L2A',
+                redBand: 'B4',
+                nirBand: 'B8',
+                sclAvailable: true,
+                usesUnclassifiedScl: true,
+                cloudMaskVersion: 'scl_v1',
+                ndviEngineVersion: rendererVersion,
+                rasterWidth: renderedPng.thumbSize,
+                rasterHeight: renderedPng.thumbSize,
+                bboxRequested: polygonToBounds(polygon),
+                bboxReturned: polygonToBounds(polygon),
+                crs: 'EPSG:4326',
+                resolutionMeters: GEE_RENDER_SCALE_M,
+                fieldPolygonBounds: polygonToBounds(polygon),
+                overlayBounds: polygonToBounds(polygon),
+                validPixelCount: maskStats.validPixels,
+                maskedPixelCount: maskStats.maskedPixels,
+                sclExcludedPixelCount: maskStats.sclExcludedPixels,
+                packageVersion: 'scene_band_package_v1',
+                packageElapsedMs: Date.now() - startedAt,
+              },
+            };
+            const layer = {
+              scene_id: selectedSceneId,
+              provider: 'google_earth_engine',
+              provider_used: 'google_earth_engine',
+              source: 'gee_sentinel_2_l2a',
+              processing_engine: 'google_earth_engine',
+              image_date: selectedImageDate,
+              cloud_coverage:
+                cloudCoverage == null || Number.isNaN(Number(cloudCoverage))
+                  ? null
+                  : Number(cloudCoverage),
+              resolution_m: 10,
+              preview_url: previewUrl || (pngBuffer.length <= 900_000
+                ? `data:image/png;base64,${pngBuffer.toString('base64')}`
+                : null),
+              tile_url: null,
+              raster_url: null,
+              raster_available: false,
+              bounds: polygonToBounds(polygon),
+              polygon_masked: true,
+              status: previewUrl ? 'generated' : 'metadata_only',
+              visual_mode: mode,
+              available_visual_modes: visualModes(),
+              contrast: stats.contrast,
+              agronomic_stats_json: agronomicStats,
+              ...stats,
+            };
+            const status = {
+              status: 'ready',
+              elapsedMs: Date.now() - modeStartedAt,
+              preview: Boolean(layer.preview_url),
+            };
+            console.log(`[LayerBatch] ${mode} ready from single GEE package`, status);
+            return { mode, layer, status };
+          } catch (error) {
+            const status = {
+              status: error?.status === 422 ? 'unavailable' : 'failed',
+              code: error?.code || 'gee_layer_render_failed',
+              message: error?.message || String(error),
+              elapsedMs: Date.now() - modeStartedAt,
+            };
+            console.warn(`[LayerBatch] ${mode} failed from single GEE package`, status);
+            return { mode, layer: null, status };
+          }
+        },
+      );
+      for (const result of modeResults) {
+        if (result?.layer) {
+          layersByMode[result.mode] = result.layer;
+        }
+        if (result?.status) {
+          statusesByMode[result.mode] = result.status;
         }
       }
 

@@ -52,6 +52,26 @@ function resolveSceneAcquisitionDate({ sceneId, imageDate }) {
   return fromSceneId || normalizedImageDate;
 }
 
+const PACKAGE_MODE_PRIORITY = Object.freeze([
+  'ndvi_contrast',
+  'ndvi_absolute',
+  'agronomic_classes',
+  'ndvi_relative',
+  'ndmi_water_stress',
+  'ndre',
+  'bsi_soil',
+]);
+
+function orderPackageModes(modes) {
+  const priority = new Map(PACKAGE_MODE_PRIORITY.map((mode, index) => [mode, index]));
+  return [...modes].sort((left, right) => {
+    const leftPriority = priority.has(left) ? priority.get(left) : PACKAGE_MODE_PRIORITY.length;
+    const rightPriority = priority.has(right) ? priority.get(right) : PACKAGE_MODE_PRIORITY.length;
+    if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+    return String(left).localeCompare(String(right));
+  });
+}
+
 function hashPolygonForPackage(polygon) {
   const coordinates = polygon?.coordinates?.[0];
   const raw = Array.isArray(coordinates) && coordinates.length
@@ -216,12 +236,12 @@ class SoilSamplingNdviService {
   }
 
   /** GEE dormente por padrão; só usa com opt-in explícito para evitar custo. */
-  _geeReady() {
-    return (
-      process.env.NDVI_PROVIDER === 'gee' &&
-      process.env.GEE_ALLOW_USAGE === 'true' &&
-      Boolean(this.geeClient?.isImplemented?.())
-    );
+  _geeReady({ packageMode = false } = {}) {
+    const providerStatus = getNdviProviderStatus();
+    const requested = packageMode
+      ? providerStatus.gee_package_preferred
+      : providerStatus.gee_primary;
+    return Boolean(requested && this.geeClient?.isImplemented?.());
   }
 
   _logRequest(meta) {
@@ -820,18 +840,26 @@ class SoilSamplingNdviService {
     const requestedModes = Array.isArray(modes) && modes.length
       ? modes.map((mode) => resolveRequestedVisualMode(mode)).filter(Boolean)
       : defaultModes;
-    const uniqueModes = [...new Set(requestedModes)];
+    const uniqueModes = orderPackageModes([...new Set(requestedModes)]);
     const startedAt = Date.now();
     const layersByMode = {};
     const statusesByMode = {};
 
-    console.log('[NDVI_PACKAGE_GENERATE_START]', {
+    const providerStatus = getNdviProviderStatus();
+    console.log('[NDVI_PACKAGE_BACKEND_START]', {
       farmId,
       plotId,
       sceneId,
       imageDate,
+      polygonValid: Boolean(polygon && polygon.type === 'Polygon'),
       modes: uniqueModes,
       force,
+      provider: {
+        ndviProvider: providerStatus.ndvi_provider,
+        packageProvider: providerStatus.package_provider,
+        geePackagePreferred: providerStatus.gee_package_preferred,
+        geeReady: this._geeReady({ packageMode: true }),
+      },
     });
     console.log('[Package] generate-package request', {
       field: plotId,
@@ -910,8 +938,15 @@ class SoilSamplingNdviService {
       readyModes: Object.keys(layersByMode),
       pendingModes,
     });
-    if (this._geeReady() && this.geeClient?.generateLayerPackage) {
+    if (this._geeReady({ packageMode: true }) && this.geeClient?.generateLayerPackage) {
       try {
+        console.log('[NDVI_PACKAGE_BANDS]', {
+          bandsRequested: ['B02', 'B04', 'B05', 'B08', 'B8A', 'B11', 'SCL'],
+          bandsAvailable: 'gee_dynamic',
+          bandsMissing: [],
+          productLevel: 'L2A',
+          tileId: sceneId || null,
+        });
         console.log('[Package] using single-pass GEE package renderer', {
           field: plotId,
           scene: sceneId,
@@ -988,6 +1023,12 @@ class SoilSamplingNdviService {
               preview: Boolean(mapped?.preview_url || mapped?.previewUrl),
               sourceBands: sourceBandsForMode(mode),
             };
+            console.log('[NDVI_PACKAGE_MODE_READY]', {
+              mode,
+              overlayUrl: mapped?.preview_url || mapped?.previewUrl || null,
+              statsReady: true,
+              elapsedMs: statusesByMode[mode].elapsedMs,
+            });
             console.log(`[NDVI_LAYER] READY mode=${mode}`, statusesByMode[mode]);
             console.log(`[LayerBatch] ${mode} persisted from single GEE package`, statusesByMode[mode]);
           } catch (error) {
@@ -995,6 +1036,15 @@ class SoilSamplingNdviService {
               ...normalizePackageModeError(mode, error),
               elapsedMs: Date.now() - modeStartedAt,
             };
+            const statusLabel = statusesByMode[mode].status === 'unavailable'
+              ? 'NDVI_PACKAGE_MODE_UNAVAILABLE'
+              : 'NDVI_PACKAGE_MODE_FAILED';
+            console.warn(`[${statusLabel}]`, {
+              mode,
+              missingBands: statusesByMode[mode].missingBands || [],
+              reason: statusesByMode[mode].code,
+              message: statusesByMode[mode].message,
+            });
             console.warn(`[NDVI_LAYER] ${statusesByMode[mode].status === 'unavailable' ? 'UNAVAILABLE' : 'FAILED'} mode=${mode}`, statusesByMode[mode]);
             console.warn(`[LayerBatch] ${mode} persist failed from single GEE package`, statusesByMode[mode]);
           }
@@ -1007,19 +1057,39 @@ class SoilSamplingNdviService {
           elapsedMs: Date.now() - startedAt,
         });
         const packageStatus = resolvePackageStatus(layersByMode, statusesByMode);
-        return {
-          scene_id: packageResult.scene_id || sceneId,
-          packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
+        console.log('[NDVI_PACKAGE_DONE]', {
           packageStatus,
-          package_version: packageResult.package_version || 'scene_band_package_v1',
-          resolution_kind: packageResult.resolution_kind || 'preview',
-          generatedAt: new Date().toISOString(),
-          provider: 'google_earth_engine',
-          modes: uniqueModes,
-          layersByMode,
-          statusesByMode,
+          readyModes: Object.keys(layersByMode),
+          unavailableModes: Object.entries(statusesByMode)
+            .filter(([, status]) => status?.status === 'unavailable')
+            .map(([mode]) => mode),
+          failedModes: Object.entries(statusesByMode)
+            .filter(([, status]) => status?.status === 'failed')
+            .map(([mode]) => mode),
+          packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
           elapsedMs: Date.now() - startedAt,
-        };
+          provider: 'google_earth_engine',
+        });
+        if (Object.keys(layersByMode).length > 0 || packageStatus === 'unavailable') {
+          return {
+            scene_id: packageResult.scene_id || sceneId,
+            packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
+            packageStatus,
+            package_version: packageResult.package_version || 'scene_band_package_v1',
+            resolution_kind: packageResult.resolution_kind || 'preview',
+            generatedAt: new Date().toISOString(),
+            provider: 'google_earth_engine',
+            modes: uniqueModes,
+            layersByMode,
+            statusesByMode,
+            elapsedMs: Date.now() - startedAt,
+          };
+        }
+        console.warn('[Package] GEE package returned no ready layer; falling back', {
+          field: plotId,
+          scene: sceneId,
+          statusesByMode,
+        });
       } catch (error) {
         console.warn('[Package] single-pass GEE package failed; falling back to per-mode orchestration', {
           code: error?.code,
@@ -1185,6 +1255,20 @@ class SoilSamplingNdviService {
       }
     }
 
+    const packageStatus = resolvePackageStatus(layersByMode, statusesByMode);
+    console.log('[NDVI_PACKAGE_DONE]', {
+      packageStatus,
+      readyModes: Object.keys(layersByMode),
+      unavailableModes: Object.entries(statusesByMode)
+        .filter(([, status]) => status?.status === 'unavailable')
+        .map(([mode]) => mode),
+      failedModes: Object.entries(statusesByMode)
+        .filter(([, status]) => status?.status === 'failed')
+        .map(([mode]) => mode),
+      packageCacheKey,
+      elapsedMs: Date.now() - startedAt,
+      provider: 'mixed_or_copernicus',
+    });
     console.log('[NDVI_PACKAGE_GENERATE_DONE]', {
       farmId,
       plotId,
@@ -1199,7 +1283,6 @@ class SoilSamplingNdviService {
       elapsedMs: Date.now() - startedAt,
     });
 
-    const packageStatus = resolvePackageStatus(layersByMode, statusesByMode);
     return {
       scene_id: sceneId,
       packageCacheKey,
@@ -1252,6 +1335,7 @@ class SoilSamplingNdviService {
           `providerUsed=${providerStatus.cloud_api_uses} activeProvider=${providerStatus.active_provider} ` +
           `collection=sentinel-2-l2a bands=B04,B08`,
       );
+      const geeAvailable = this._geeReady();
 
       if (process.env.NDVI_PROVIDER === 'gee' && !providerStatus.gee_configured) {
         throw this._error(
@@ -1278,7 +1362,9 @@ class SoilSamplingNdviService {
       const bboxStr = this.catalogClient.polygonToBbox(polygon)?.join(',') ?? '-';
       logGenerateStage(meta, stage, `bbox=${bboxStr} polygonRing=${polygon.coordinates[0].length}`);
 
-      assertCopernicusReady(this.authClient);
+      if (!geeAvailable) {
+        assertCopernicusReady(this.authClient);
+      }
 
       stage = 'ensure_schema';
       const dbReady = await this._tryEnsureSchema('generateLayer');
@@ -1326,7 +1412,6 @@ class SoilSamplingNdviService {
       }
 
       stage = 'visual_mode_gate';
-      const geeAvailable = this._geeReady();
       let persistedRaster = null;
       if (requestedVisualMode !== 'ndvi_contrast' && !geeAvailable) {
         try {

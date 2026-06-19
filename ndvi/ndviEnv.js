@@ -1,14 +1,34 @@
 /**
- * Configuração NDVI (Copernicus no cloud-api; GEE opcional só para diagnóstico).
+ * Configuração NDVI.
+ *
+ * Copernicus segue como provider padrão. GEE só é usado com opt-in explícito,
+ * mas pode ser habilitado apenas para pacotes multibanda com
+ * NDVI_PACKAGE_PROVIDER=gee.
  */
+function normalizeProvider(value, fallback = 'copernicus') {
+  const provider = String(value || fallback).trim().toLowerCase();
+  if (provider === 'google_earth_engine') return 'gee';
+  if (provider === 'earth_engine') return 'gee';
+  if (provider === 'auto') return 'auto';
+  if (provider === 'gee') return 'gee';
+  return 'copernicus';
+}
+
 export function getNdviProviderStatus() {
-  const ndviProvider = String(process.env.NDVI_PROVIDER || 'copernicus')
-    .trim()
-    .toLowerCase();
+  const ndviProvider = normalizeProvider(process.env.NDVI_PROVIDER);
+  const packageProvider = normalizeProvider(
+    process.env.NDVI_PACKAGE_PROVIDER ||
+      process.env.NDVI_LAYER_PACKAGE_PROVIDER ||
+      ndviProvider,
+  );
 
   const geeUsageAllowed =
-    ndviProvider === 'gee' && process.env.GEE_ALLOW_USAGE === 'true';
-  const geeEnabled = process.env.GEE_ENABLED === 'true' && geeUsageAllowed;
+    process.env.GEE_ALLOW_USAGE === 'true' &&
+    (ndviProvider === 'gee' ||
+      ndviProvider === 'auto' ||
+      packageProvider === 'gee' ||
+      packageProvider === 'auto');
+  const geeEnabled = geeUsageAllowed && process.env.GEE_ENABLED !== 'false';
   const geeServiceAccountJson = String(
     process.env.GEE_SERVICE_ACCOUNT_JSON ||
       process.env.GOOGLE_SERVICE_ACCOUNT_JSON ||
@@ -36,26 +56,33 @@ export function getNdviProviderStatus() {
   );
 
   // Copernicus-first: GEE fica dormente por padrão para evitar custo acidental.
-  // Mesmo que GEE_ENABLED esteja true no ambiente antigo, só usa GEE se houver
-  // opt-in explícito: NDVI_PROVIDER=gee + GEE_ALLOW_USAGE=true.
+  // Só usa GEE quando há opt-in explícito e credenciais válidas.
   const geePrimary = geeEnabled && geeConfigured;
-  const activeProvider = geePrimary
+  const geePrimaryForGenerate = geePrimary && ndviProvider === 'gee';
+  const geePackagePreferred =
+    geeEnabled &&
+    geeConfigured &&
+    (packageProvider === 'gee' || packageProvider === 'auto');
+  const activeProvider = geePrimaryForGenerate
     ? 'google_earth_engine'
     : 'copernicus_dataspace';
 
   return {
     ndvi_provider: ndviProvider,
+    package_provider: packageProvider,
     active_provider: activeProvider,
     gee_enabled: geeEnabled,
     gee_hidden: !geeUsageAllowed,
     gee_usage_allowed: geeUsageAllowed,
     gee_configured: geeConfigured,
     gee_credentials_source: geeJsonConfigured ? 'service_account_json' : (geeKeyConfigured ? 'env_key' : 'none'),
-    gee_primary: geePrimary,
+    gee_primary: geePrimaryForGenerate,
+    gee_package_preferred: geePackagePreferred,
+    gee_engine_requested: geePrimaryForGenerate || geePackagePreferred,
     copernicus_configured: cdseConfigured,
     storage_configured: storageConfigured,
     /** Provider efetivamente usado pelo cloud-api (GEE quando primary). */
-    cloud_api_uses: activeProvider,
+    cloud_api_uses: geePrimaryForGenerate ? activeProvider : 'copernicus_dataspace',
   };
 }
 

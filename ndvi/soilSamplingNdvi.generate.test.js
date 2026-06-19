@@ -485,6 +485,102 @@ describe('SceneBandPackage generate-package', () => {
     );
   });
 
+  it('usa GEE como provider preferencial de generate-package quando configurado', async () => {
+    const previousEnv = {
+      NDVI_PROVIDER: process.env.NDVI_PROVIDER,
+      NDVI_PACKAGE_PROVIDER: process.env.NDVI_PACKAGE_PROVIDER,
+      GEE_ALLOW_USAGE: process.env.GEE_ALLOW_USAGE,
+      GEE_ENABLED: process.env.GEE_ENABLED,
+      GEE_CLIENT_EMAIL: process.env.GEE_CLIENT_EMAIL,
+      GEE_PRIVATE_KEY: process.env.GEE_PRIVATE_KEY,
+    };
+    process.env.NDVI_PROVIDER = 'copernicus';
+    process.env.NDVI_PACKAGE_PROVIDER = 'gee';
+    process.env.GEE_ALLOW_USAGE = 'true';
+    delete process.env.GEE_ENABLED;
+    process.env.GEE_CLIENT_EMAIL = 'gee@example.com';
+    process.env.GEE_PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\\ntest\\n-----END PRIVATE KEY-----';
+
+    const geeCalls = [];
+    try {
+      const service = new SoilSamplingNdviService({
+        repository: {
+          ensureSchema: async () => {},
+          findRecentCache: async () => null,
+          upsertLayer: async (data) => ({ ...data, id: `${data.visual_mode}-layer` }),
+        },
+        catalogClient: { polygonToBbox: () => [-54.48, -15.38, -54.47, -15.37] },
+        processClient: {
+          generateLayerPackage: async () => assert.fail('Copernicus package should not be called'),
+          generateNdviLayer: async () => assert.fail('Copernicus per-mode fallback should not be called'),
+        },
+        authClient: { isConfigured: () => false },
+        geeClient: {
+          isImplemented: () => true,
+          generateLayerPackage: async (params) => {
+            geeCalls.push(params);
+            const layerFor = (mode) => ({
+              preview_url: `https://cdn.example/gee-${mode}.png`,
+              ndvi_mean: 0.62,
+              ndvi_min: 0.35,
+              ndvi_max: 0.81,
+              very_low_percent: 5,
+              low_percent: 25,
+              medium_percent: 40,
+              high_percent: 30,
+              contrast,
+              visual_mode: mode,
+              status: 'generated',
+            });
+            return {
+              scene_id: params.sceneId,
+              packageCacheKey: 'gee-package-key',
+              layersByMode: {
+                ndvi_absolute: layerFor('ndvi_absolute'),
+                ndmi_water_stress: layerFor('ndmi_water_stress'),
+              },
+              statusesByMode: {
+                ndre: {
+                  status: 'unavailable',
+                  code: 'missingBandB05',
+                  message: 'Banda B05 ausente para Red Edge/NDRE.',
+                },
+              },
+            };
+          },
+        },
+      });
+
+      const result = await service.generateLayerPackage({
+        farmId: 'f1',
+        plotId: 'p1',
+        campaignId: '16',
+        sceneId: 'S2A_MSIL2A_20260608T135131_N0512_R024_T21LYD_20260608T212815',
+        polygon,
+        imageDate: '2026-06-08',
+        modes: ['ndre', 'ndmi_water_stress', 'ndvi_absolute'],
+      });
+
+      assert.equal(geeCalls.length, 1);
+      assert.deepEqual(geeCalls[0].modes, [
+        'ndvi_absolute',
+        'ndmi_water_stress',
+        'ndre',
+      ]);
+      assert.equal(result.provider, 'google_earth_engine');
+      assert.equal(result.packageStatus, 'partial');
+      assert.equal(result.packageCacheKey, 'gee-package-key');
+      assert.equal(result.statusesByMode.ndvi_absolute.status, 'ready');
+      assert.equal(result.statusesByMode.ndmi_water_stress.status, 'ready');
+      assert.equal(result.statusesByMode.ndre.status, 'unavailable');
+    } finally {
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it('marca pacote como failed quando nenhum modo fica pronto', async () => {
     const service = new SoilSamplingNdviService({
       repository: {

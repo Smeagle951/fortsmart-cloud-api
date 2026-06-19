@@ -29,7 +29,7 @@ function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
 
   // Copernicus-first: GEE fica dormente (engine=null → isImplemented()=false)
   // para evitar custo acidental. Só carregamos o engine real com opt-in
-  // explícito em ndviEnv: NDVI_PROVIDER=gee + GEE_ALLOW_USAGE=true.
+  // explícito em ndviEnv.
   const geeClient = new GeeNdviProviderClient({ engine: null });
 
   const service = new SoilSamplingNdviService({
@@ -42,7 +42,7 @@ function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
 
   const geeReady = (async () => {
     const status = getNdviProviderStatus();
-    if (!status.gee_primary) return;
+    if (!status.gee_engine_requested) return;
     try {
       const mod = await import('./gee/geeNdviEngine.js');
       geeClient.engine = await mod.createGeeNdviEngine({ publicBaseUrl });
