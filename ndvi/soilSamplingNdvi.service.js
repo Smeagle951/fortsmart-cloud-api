@@ -826,6 +826,7 @@ class SoilSamplingNdviService {
     maxCloud = null,
     colormapMode = 'auto',
     modes = null,
+    resolutionKind = 'preview',
     force = false,
   }) {
     const defaultModes = [
@@ -890,7 +891,7 @@ class SoilSamplingNdviService {
       sceneId,
       acquisitionDate: effectiveImageDate || normalizedImageDate,
       polygonHash,
-      resolutionKind: 'preview',
+      resolutionKind,
     });
     console.log('[NDVI] CACHE_PACKAGE_LOOKUP', {
       key: packageCacheKey,
@@ -962,6 +963,7 @@ class SoilSamplingNdviService {
           farmId,
           plotId,
           modes: pendingModes,
+          resolutionKind,
         });
         for (const mode of pendingModes) {
           const modeStartedAt = Date.now();

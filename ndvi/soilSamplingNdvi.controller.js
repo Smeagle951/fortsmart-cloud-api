@@ -557,6 +557,7 @@ class SoilSamplingNdviController {
         maxCloud: resolvedMaxCloud != null ? Number(resolvedMaxCloud) : null,
         colormapMode: resolvedColormapMode,
         modes: resolvedModes,
+        resolutionKind: resolvedResolutionKind,
         force: isForce,
       });
       const layersByMode = result.layersByMode || {};
