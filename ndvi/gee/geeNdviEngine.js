@@ -606,12 +606,64 @@ async function calculateGeeNdviStats(gee, { ndvi, ndre, savi, bsi, ndmi, geometr
 }
 
 function isFastContrastOnly({ resolutionKind, modes }) {
+  const plan = resolveFastPackagePlan({ resolutionKind, modes });
+  return plan.fastContrastOnly;
+}
+
+function resolveFastPackagePlan({ resolutionKind, modes }) {
   const unique = [...new Set(Array.isArray(modes) ? modes : [])];
-  return (
-    resolutionKind === 'fast' &&
-    unique.length === 1 &&
-    unique[0] === VISUAL_MODES.NDVI_CONTRAST
+  if (resolutionKind !== 'fast' || unique.length !== 1) {
+    return { minimalIndices: false, fastContrastOnly: false, fastSingleMode: null };
+  }
+  const mode = unique[0];
+  if (mode === VISUAL_MODES.NDVI_CONTRAST) {
+    return { minimalIndices: true, fastContrastOnly: true, fastSingleMode: mode };
+  }
+  const fastSingleModes = new Set([
+    VISUAL_MODES.NDVI_ABSOLUTE,
+    VISUAL_MODES.NDRE,
+    VISUAL_MODES.NDMI_WATER_STRESS,
+    VISUAL_MODES.BSI_SOIL,
+    VISUAL_MODES.NDVI_RELATIVE,
+  ]);
+  if (fastSingleModes.has(mode)) {
+    return { minimalIndices: true, fastContrastOnly: false, fastSingleMode: mode };
+  }
+  return { minimalIndices: false, fastContrastOnly: false, fastSingleMode: null };
+}
+
+function indexNeededForFastPlan(plan, indexName) {
+  if (!plan?.minimalIndices) return true;
+  if (plan.fastContrastOnly) return indexName === 'ndvi';
+  switch (plan.fastSingleMode) {
+    case VISUAL_MODES.NDRE:
+      return indexName === 'ndvi' || indexName === 'ndre';
+    case VISUAL_MODES.NDMI_WATER_STRESS:
+      return indexName === 'ndvi' || indexName === 'ndmi';
+    case VISUAL_MODES.BSI_SOIL:
+      return indexName === 'ndvi' || indexName === 'bsi';
+    case VISUAL_MODES.NDVI_ABSOLUTE:
+    case VISUAL_MODES.NDVI_RELATIVE:
+    case VISUAL_MODES.NDVI_CONTRAST:
+      return indexName === 'ndvi';
+    default:
+      return indexName === 'ndvi';
+  }
+}
+
+async function calculateGeeSingleIndexStatsFast(gee, { indexImage, geometry }) {
+  const stats = await getInfo(
+    indexImage.reduceRegion({
+      reducer: gee.Reducer.mean(),
+      geometry,
+      scale: GEE_RENDER_SCALE_M,
+      maxPixels: 1e9,
+      bestEffort: true,
+    }),
   );
+  const firstKey = Object.keys(stats)[0];
+  const mean = roundOrNull(firstKey ? stats[firstKey] : null);
+  return mean;
 }
 
 async function calculateGeeContrastStatsFast(gee, { ndvi, geometry }) {
@@ -640,6 +692,49 @@ async function calculateGeeContrastStatsFast(gee, { ndvi, geometry }) {
       stretchMode: 'p5_p95',
     },
   };
+}
+
+function buildRawDerivedIndices(maskedImage, fastPlan) {
+  let rawNdre = null;
+  let rawSavi = null;
+  let rawNdmi = null;
+  let rawBsi = null;
+  if (!fastPlan?.minimalIndices) {
+    rawNdre = maskedImage.normalizedDifference(['B8A', 'B5']);
+    rawSavi = maskedImage.expression('((nir - red) / (nir + red + 0.5)) * 1.5', {
+      nir: maskedImage.select('B8'),
+      red: maskedImage.select('B4'),
+    });
+    rawNdmi = maskedImage.normalizedDifference(['B8', 'B11']);
+    rawBsi = maskedImage.expression(
+      '((swir + red) - (nir + blue)) / ((swir + red) + (nir + blue))',
+      {
+        swir: maskedImage.select('B11'),
+        red: maskedImage.select('B4'),
+        nir: maskedImage.select('B8'),
+        blue: maskedImage.select('B2'),
+      },
+    );
+    return { rawNdre, rawSavi, rawNdmi, rawBsi };
+  }
+  if (indexNeededForFastPlan(fastPlan, 'ndre')) {
+    rawNdre = maskedImage.normalizedDifference(['B8A', 'B5']);
+  }
+  if (indexNeededForFastPlan(fastPlan, 'ndmi')) {
+    rawNdmi = maskedImage.normalizedDifference(['B8', 'B11']);
+  }
+  if (indexNeededForFastPlan(fastPlan, 'bsi')) {
+    rawBsi = maskedImage.expression(
+      '((swir + red) - (nir + blue)) / ((swir + red) + (nir + blue))',
+      {
+        swir: maskedImage.select('B11'),
+        red: maskedImage.select('B4'),
+        nir: maskedImage.select('B8'),
+        blue: maskedImage.select('B2'),
+      },
+    );
+  }
+  return { rawNdre, rawSavi, rawNdmi, rawBsi };
 }
 
 function resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi }) {
@@ -939,6 +1034,8 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
     }) {
       const gee = await ensureGeeInitialized();
       const mode = visualModes().includes(visualMode) ? visualMode : VISUAL_MODES.NDVI_CONTRAST;
+      const fastPlan = resolveFastPackagePlan({ resolutionKind, modes: [mode] });
+      const fastContrastOnly = fastPlan.fastContrastOnly;
       const geometry = geometryFromPolygon(gee, polygon);
       const statsGeometry = await safeStatsGeometry(gee, geometry);
       const plotGeometry = geometry;
@@ -965,27 +1062,12 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
 
       const maskedImage = maskClouds(image);
       const rawNdvi = maskedImage.normalizedDifference(['B8', 'B4']);
-      let rawNdre = null;
-      let rawSavi = null;
-      let rawNdmi = null;
-      let rawBsi = null;
-      if (!fastContrastOnly) {
-        rawNdre = maskedImage.normalizedDifference(['B8A', 'B5']);
-        rawSavi = maskedImage.expression('((nir - red) / (nir + red + 0.5)) * 1.5', {
-          nir: maskedImage.select('B8'),
-          red: maskedImage.select('B4'),
-        });
-        rawNdmi = maskedImage.normalizedDifference(['B8', 'B11']);
-        rawBsi = maskedImage.expression(
-          '((swir + red) - (nir + blue)) / ((swir + red) + (nir + blue))',
-          {
-            swir: maskedImage.select('B11'),
-            red: maskedImage.select('B4'),
-            nir: maskedImage.select('B8'),
-            blue: maskedImage.select('B2'),
-          },
-        );
-      }
+      const {
+        rawNdre,
+        rawSavi,
+        rawNdmi,
+        rawBsi,
+      } = buildRawDerivedIndices(maskedImage, fastPlan);
 
       const statsValidMask = buildNdviValidMask(gee, {
         image,
@@ -1001,24 +1083,26 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       let statsNdmiMask = null;
       let renderNdreMask = null;
       let renderNdmiMask = null;
-      if (!fastContrastOnly) {
+      if (rawNdre) {
         statsNdreMask = buildIndexValidMask(gee, {
           image,
           index: rawNdre,
           geometry: statsGeometry.geometry,
           bands: ['B8A', 'B5'],
         });
-        statsNdmiMask = buildIndexValidMask(gee, {
-          image,
-          index: rawNdmi,
-          geometry: statsGeometry.geometry,
-          bands: ['B8', 'B11'],
-        });
         renderNdreMask = buildIndexValidMask(gee, {
           image,
           index: rawNdre,
           geometry: plotGeometry,
           bands: ['B8A', 'B5'],
+        });
+      }
+      if (rawNdmi) {
+        statsNdmiMask = buildIndexValidMask(gee, {
+          image,
+          index: rawNdmi,
+          geometry: statsGeometry.geometry,
+          bands: ['B8', 'B11'],
         });
         renderNdmiMask = buildIndexValidMask(gee, {
           image,
@@ -1028,31 +1112,31 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         });
       }
       const ndvi = maskIndexToGeometry(gee, rawNdvi.updateMask(statsValidMask), statsGeometry.geometry, 'NDVI');
-      const ndre = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawNdre.updateMask(statsNdreMask), statsGeometry.geometry, 'NDRE');
-      const savi = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawSavi.updateMask(statsValidMask), statsGeometry.geometry, 'SAVI');
-      const ndmi = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawNdmi.updateMask(statsNdmiMask), statsGeometry.geometry, 'NDMI');
-      const bsi = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawBsi.updateMask(statsValidMask), statsGeometry.geometry, 'BSI');
+      const ndre = rawNdre && statsNdreMask
+        ? maskIndexToGeometry(gee, rawNdre.updateMask(statsNdreMask), statsGeometry.geometry, 'NDRE')
+        : null;
+      const savi = rawSavi
+        ? maskIndexToGeometry(gee, rawSavi.updateMask(statsValidMask), statsGeometry.geometry, 'SAVI')
+        : null;
+      const ndmi = rawNdmi && statsNdmiMask
+        ? maskIndexToGeometry(gee, rawNdmi.updateMask(statsNdmiMask), statsGeometry.geometry, 'NDMI')
+        : null;
+      const bsi = rawBsi
+        ? maskIndexToGeometry(gee, rawBsi.updateMask(statsValidMask), statsGeometry.geometry, 'BSI')
+        : null;
       const renderNdvi = maskIndexToGeometry(gee, rawNdvi.updateMask(renderValidMask), plotGeometry, 'NDVI');
-      const renderNdre = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawNdre.updateMask(renderNdreMask), plotGeometry, 'NDRE');
-      const renderSavi = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawSavi.updateMask(renderValidMask), plotGeometry, 'SAVI');
-      const renderNdmi = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawNdmi.updateMask(renderNdmiMask), plotGeometry, 'NDMI');
-      const renderBsi = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawBsi.updateMask(renderValidMask), plotGeometry, 'BSI');
+      const renderNdre = rawNdre && renderNdreMask
+        ? maskIndexToGeometry(gee, rawNdre.updateMask(renderNdreMask), plotGeometry, 'NDRE')
+        : null;
+      const renderSavi = rawSavi
+        ? maskIndexToGeometry(gee, rawSavi.updateMask(renderValidMask), plotGeometry, 'SAVI')
+        : null;
+      const renderNdmi = rawNdmi && renderNdmiMask
+        ? maskIndexToGeometry(gee, rawNdmi.updateMask(renderNdmiMask), plotGeometry, 'NDMI')
+        : null;
+      const renderBsi = rawBsi
+        ? maskIndexToGeometry(gee, rawBsi.updateMask(renderValidMask), plotGeometry, 'BSI')
+        : null;
 
       const rendererVersion = rendererVersionFor(mode);
       const maskStats = await calculateGeeMaskStats(gee, {
@@ -1065,14 +1149,36 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
             ndvi,
             geometry: statsGeometry.geometry,
           })
-        : await calculateGeeNdviStats(gee, {
-            ndvi,
-            ndre,
-            savi,
-            bsi,
-            ndmi,
-            geometry: statsGeometry.geometry,
-          });
+        : fastPlan.fastSingleMode && ndre
+          ? {
+              ndvi_mean: await calculateGeeSingleIndexStatsFast(gee, {
+                indexImage: ndvi,
+                geometry: statsGeometry.geometry,
+              }),
+              ndre_mean: await calculateGeeSingleIndexStatsFast(gee, {
+                indexImage: ndre,
+                geometry: statsGeometry.geometry,
+              }),
+            }
+          : fastPlan.fastSingleMode && ndmi
+            ? {
+                ndvi_mean: await calculateGeeSingleIndexStatsFast(gee, {
+                  indexImage: ndvi,
+                  geometry: statsGeometry.geometry,
+                }),
+                ndmi_mean: await calculateGeeSingleIndexStatsFast(gee, {
+                  indexImage: ndmi,
+                  geometry: statsGeometry.geometry,
+                }),
+              }
+            : await calculateGeeNdviStats(gee, {
+                ndvi,
+                ndre,
+                savi,
+                bsi,
+                ndmi,
+                geometry: statsGeometry.geometry,
+              });
       const minValidPixels = numberFromEnv('GEE_MIN_VALID_PIXELS', 20);
       stats.validPixelCount = maskStats.validPixels;
       stats.maskedPixelCount = maskStats.maskedPixels;
@@ -1346,7 +1452,10 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         ? modes.filter((mode) => visualModes().includes(mode))
         : visualModes();
       const uniqueModes = [...new Set(requestedModes)];
-      const fastContrastOnly = isFastContrastOnly({ resolutionKind, modes: uniqueModes });
+      const fastPlan = resolveFastPackagePlan({ resolutionKind, modes: uniqueModes });
+      const fastContrastOnly = fastPlan.fastContrastOnly;
+      const fastSingleMode = fastPlan.fastSingleMode;
+      const minimalIndices = fastPlan.minimalIndices;
       const geometry = geometryFromPolygon(gee, polygon);
       const statsGeometry = await safeStatsGeometry(gee, geometry);
       const plotGeometry = geometry;
@@ -1375,27 +1484,12 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       // Pacote único da cena: as bandas são selecionadas uma vez e todos os
       // índices são derivados desse mesmo contexto GEE.
       const rawNdvi = maskedImage.normalizedDifference(['B8', 'B4']);
-      let rawNdre = null;
-      let rawSavi = null;
-      let rawNdmi = null;
-      let rawBsi = null;
-      if (!fastContrastOnly) {
-        rawNdre = maskedImage.normalizedDifference(['B8A', 'B5']);
-        rawSavi = maskedImage.expression('((nir - red) / (nir + red + 0.5)) * 1.5', {
-          nir: maskedImage.select('B8'),
-          red: maskedImage.select('B4'),
-        });
-        rawNdmi = maskedImage.normalizedDifference(['B8', 'B11']);
-        rawBsi = maskedImage.expression(
-          '((swir + red) - (nir + blue)) / ((swir + red) + (nir + blue))',
-          {
-            swir: maskedImage.select('B11'),
-            red: maskedImage.select('B4'),
-            nir: maskedImage.select('B8'),
-            blue: maskedImage.select('B2'),
-          },
-        );
-      }
+      const {
+        rawNdre,
+        rawSavi,
+        rawNdmi,
+        rawBsi,
+      } = buildRawDerivedIndices(maskedImage, fastPlan);
 
       const statsValidMask = buildNdviValidMask(gee, {
         image,
@@ -1411,24 +1505,26 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       let statsNdmiMask = null;
       let renderNdreMask = null;
       let renderNdmiMask = null;
-      if (!fastContrastOnly) {
+      if (rawNdre) {
         statsNdreMask = buildIndexValidMask(gee, {
           image,
           index: rawNdre,
           geometry: statsGeometry.geometry,
           bands: ['B8A', 'B5'],
         });
-        statsNdmiMask = buildIndexValidMask(gee, {
-          image,
-          index: rawNdmi,
-          geometry: statsGeometry.geometry,
-          bands: ['B8', 'B11'],
-        });
         renderNdreMask = buildIndexValidMask(gee, {
           image,
           index: rawNdre,
           geometry: plotGeometry,
           bands: ['B8A', 'B5'],
+        });
+      }
+      if (rawNdmi) {
+        statsNdmiMask = buildIndexValidMask(gee, {
+          image,
+          index: rawNdmi,
+          geometry: statsGeometry.geometry,
+          bands: ['B8', 'B11'],
         });
         renderNdmiMask = buildIndexValidMask(gee, {
           image,
@@ -1439,31 +1535,31 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       }
 
       const ndvi = maskIndexToGeometry(gee, rawNdvi.updateMask(statsValidMask), statsGeometry.geometry, 'NDVI');
-      const ndre = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawNdre.updateMask(statsNdreMask), statsGeometry.geometry, 'NDRE');
-      const savi = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawSavi.updateMask(statsValidMask), statsGeometry.geometry, 'SAVI');
-      const ndmi = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawNdmi.updateMask(statsNdmiMask), statsGeometry.geometry, 'NDMI');
-      const bsi = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawBsi.updateMask(statsValidMask), statsGeometry.geometry, 'BSI');
+      const ndre = rawNdre && statsNdreMask
+        ? maskIndexToGeometry(gee, rawNdre.updateMask(statsNdreMask), statsGeometry.geometry, 'NDRE')
+        : null;
+      const savi = rawSavi
+        ? maskIndexToGeometry(gee, rawSavi.updateMask(statsValidMask), statsGeometry.geometry, 'SAVI')
+        : null;
+      const ndmi = rawNdmi && statsNdmiMask
+        ? maskIndexToGeometry(gee, rawNdmi.updateMask(statsNdmiMask), statsGeometry.geometry, 'NDMI')
+        : null;
+      const bsi = rawBsi
+        ? maskIndexToGeometry(gee, rawBsi.updateMask(statsValidMask), statsGeometry.geometry, 'BSI')
+        : null;
       const renderNdvi = maskIndexToGeometry(gee, rawNdvi.updateMask(renderValidMask), plotGeometry, 'NDVI');
-      const renderNdre = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawNdre.updateMask(renderNdreMask), plotGeometry, 'NDRE');
-      const renderSavi = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawSavi.updateMask(renderValidMask), plotGeometry, 'SAVI');
-      const renderNdmi = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawNdmi.updateMask(renderNdmiMask), plotGeometry, 'NDMI');
-      const renderBsi = fastContrastOnly
-        ? null
-        : maskIndexToGeometry(gee, rawBsi.updateMask(renderValidMask), plotGeometry, 'BSI');
+      const renderNdre = rawNdre && renderNdreMask
+        ? maskIndexToGeometry(gee, rawNdre.updateMask(renderNdreMask), plotGeometry, 'NDRE')
+        : null;
+      const renderSavi = rawSavi
+        ? maskIndexToGeometry(gee, rawSavi.updateMask(renderValidMask), plotGeometry, 'SAVI')
+        : null;
+      const renderNdmi = rawNdmi && renderNdmiMask
+        ? maskIndexToGeometry(gee, rawNdmi.updateMask(renderNdmiMask), plotGeometry, 'NDMI')
+        : null;
+      const renderBsi = rawBsi
+        ? maskIndexToGeometry(gee, rawBsi.updateMask(renderValidMask), plotGeometry, 'BSI')
+        : null;
 
       const maskStats = await calculateGeeMaskStats(gee, {
         image,
@@ -1475,14 +1571,36 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
             ndvi,
             geometry: statsGeometry.geometry,
           })
-        : await calculateGeeNdviStats(gee, {
-            ndvi,
-            ndre,
-            savi,
-            bsi,
-            ndmi,
-            geometry: statsGeometry.geometry,
-          });
+        : fastSingleMode === VISUAL_MODES.NDRE && ndre
+          ? {
+              ndvi_mean: await calculateGeeSingleIndexStatsFast(gee, {
+                indexImage: ndvi,
+                geometry: statsGeometry.geometry,
+              }),
+              ndre_mean: await calculateGeeSingleIndexStatsFast(gee, {
+                indexImage: ndre,
+                geometry: statsGeometry.geometry,
+              }),
+            }
+          : fastSingleMode === VISUAL_MODES.NDMI_WATER_STRESS && ndmi
+            ? {
+                ndvi_mean: await calculateGeeSingleIndexStatsFast(gee, {
+                  indexImage: ndvi,
+                  geometry: statsGeometry.geometry,
+                }),
+                ndmi_mean: await calculateGeeSingleIndexStatsFast(gee, {
+                  indexImage: ndmi,
+                  geometry: statsGeometry.geometry,
+                }),
+              }
+            : await calculateGeeNdviStats(gee, {
+                ndvi,
+                ndre,
+                savi,
+                bsi,
+                ndmi,
+                geometry: statsGeometry.geometry,
+              });
       const minValidPixels = numberFromEnv('GEE_MIN_VALID_PIXELS', 20);
       baseStats.validPixelCount = maskStats.validPixels;
       baseStats.maskedPixelCount = maskStats.maskedPixels;
@@ -1511,7 +1629,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         [p5, p50, p95].every((value) => Number.isFinite(Number(value))) &&
         Number(p5) <= Number(p50) &&
         Number(p50) <= Number(p95);
-      if (uniqueModes.includes(VISUAL_MODES.NDVI_CONTRAST) && !validContrast) {
+      if (uniqueModes.includes(VISUAL_MODES.NDVI_CONTRAST) && !fastContrastOnly && !validContrast) {
         const err = new Error('invalid_or_missing_percentiles');
         err.code = 'ndvi_contrast_not_computed';
         err.status = 422;
@@ -1619,7 +1737,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
               bsi: renderBsi,
               ndmi: renderNdmi,
             });
-            const renderImage = fastContrastOnly
+            const renderImage = minimalIndices
               ? rawRenderImage
               : smoothForPreview(rawRenderImage, plotGeometry);
             const renderedPng = await renderVisualPngWithFallback({
