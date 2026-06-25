@@ -610,24 +610,31 @@ function isFastContrastOnly({ resolutionKind, modes }) {
   return plan.fastContrastOnly;
 }
 
+function isFastLikeResolution(resolutionKind) {
+  return resolutionKind === 'fast' || resolutionKind === 'fastPreview';
+}
+
+function isFinalLikeResolution(resolutionKind) {
+  return resolutionKind === 'final' || resolutionKind === 'preview';
+}
+
 function resolveFastPackagePlan({ resolutionKind, modes }) {
   const unique = [...new Set(Array.isArray(modes) ? modes : [])];
-  if (resolutionKind !== 'fast' || unique.length !== 1) {
-    return { minimalIndices: false, fastContrastOnly: false, fastSingleMode: null };
-  }
-  const mode = unique[0];
-  if (mode === VISUAL_MODES.NDVI_CONTRAST) {
-    return { minimalIndices: true, fastContrastOnly: true, fastSingleMode: mode };
-  }
-  const fastSingleModes = new Set([
-    VISUAL_MODES.NDVI_ABSOLUTE,
-    VISUAL_MODES.NDRE,
-    VISUAL_MODES.NDMI_WATER_STRESS,
-    VISUAL_MODES.BSI_SOIL,
-    VISUAL_MODES.NDVI_RELATIVE,
-  ]);
-  if (fastSingleModes.has(mode)) {
-    return { minimalIndices: true, fastContrastOnly: false, fastSingleMode: mode };
+  if (isFastLikeResolution(resolutionKind) && unique.length === 1) {
+    const mode = unique[0];
+    if (mode === VISUAL_MODES.NDVI_CONTRAST) {
+      return { minimalIndices: true, fastContrastOnly: true, fastSingleMode: mode };
+    }
+    const fastSingleModes = new Set([
+      VISUAL_MODES.NDVI_ABSOLUTE,
+      VISUAL_MODES.NDRE,
+      VISUAL_MODES.NDMI_WATER_STRESS,
+      VISUAL_MODES.BSI_SOIL,
+      VISUAL_MODES.NDVI_RELATIVE,
+    ]);
+    if (fastSingleModes.has(mode)) {
+      return { minimalIndices: true, fastContrastOnly: false, fastSingleMode: mode };
+    }
   }
   return { minimalIndices: false, fastContrastOnly: false, fastSingleMode: null };
 }
@@ -905,9 +912,16 @@ function thumbnailSizes(areaHa) {
 }
 
 function packageThumbSizes(areaHa, modeCount = 1, resolutionKind = 'preview') {
-  if (resolutionKind === 'fast') {
-    const configured = numberFromEnv('GEE_FAST_THUMB_SIZE', 512);
+  if (isFastLikeResolution(resolutionKind)) {
+    const configured = numberFromEnv(
+      'GEE_FAST_PREVIEW_THUMB_SIZE',
+      numberFromEnv('GEE_FAST_THUMB_SIZE', 512),
+    );
     return [Math.max(256, Math.round(configured))];
+  }
+  if (resolutionKind === 'final') {
+    const configured = numberFromEnv('GEE_FINAL_THUMB_SIZE', 1024);
+    return [Math.max(512, Math.round(configured))];
   }
   const configured = numberFromEnv('GEE_PACKAGE_THUMB_SIZE', NaN);
   if (Number.isFinite(configured) && configured > 0) {
@@ -1765,6 +1779,8 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
               schema_version: 'ndvi_v3',
               ndvi_schema_version: 3,
               visual_mode: mode,
+              resolution_kind: resolutionKind,
+              resolutionKind,
               renderer_version: rendererVersion,
               available_visual_modes: visualModes(),
               bounds: polygonToBounds(polygon),
@@ -1831,6 +1847,11 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
               status: 'ready',
               elapsedMs: Date.now() - modeStartedAt,
               preview: Boolean(layer.preview_url),
+              metrics: {
+                geeRenderMs: Date.now() - modeStartedAt,
+                totalMs: Date.now() - modeStartedAt,
+                mode,
+              },
             };
             console.log(`[LayerBatch] ${mode} ready from single GEE package`, status);
             return { mode, layer, status };
@@ -1858,13 +1879,17 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       return {
         scene_id: selectedSceneId,
         package_version: 'scene_band_package_v1',
-        resolution_kind: 'preview',
+        resolution_kind: resolutionKind,
         provider: 'google_earth_engine',
         provider_used: 'google_earth_engine',
         modes: uniqueModes,
         layersByMode,
         statusesByMode,
         elapsedMs: Date.now() - startedAt,
+        metrics: {
+          totalMs: Date.now() - startedAt,
+          geeQueryMs: Date.now() - startedAt,
+        },
       };
     },
   };
