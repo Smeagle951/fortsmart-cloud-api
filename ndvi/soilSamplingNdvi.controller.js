@@ -602,7 +602,8 @@ class SoilSamplingNdviController {
       });
 
       if (packageStatus === 'failed' && readyModes.length === 0) {
-        return res.status(502).json({
+        // 200 estruturado: o app trata falha por modo e aciona fallback /generate.
+        return res.status(200).json({
           success: false,
           code: 'packageGenerationFailed',
           message: 'Não foi possível gerar pacote de camadas no provedor de imagens.',
