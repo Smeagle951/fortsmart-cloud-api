@@ -15,12 +15,68 @@ const AGRONOMIC_STOPS = [
   { max: 1.01, rgb: [0.102, 0.596, 0.314] }, // #1a9850
 ];
 
-function colorFromNdviAbsolute(ndvi) {
-  const v = Math.max(-1, Math.min(1, ndvi));
-  for (const stop of AGRONOMIC_STOPS) {
+/** Limiares absolutos NDRE alinhados ao motor local / legenda % área. */
+const NDRE_STOPS = [
+  { max: 0.2, rgb: [0.843, 0.188, 0.153] }, // baixo vigor
+  { max: 0.35, rgb: [0.992, 0.847, 0.208] }, // médio
+  { max: 0.5, rgb: [0.651, 0.851, 0.416] }, // médio-alto
+  { max: 1.01, rgb: [0.106, 0.62, 0.467] }, // alto
+];
+
+/** Limiares NDMI alinhados à legenda Seco / Adequado / Úmido. */
+const NDMI_STOPS = [
+  { max: 0.2, rgb: [0.749, 0.212, 0.047] }, // seco (<0.2)
+  { max: 0.4, rgb: [0.259, 0.647, 0.961] }, // adequado
+  { max: 1.01, rgb: [0.082, 0.396, 0.753] }, // úmido
+];
+
+const CONTRAST_LEGEND_REFS = [
+  { key: 'redPercent', t: 0.12 },
+  { key: 'orangePercent', t: 0.35 },
+  { key: 'yellowPercent', t: 0.5 },
+  { key: 'lightGreenPercent', t: 0.65 },
+  { key: 'greenPercent', t: 0.8 },
+  { key: 'darkGreenPercent', t: 0.95 },
+];
+
+const BSI_STOPS = [
+  { max: 0.05, rgb: [0.263, 0.627, 0.278] }, // vegetação
+  { max: 0.2, rgb: [0.976, 0.659, 0.145] }, // palhada / misto
+  { max: 1.01, rgb: [0.553, 0.431, 0.388] }, // solo
+];
+
+function colorFromStops(value, stops) {
+  const v = Math.max(-1, Math.min(1, value));
+  for (const stop of stops) {
     if (v < stop.max) return stop.rgb;
   }
-  return AGRONOMIC_STOPS[AGRONOMIC_STOPS.length - 1].rgb;
+  return stops[stops.length - 1].rgb;
+}
+
+function colorFromNdviAbsolute(ndvi) {
+  return colorFromStops(ndvi, AGRONOMIC_STOPS);
+}
+
+/**
+ * Colormap absoluto por modo visual — evita stretch relativo que pinta
+ * NDRE baixo (~0,17) de verde chapado.
+ */
+export function indexToAbsoluteRgb(value, visualMode = 'ndvi_absolute') {
+  if (!Number.isFinite(value)) return null;
+  const mode = String(visualMode || 'ndvi_absolute');
+  if (mode === 'ndre') return colorFromStops(value, NDRE_STOPS);
+  if (mode === 'ndmi_water_stress') return colorFromStops(value, NDMI_STOPS);
+  if (mode === 'bsi_soil') return colorFromStops(value, BSI_STOPS);
+  return colorFromNdviAbsolute(value);
+}
+
+export function isAbsoluteIndexVisualMode(visualMode) {
+  const mode = String(visualMode || '');
+  return mode === 'ndre'
+    || mode === 'ndmi_water_stress'
+    || mode === 'bsi_soil'
+    || mode === 'ndvi_absolute'
+    || mode === 'savi';
 }
 
 function colorFromTRelative(t) {
@@ -54,14 +110,98 @@ function colorFromTRelative(t) {
 /**
  * Espelha a lógica do evalscript (para testes unitários).
  */
-export function ndviToPreviewRgb(ndvi, { mode = 'absolute', vmin = 0, vmax = 1 } = {}) {
+export function ndviToPreviewRgb(
+  ndvi,
+  {
+    mode = 'absolute',
+    vmin = 0,
+    vmax = 1,
+    visualMode = null,
+  } = {},
+) {
   if (!Number.isFinite(ndvi)) return null;
+  if (visualMode && isAbsoluteIndexVisualMode(visualMode) && mode !== 'relative') {
+    return indexToAbsoluteRgb(ndvi, visualMode);
+  }
   if (mode === 'relative') {
     const span = Math.max(Number(vmax) - Number(vmin), 0.02);
     const t = (ndvi - Number(vmin)) / span;
     return colorFromTRelative(t);
   }
   return colorFromNdviAbsolute(ndvi);
+}
+
+/**
+ * Classifica pixels RGBA opacos na legenda de contraste (6 buckets).
+ * Use após o PNG mascarado — fonte da verdade visual da legenda.
+ */
+export function colorBucketsFromRgbaPixels(data, { minAlpha = 16 } = {}) {
+  if (!data || data.length < 4) return null;
+  const refs = CONTRAST_LEGEND_REFS.map((item) => ({
+    key: item.key,
+    rgb: colorFromTRelative(item.t).map((c) => Math.round(c * 255)),
+  }));
+  const out = {
+    redPercent: 0,
+    orangePercent: 0,
+    yellowPercent: 0,
+    lightGreenPercent: 0,
+    greenPercent: 0,
+    darkGreenPercent: 0,
+  };
+  let total = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < minAlpha) continue;
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    let bestKey = 'redPercent';
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const ref of refs) {
+      const dr = r - ref.rgb[0];
+      const dg = g - ref.rgb[1];
+      const db = b - ref.rgb[2];
+      const dist = dr * dr + dg * dg + db * db;
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestKey = ref.key;
+      }
+    }
+    out[bestKey] += 1;
+    total += 1;
+  }
+  if (!total) return null;
+  for (const key of Object.keys(out)) {
+    out[key] = Number(((out[key] / total) * 100).toFixed(1));
+  }
+  return out;
+}
+
+export function moisturePercentsFromValues(values) {
+  const valid = Array.isArray(values)
+    ? values.map(Number).filter((v) => Number.isFinite(v) && v > -9000)
+    : [];
+  if (!valid.length) {
+    return {
+      waterStressPercent: null,
+      adequateMoisturePercent: null,
+      highMoisturePercent: null,
+    };
+  }
+  let dry = 0;
+  let adequate = 0;
+  let wet = 0;
+  for (const v of valid) {
+    if (v < 0.2) dry += 1;
+    else if (v < 0.4) adequate += 1;
+    else wet += 1;
+  }
+  const pct = (n) => Number(((n / valid.length) * 100).toFixed(1));
+  return {
+    waterStressPercent: pct(dry),
+    adequateMoisturePercent: pct(adequate),
+    highMoisturePercent: pct(wet),
+  };
 }
 
 export function pickPreviewColormapMode(stats, requested = 'auto') {

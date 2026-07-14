@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   ndviToPreviewRgb,
   pickPreviewColormapMode,
+  indexToAbsoluteRgb,
+  moisturePercentsFromValues,
 } from './ndviColormap.js';
 
 function rgbClose(a, b, tol = 0.05) {
@@ -11,6 +13,14 @@ function rgbClose(a, b, tol = 0.05) {
     Math.abs(a[1] - b[1]) < tol &&
     Math.abs(a[2] - b[2]) < tol
   );
+}
+
+function isMostlyGreen(rgb) {
+  return rgb && rgb[1] > rgb[0] + 0.15 && rgb[1] > rgb[2];
+}
+
+function isMostlyRed(rgb) {
+  return rgb && rgb[0] > rgb[1] + 0.1 && rgb[0] > rgb[2];
 }
 
 describe('ndviColormap', () => {
@@ -75,5 +85,44 @@ describe('ndviColormap', () => {
     assert.ok(!rgbClose(relativeLow, relativeHigh));
     assert.ok(relativeLow[0] > relativeLow[1], 'p5 deve ficar vermelho/laranja');
     assert.ok(relativeHigh[1] > relativeHigh[0], 'p95 deve ficar verde');
+  });
+
+  it('NDRE ~0.17 fica vermelho/baixo, não verde chapado', () => {
+    const low = indexToAbsoluteRgb(0.17, 'ndre');
+    const mid = indexToAbsoluteRgb(0.28, 'ndre');
+    const high = indexToAbsoluteRgb(0.55, 'ndre');
+    assert.ok(isMostlyRed(low), `NDRE 0.17 deve ser vermelho, got ${low}`);
+    assert.ok(!isMostlyGreen(low));
+    assert.ok(mid[0] > 0.5 || mid[1] > 0.5, 'NDRE médio visível');
+    assert.ok(isMostlyGreen(high), 'NDRE alto deve ser verde');
+  });
+
+  it('ndviToPreviewRgb com visualMode=ndre usa escala absoluta', () => {
+    const viaApi = ndviToPreviewRgb(0.17, {
+      mode: 'absolute',
+      visualMode: 'ndre',
+    });
+    const viaDirect = indexToAbsoluteRgb(0.17, 'ndre');
+    assert.ok(viaApi && viaDirect);
+    assert.ok(rgbClose(viaApi, viaDirect));
+    assert.ok(isMostlyRed(viaApi));
+  });
+
+  it('NDMI seco fica marrom/laranja, não verde', () => {
+    const dry = indexToAbsoluteRgb(0.05, 'ndmi_water_stress');
+    const wet = indexToAbsoluteRgb(0.5, 'ndmi_water_stress');
+    assert.ok(dry && dry[0] > dry[2], 'seco deve ser quente');
+    assert.ok(!isMostlyGreen(dry));
+    assert.ok(wet && wet[2] > wet[0], 'úmido deve ser azul');
+  });
+
+  it('moisturePercentsFromValues cobre 100% sem buracos', () => {
+    const buckets = moisturePercentsFromValues([0.05, 0.15, 0.25, 0.35, 0.5, 0.6]);
+    const sum =
+      buckets.waterStressPercent +
+      buckets.adequateMoisturePercent +
+      buckets.highMoisturePercent;
+    assert.ok(Math.abs(sum - 100) < 0.2, `sum=${sum}`);
+    assert.equal(buckets.waterStressPercent, 33.3);
   });
 });

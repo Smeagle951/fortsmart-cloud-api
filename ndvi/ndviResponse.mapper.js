@@ -86,6 +86,51 @@ function pickAgronomic(row) {
     savi_mean: raw?.savi_mean ?? raw?.saviMean ?? null,
     bsi_mean: raw?.bsi_mean ?? raw?.bsiMean ?? null,
     ndmi_mean: raw?.ndmi_mean ?? raw?.ndmiMean ?? null,
+    ndmi_min: raw?.ndmi_min ?? raw?.ndmiMin ?? null,
+    ndmi_max: raw?.ndmi_max ?? raw?.ndmiMax ?? null,
+    ndmi_p5: raw?.ndmi_p5 ?? raw?.ndmiP5 ?? null,
+    ndmi_p50: raw?.ndmi_p50 ?? raw?.ndmiP50 ?? null,
+    ndmi_p95: raw?.ndmi_p95 ?? raw?.ndmiP95 ?? null,
+    waterStressPercent:
+      raw?.waterStressPercent ?? raw?.water_stress_percent ?? null,
+    adequateMoisturePercent:
+      raw?.adequateMoisturePercent ?? raw?.adequate_moisture_percent ?? null,
+    highMoisturePercent:
+      raw?.highMoisturePercent ?? raw?.high_moisture_percent ?? null,
+    lowChlorophyllPercent:
+      raw?.lowChlorophyllPercent ?? raw?.low_chlorophyll_percent ?? null,
+    highChlorophyllPercent:
+      raw?.highChlorophyllPercent ?? raw?.high_chlorophyll_percent ?? null,
+    redPercent:
+      raw?.redPercent ??
+      raw?.red_percent ??
+      contrast?.colorBuckets?.redPercent ??
+      null,
+    orangePercent:
+      raw?.orangePercent ??
+      raw?.orange_percent ??
+      contrast?.colorBuckets?.orangePercent ??
+      null,
+    yellowPercent:
+      raw?.yellowPercent ??
+      raw?.yellow_percent ??
+      contrast?.colorBuckets?.yellowPercent ??
+      null,
+    lightGreenPercent:
+      raw?.lightGreenPercent ??
+      raw?.light_green_percent ??
+      contrast?.colorBuckets?.lightGreenPercent ??
+      null,
+    greenPercent:
+      raw?.greenPercent ??
+      raw?.green_percent ??
+      contrast?.colorBuckets?.greenPercent ??
+      null,
+    darkGreenPercent:
+      raw?.darkGreenPercent ??
+      raw?.dark_green_percent ??
+      contrast?.colorBuckets?.darkGreenPercent ??
+      null,
     bare_soil_percent:
       raw?.bare_soil_percent ?? classes?.bareSoilPercent ?? null,
     straw_percent: raw?.straw_percent ?? classes?.strawPercent ?? null,

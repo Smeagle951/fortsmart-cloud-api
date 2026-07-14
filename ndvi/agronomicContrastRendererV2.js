@@ -4,7 +4,7 @@ import {
 } from './ndviContrastEngine.js';
 import { bilinearUpscale } from './ndviSpatialSmoothing.js';
 
-const RENDERER_VERSION = 'agronomic_contrast_v7_inner_buffer';
+const RENDERER_VERSION = 'agronomic_contrast_v8_png_legend_buckets';
 
 function finiteNdviValues(values) {
   return Array.isArray(values)

@@ -137,6 +137,34 @@ test('generatePreviewFromRaster separa metadata por visualMode', () => {
   assert.equal(redEdge.visual_mode, 'ndre');
   assert.notEqual(contrast.legend.title, moisture.legend.title);
   assert.notEqual(moisture.legend.title, redEdge.legend.title);
+  assert.ok(moisture.stats.waterStressPercent != null);
+  assert.ok(moisture.stats.adequateMoisturePercent != null);
+  assert.ok(moisture.stats.highMoisturePercent != null);
+  const moistureSum =
+    Number(moisture.stats.waterStressPercent) +
+    Number(moisture.stats.adequateMoisturePercent) +
+    Number(moisture.stats.highMoisturePercent);
+  assert.ok(Math.abs(moistureSum - 100) < 1.5, `moistureSum=${moistureSum}`);
+});
+
+test('colorBuckets da legenda batem com cores dominantes do PNG', () => {
+  const raster = syntheticGrid(8, 8);
+  for (let i = 0; i < raster.bands.ndvi.length; i += 1) {
+    raster.bands.ndvi[i] = i < raster.bands.ndvi.length / 2 ? 0.2 : 0.75;
+  }
+  const loaded = deserializeInternalGridBuffer(
+    serializeInternalGridDocument(raster).buffer,
+  );
+  const out = generatePreviewFromRaster({ raster: loaded, visualMode: 'ndvi_contrast' });
+  const buckets = out.contrast.colorBuckets;
+  assert.ok(buckets);
+  const lowShare =
+    Number(buckets.redPercent || 0) + Number(buckets.orangePercent || 0);
+  const highShare =
+    Number(buckets.greenPercent || 0) + Number(buckets.darkGreenPercent || 0);
+  // Metade baixa / metade alta → buckets devem acompanhar o mapa, sem inverter.
+  assert.ok(highShare > 30, `highShare=${highShare} buckets=${JSON.stringify(buckets)}`);
+  assert.ok(lowShare > 20, `lowShare=${lowShare}`);
 });
 
 test('generatePreviewFromRaster evita vermelho falso em cena homogênea alta', () => {
@@ -162,6 +190,40 @@ test('generatePreviewFromRaster evita vermelho falso em cena homogênea alta', (
   }
   assert.ok(visiblePixels > 0);
   assert.ok(redPixels / visiblePixels < 0.05);
+});
+
+test('generatePreviewFromRaster NDRE com valores baixos pinta vermelho/amarelo, não verde chapado', () => {
+  const raster = syntheticGrid(8, 8);
+  for (let i = 0; i < raster.bands.ndre.length; i += 1) {
+    // Cenário Pivô 5: NDRE médio ~0.17, mix baixo/médio
+    raster.bands.ndre[i] = i % 3 === 0 ? 0.28 : 0.15;
+  }
+  const loaded = deserializeInternalGridBuffer(
+    serializeInternalGridDocument(raster).buffer,
+  );
+  const out = generatePreviewFromRaster({ raster: loaded, visualMode: 'ndre' });
+  const png = PNG.sync.read(out.buffer);
+  let greenPixels = 0;
+  let redOrYellowPixels = 0;
+  let visiblePixels = 0;
+  for (let i = 0; i < png.data.length; i += 4) {
+    if (png.data[i + 3] < 40) continue;
+    visiblePixels += 1;
+    const r = png.data[i];
+    const g = png.data[i + 1];
+    const b = png.data[i + 2];
+    if (g > r + 30 && g > b) greenPixels += 1;
+    if (r > g || (r > 180 && g > 150 && g >= r * 0.7)) redOrYellowPixels += 1;
+  }
+  assert.ok(visiblePixels > 0);
+  assert.ok(
+    greenPixels / visiblePixels < 0.25,
+    `NDRE baixo não deve ser majoritariamente verde (${greenPixels}/${visiblePixels})`,
+  );
+  assert.ok(
+    redOrYellowPixels / visiblePixels > 0.5,
+    `NDRE baixo deve dominar vermelho/amarelo (${redOrYellowPixels}/${visiblePixels})`,
+  );
 });
 
 test('cache científico e visual têm chaves distintas', () => {

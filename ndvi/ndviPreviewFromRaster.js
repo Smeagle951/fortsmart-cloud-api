@@ -3,7 +3,7 @@
  */
 import { PNG } from 'pngjs';
 import { renderAgronomicContrastV2 } from './agronomicContrastRendererV2.js';
-import { ndviToPreviewRgb, pickPreviewColormapMode } from './ndviColormap.js';
+import { ndviToPreviewRgb, pickPreviewColormapMode, isAbsoluteIndexVisualMode, colorBucketsFromRgbaPixels, moisturePercentsFromValues } from './ndviColormap.js';
 import { smoothPreviewPngBuffer } from './ndviSpatialSmoothing.js';
 import { selectBandForVisualMode } from './ndviRasterLoader.js';
 import { buildNdviZones } from './ndviZoneBuilder.js';
@@ -185,8 +185,9 @@ export function rasterValuesToPngBuffer({
 }) {
   const png = new PNG({ width, height });
   const mode = String(visualMode || 'ndvi_contrast');
+  const absoluteIndex = isAbsoluteIndexVisualMode(mode);
   const lowContrastScene = contrast?.lowContrastScene === true;
-  const colormapMode = mode === 'ndvi_absolute' || lowContrastScene
+  const colormapMode = absoluteIndex || mode === 'ndvi_absolute' || lowContrastScene
     ? 'absolute'
     : pickPreviewColormapMode(contrast, 'relative');
   const vmin = valuesAreVisual ? 0 : (contrast?.pLow ?? contrast?.p5 ?? 0);
@@ -203,9 +204,14 @@ export function rasterValuesToPngBuffer({
       continue;
     }
     const rgb = ndviToPreviewRgb(v, {
-      mode: CONTRAST_MODES.has(mode) && !lowContrastScene ? 'relative' : colormapMode,
-      vmin,
-      vmax,
+      mode: absoluteIndex
+        ? 'absolute'
+        : (CONTRAST_MODES.has(mode) && !lowContrastScene && !valuesAreVisual
+          ? 'relative'
+          : (valuesAreVisual ? 'relative' : colormapMode)),
+      vmin: valuesAreVisual ? 0 : vmin,
+      vmax: valuesAreVisual ? 1 : vmax,
+      visualMode: mode,
     });
     if (!rgb) {
       png.data[o + 3] = 0;
@@ -302,6 +308,7 @@ export function buildStatsFromRasterValues({
     ndmi_p5: ndmiStats?.p05 ?? null,
     ndmi_p50: ndmiStats?.p50 ?? null,
     ndmi_p95: ndmiStats?.p95 ?? null,
+    ...moisturePercentsFromValues(valuesFromRasterBand(raster, 'ndmi_water_stress')),
   };
   const spatial = {
     ...buildNdviSpatialMetrics(baseStats, maskedNdviValues),
@@ -390,6 +397,26 @@ export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast'
     valuesAreVisual = !contrast?.lowContrastScene;
     outWidth = rendered.width || width;
     outHeight = rendered.height || height;
+  } else if (isAbsoluteIndexVisualMode(mode)) {
+    // NDRE/NDMI/BSI/SAVI: colorir índice bruto com limiares absolutos.
+    // NÃO reaplicar stretch relativo (isso pintava NDRE ~0,17 de verde chapado).
+    const finiteStats = percentileValues.filter((v) => v != null && Number.isFinite(v));
+    const sorted = [...finiteStats].sort((a, b) => a - b);
+    const at = (p) => {
+      if (!sorted.length) return null;
+      const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor((p / 100) * (sorted.length - 1))));
+      return sorted[idx];
+    };
+    contrast = {
+      p5: at(5),
+      p50: at(50),
+      p95: at(95),
+      pLow: at(5),
+      pHigh: at(95),
+      lowContrastScene: false,
+    };
+    colorValues = maskedRawValues;
+    valuesAreVisual = false;
   } else {
     const rendered = renderAgronomicContrastV2({
       values: maskedRawValues.map((v) => (v == null ? NaN : v)),
@@ -403,6 +430,7 @@ export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast'
       ...resolveContrastStretch(rendered.contrast),
     };
     colorValues = rendered.visualValues;
+    valuesAreVisual = true;
     outWidth = rendered.width || width;
     outHeight = rendered.height || height;
   }
@@ -441,6 +469,27 @@ export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast'
     polygon,
     alphaInside: DEFAULT_PREVIEW_ALPHA,
   });
+
+  // Legenda = cores reais do PNG (evita % vermelho quando o mapa está verde).
+  try {
+    const png = PNG.sync.read(buffer);
+    const pngBuckets = colorBucketsFromRgbaPixels(png.data);
+    if (pngBuckets && CONTRAST_MODES.has(mode)) {
+      contrast = {
+        ...(contrast || {}),
+        colorBuckets: pngBuckets,
+      };
+      if (statsBundle?.stats) {
+        statsBundle.stats.contrast = {
+          ...(statsBundle.stats.contrast || {}),
+          colorBuckets: pngBuckets,
+        };
+        Object.assign(statsBundle.stats, pngBuckets);
+      }
+    }
+  } catch (_) {
+    // Mantém buckets do renderer se a leitura do PNG falhar.
+  }
 
   return {
     buffer,

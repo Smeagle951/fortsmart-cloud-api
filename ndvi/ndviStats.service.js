@@ -50,6 +50,36 @@ class NdviStatsService {
       waterStressPercent: num(raw?.waterStressPercent ?? raw?.water_stress_percent),
       adequateMoisturePercent: num(raw?.adequateMoisturePercent ?? raw?.adequate_moisture_percent),
       highMoisturePercent: num(raw?.highMoisturePercent ?? raw?.high_moisture_percent),
+      redPercent: num(
+        raw?.redPercent ??
+          raw?.red_percent ??
+          raw?.contrast?.colorBuckets?.redPercent,
+      ),
+      orangePercent: num(
+        raw?.orangePercent ??
+          raw?.orange_percent ??
+          raw?.contrast?.colorBuckets?.orangePercent,
+      ),
+      yellowPercent: num(
+        raw?.yellowPercent ??
+          raw?.yellow_percent ??
+          raw?.contrast?.colorBuckets?.yellowPercent,
+      ),
+      lightGreenPercent: num(
+        raw?.lightGreenPercent ??
+          raw?.light_green_percent ??
+          raw?.contrast?.colorBuckets?.lightGreenPercent,
+      ),
+      greenPercent: num(
+        raw?.greenPercent ??
+          raw?.green_percent ??
+          raw?.contrast?.colorBuckets?.greenPercent,
+      ),
+      darkGreenPercent: num(
+        raw?.darkGreenPercent ??
+          raw?.dark_green_percent ??
+          raw?.contrast?.colorBuckets?.darkGreenPercent,
+      ),
       very_low_percent: num(raw?.very_low_percent ?? raw?.veryLowPercent),
       low_percent: num(raw?.low_percent ?? raw?.lowPercent),
       medium_percent: num(raw?.medium_percent ?? raw?.mediumPercent),

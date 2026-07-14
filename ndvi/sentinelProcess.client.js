@@ -425,7 +425,8 @@ class SentinelProcessClient {
       };
     }
 
-    for (const mode of requestedModes) {
+    await Promise.all(
+      requestedModes.map(async (mode) => {
       const modeStarted = Date.now();
       try {
         console.log('[NDVI] render layer started', {
@@ -449,7 +450,7 @@ class SentinelProcessClient {
             message: `Camada ${mode} não retornou preview reutilizável.`,
             elapsedMs: Date.now() - modeStarted,
           };
-          continue;
+          return;
         }
         layersByMode[mode] = layer;
         statusesByMode[mode] = {
@@ -473,7 +474,8 @@ class SentinelProcessClient {
           elapsedMs: Date.now() - modeStarted,
         };
       }
-    }
+      }),
+    );
 
     console.log('[NDVI][Process][package] done', {
       sceneId,
@@ -552,27 +554,29 @@ class SentinelProcessClient {
     }
 
     try {
-      const primaryBuf = await this._postProcessPng({
-        token,
-        polygon,
-        date,
-        evalscript: buildAgronomicPackedStatsEvalscript(),
-        width: 256,
-        height: 256,
-        sceneId,
-        label: 'agro_stats_primary',
-      });
-
-      const indicesBuf = await this._postProcessPng({
-        token,
-        polygon,
-        date,
-        evalscript: buildIndicesPackedStatsEvalscript(),
-        width: 256,
-        height: 256,
-        sceneId,
-        label: 'agro_stats_indices',
-      });
+      // Primary + indices em paralelo (~50% do cold path Process API).
+      const [primaryBuf, indicesBuf] = await Promise.all([
+        this._postProcessPng({
+          token,
+          polygon,
+          date,
+          evalscript: buildAgronomicPackedStatsEvalscript(),
+          width: 256,
+          height: 256,
+          sceneId,
+          label: 'agro_stats_primary',
+        }),
+        this._postProcessPng({
+          token,
+          polygon,
+          date,
+          evalscript: buildIndicesPackedStatsEvalscript(),
+          width: 256,
+          height: 256,
+          sceneId,
+          label: 'agro_stats_indices',
+        }),
+      ]);
 
       const stats = computeAgronomicStatsFromPackedPngs(primaryBuf, indicesBuf, {
         sceneId,
@@ -735,7 +739,8 @@ class SentinelProcessClient {
 
       const colorBuckets =
         resolvedVisual === 'ndvi_contrast'
-          ? contrast.colorBuckets ?? colorBucketsForValues(
+          ? contrast.colorBuckets ??
+            colorBucketsForValues(
               [
                 stats.ndvi_p2,
                 stats.ndvi_p5,
@@ -750,6 +755,14 @@ class SentinelProcessClient {
               contrast,
             )
           : {};
+      if (
+        resolvedVisual === 'ndvi_contrast' &&
+        colorBuckets &&
+        typeof colorBuckets === 'object'
+      ) {
+        contrast.colorBuckets = colorBuckets;
+        Object.assign(finalStats, colorBuckets);
+      }
       console.log(
         `[NDVI_RENDER_V2] sceneId=${sceneId} visualMode=${resolvedVisual} ` +
           `p5=${contrast.p5 ?? '-'} p50=${contrast.p50 ?? '-'} p95=${contrast.p95 ?? '-'} ` +

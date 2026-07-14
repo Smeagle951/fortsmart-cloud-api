@@ -51,13 +51,13 @@ function rendererVersionFor(mode) {
     case VISUAL_MODES.AGRONOMIC_CLASSES:
       return 'agronomic_classes_v2_gee_10m';
     case VISUAL_MODES.NDRE:
-      return 'ndre_v2_gee_10m';
+      return 'ndre_v3_abs_colormap_gee_10m';
     case VISUAL_MODES.SAVI:
-      return 'savi_v2_gee_10m';
+      return 'savi_v3_abs_colormap_gee_10m';
     case VISUAL_MODES.BSI_SOIL:
-      return 'bsi_soil_v2_gee_10m';
+      return 'bsi_soil_v3_abs_colormap_gee_10m';
     case VISUAL_MODES.NDMI_WATER_STRESS:
-      return 'ndmi_water_stress_v2_gee_10m';
+      return 'ndmi_water_stress_v4_abs_moisture_gee_10m';
     case VISUAL_MODES.NDVI_ABSOLUTE:
     default:
       return 'ndvi_absolute_v2_gee_10m';
@@ -471,9 +471,9 @@ async function calculateIndexStats(gee, { ndre, savi, bsi, ndmi, geometry }) {
           geometry,
           baseImage: ndmi,
           bands: {
-            waterStressPercent: ndmi.lt(0.1),
-            adequateMoisturePercent: ndmi.gte(0.2).and(ndmi.lt(0.45)),
-            highMoisturePercent: ndmi.gte(0.45),
+            waterStressPercent: ndmi.lt(0.2),
+            adequateMoisturePercent: ndmi.gte(0.2).and(ndmi.lt(0.4)),
+            highMoisturePercent: ndmi.gte(0.4),
           },
         })
       : {},
@@ -747,13 +747,14 @@ function buildRawDerivedIndices(maskedImage, fastPlan) {
 function resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi }) {
   switch (mode) {
     case VISUAL_MODES.NDRE:
-      return ndre || ndvi;
+      // Nunca cair em NDVI — isso pinta o talhão verde com escala NDRE.
+      return ndre || null;
     case VISUAL_MODES.SAVI:
-      return savi || ndvi;
+      return savi || null;
     case VISUAL_MODES.BSI_SOIL:
-      return bsi || ndvi;
+      return bsi || null;
     case VISUAL_MODES.NDMI_WATER_STRESS:
-      return ndmi || ndvi;
+      return ndmi || null;
     default:
       return ndvi;
   }
@@ -852,18 +853,28 @@ function visualizationFor({ mode = VISUAL_MODES.NDVI_CONTRAST, stats = {} } = {}
     return { min: -0.25, max: 0.45, palette: SOIL_PALETTE, forceRgbOutput: true };
   }
   if (mode === VISUAL_MODES.NDMI_WATER_STRESS) {
+    // Escala absoluta alinhada à legenda (Seco <0.2, Adequado <0.4, Úmido ≥0.4).
+    // Stretch relativo p5–p95 pintava NDMI de verde/amarelo como NDVI.
     return {
-      min: Number(stats.ndmi_p5 ?? -0.15),
-      max: Number(stats.ndmi_p95 ?? 0.55),
-      palette: WATER_STRESS_PALETTE,
+      min: -0.1,
+      max: 0.55,
+      palette: ['BF360C', 'E65100', '42A5F5', '0D47A1'],
       forceRgbOutput: true,
     };
   }
   if (mode === VISUAL_MODES.NDRE) {
+    // Escala absoluta alinhada à legenda (baixo <0.20, médio <0.35).
+    // Stretch relativo p5–p95 com NDVI fallback produzia círculo verde chapado.
     return {
-      min: Number(stats.ndre_p5 ?? 0),
-      max: Number(stats.ndre_p95 ?? 0.6),
-      palette: NDVI_AGRONOMIC_PALETTE,
+      min: 0.0,
+      max: 0.55,
+      palette: [
+        'd73027',
+        'fc8d59',
+        'fee08b',
+        'a6d96a',
+        '1a9850',
+      ],
       forceRgbOutput: true,
     };
   }
@@ -1069,10 +1080,15 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         throw err;
       }
 
+      const [timeStart, cloudCoverage] = await Promise.all([
+        imageDate
+          ? Promise.resolve(null)
+          : getInfo(image.get('system:time_start')),
+        getInfo(image.get('CLOUDY_PIXEL_PERCENTAGE')).catch(() => null),
+      ]);
       const selectedImageDate =
         imageDate ||
-        new Date(Number(await getInfo(image.get('system:time_start')))).toISOString().slice(0, 10);
-      const cloudCoverage = await getInfo(image.get('CLOUDY_PIXEL_PERCENTAGE')).catch(() => null);
+        new Date(Number(timeStart)).toISOString().slice(0, 10);
 
       const maskedImage = maskClouds(image);
       const rawNdvi = maskedImage.normalizedDifference(['B8', 'B4']);
@@ -1164,27 +1180,33 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
             geometry: statsGeometry.geometry,
           })
         : fastPlan.fastSingleMode && ndre
-          ? {
-              ndvi_mean: await calculateGeeSingleIndexStatsFast(gee, {
-                indexImage: ndvi,
-                geometry: statsGeometry.geometry,
-              }),
-              ndre_mean: await calculateGeeSingleIndexStatsFast(gee, {
-                indexImage: ndre,
-                geometry: statsGeometry.geometry,
-              }),
-            }
-          : fastPlan.fastSingleMode && ndmi
-            ? {
-                ndvi_mean: await calculateGeeSingleIndexStatsFast(gee, {
+          ? await (async () => {
+              const [ndviMean, ndreMean] = await Promise.all([
+                calculateGeeSingleIndexStatsFast(gee, {
                   indexImage: ndvi,
                   geometry: statsGeometry.geometry,
                 }),
-                ndmi_mean: await calculateGeeSingleIndexStatsFast(gee, {
-                  indexImage: ndmi,
+                calculateGeeSingleIndexStatsFast(gee, {
+                  indexImage: ndre,
                   geometry: statsGeometry.geometry,
                 }),
-              }
+              ]);
+              return { ndvi_mean: ndviMean, ndre_mean: ndreMean };
+            })()
+          : fastPlan.fastSingleMode && ndmi
+            ? await (async () => {
+                const [ndviMean, ndmiMean] = await Promise.all([
+                  calculateGeeSingleIndexStatsFast(gee, {
+                    indexImage: ndvi,
+                    geometry: statsGeometry.geometry,
+                  }),
+                  calculateGeeSingleIndexStatsFast(gee, {
+                    indexImage: ndmi,
+                    geometry: statsGeometry.geometry,
+                  }),
+                ]);
+                return { ndvi_mean: ndviMean, ndmi_mean: ndmiMean };
+              })()
             : await calculateGeeNdviStats(gee, {
                 ndvi,
                 ndre,
@@ -1294,6 +1316,14 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         bsi: renderBsi,
         ndmi: renderNdmi,
       });
+      if (!rawRenderImage) {
+        const err = new Error(
+          `Índice ${mode} indisponível nesta cena (banda/cálculo ausente).`,
+        );
+        err.code = 'GEE_INDEX_UNAVAILABLE';
+        err.status = 422;
+        throw err;
+      }
       const renderImage = smoothForPreview(rawRenderImage, plotGeometry);
       const renderedPng = await renderVisualPngWithFallback({
         image: renderImage,
@@ -1489,10 +1519,15 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         throw err;
       }
 
+      const [timeStart, cloudCoverage] = await Promise.all([
+        imageDate
+          ? Promise.resolve(null)
+          : getInfo(image.get('system:time_start')),
+        getInfo(image.get('CLOUDY_PIXEL_PERCENTAGE')).catch(() => null),
+      ]);
       const selectedImageDate =
         imageDate ||
-        new Date(Number(await getInfo(image.get('system:time_start')))).toISOString().slice(0, 10);
-      const cloudCoverage = await getInfo(image.get('CLOUDY_PIXEL_PERCENTAGE')).catch(() => null);
+        new Date(Number(timeStart)).toISOString().slice(0, 10);
       const maskedImage = maskClouds(image);
 
       // Pacote único da cena: as bandas são selecionadas uma vez e todos os
@@ -1586,27 +1621,33 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
             geometry: statsGeometry.geometry,
           })
         : fastSingleMode === VISUAL_MODES.NDRE && ndre
-          ? {
-              ndvi_mean: await calculateGeeSingleIndexStatsFast(gee, {
-                indexImage: ndvi,
-                geometry: statsGeometry.geometry,
-              }),
-              ndre_mean: await calculateGeeSingleIndexStatsFast(gee, {
-                indexImage: ndre,
-                geometry: statsGeometry.geometry,
-              }),
-            }
-          : fastSingleMode === VISUAL_MODES.NDMI_WATER_STRESS && ndmi
-            ? {
-                ndvi_mean: await calculateGeeSingleIndexStatsFast(gee, {
+          ? await (async () => {
+              const [ndviMean, ndreMean] = await Promise.all([
+                calculateGeeSingleIndexStatsFast(gee, {
                   indexImage: ndvi,
                   geometry: statsGeometry.geometry,
                 }),
-                ndmi_mean: await calculateGeeSingleIndexStatsFast(gee, {
-                  indexImage: ndmi,
+                calculateGeeSingleIndexStatsFast(gee, {
+                  indexImage: ndre,
                   geometry: statsGeometry.geometry,
                 }),
-              }
+              ]);
+              return { ndvi_mean: ndviMean, ndre_mean: ndreMean };
+            })()
+          : fastSingleMode === VISUAL_MODES.NDMI_WATER_STRESS && ndmi
+            ? await (async () => {
+                const [ndviMean, ndmiMean] = await Promise.all([
+                  calculateGeeSingleIndexStatsFast(gee, {
+                    indexImage: ndvi,
+                    geometry: statsGeometry.geometry,
+                  }),
+                  calculateGeeSingleIndexStatsFast(gee, {
+                    indexImage: ndmi,
+                    geometry: statsGeometry.geometry,
+                  }),
+                ]);
+                return { ndvi_mean: ndviMean, ndmi_mean: ndmiMean };
+              })()
             : await calculateGeeNdviStats(gee, {
                 ndvi,
                 ndre,
@@ -1751,6 +1792,14 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
               bsi: renderBsi,
               ndmi: renderNdmi,
             });
+            if (!rawRenderImage) {
+              return {
+                mode,
+                status: 'unavailable',
+                code: 'GEE_INDEX_UNAVAILABLE',
+                message: `Índice ${mode} indisponível nesta cena.`,
+              };
+            }
             const renderImage = minimalIndices
               ? rawRenderImage
               : smoothForPreview(rawRenderImage, plotGeometry);

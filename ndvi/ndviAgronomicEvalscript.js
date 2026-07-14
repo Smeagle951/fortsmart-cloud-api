@@ -162,7 +162,8 @@ function evaluatePixel(s){
 }`;
 }
 
-function buildIndexPreview(evalExpr, stops) {
+function buildIndexPreview(evalExpr, stops, { normalize = 'absolute' } = {}) {
+  const useUnitInterval = normalize === 'unit';
   return `//VERSION=3
 const STOPS=${JSON.stringify(stops)};
 function setup(){return {input:${INPUT_BANDS},output:{bands:4,sampleType:'AUTO'}};}
@@ -172,13 +173,17 @@ function colorT(t){
   for(let i=0;i<STOPS.length;i++){if(x<STOPS[i].m)return [STOPS[i].r,STOPS[i].g,STOPS[i].b,1];}
   const s=STOPS[STOPS.length-1];return [s.r,s.g,s.b,1];
 }
+function colorAbs(v){
+  const x=Math.max(-1,Math.min(1,v));
+  for(let i=0;i<STOPS.length;i++){if(x<STOPS[i].m)return [STOPS[i].r,STOPS[i].g,STOPS[i].b,1];}
+  const s=STOPS[STOPS.length-1];return [s.r,s.g,s.b,1];
+}
 ${INDEX_HELPERS}
 function evaluatePixel(s){
   if(s.dataMask===0||isWaterCloud(s.SCL)) return [0,0,0,0];
   const v=${evalExpr};
   if(!isFinite(v)) return [0,0,0,0];
-  const t=(v+1)/2;
-  return colorT(t);
+  ${useUnitInterval ? 'return colorT((v+1)/2);' : 'return colorAbs(v);'}
 }`;
 }
 
@@ -259,11 +264,13 @@ function evaluatePixel(s){
 }
 
 export function buildNdrePreviewEvalscript() {
+  // Limiares absolutos alinhados à legenda (Baixo <0.20, Médio <0.35, Alto ≥0.35).
   return buildIndexPreview('ndre(s)', [
-    { m: 0.2, r: 0.85, g: 0.2, b: 0.2 },
-    { m: 0.5, r: 0.98, g: 0.85, b: 0.35 },
-    { m: 1.01, r: 0.12, g: 0.5, b: 0.22 },
-  ]);
+    { m: 0.2, r: 0.843, g: 0.188, b: 0.153 },
+    { m: 0.35, r: 0.992, g: 0.847, b: 0.208 },
+    { m: 0.5, r: 0.651, g: 0.851, b: 0.416 },
+    { m: 1.01, r: 0.106, g: 0.62, b: 0.467 },
+  ], { normalize: 'absolute' });
 }
 
 export function buildSaviPreviewEvalscript() {
@@ -271,23 +278,23 @@ export function buildSaviPreviewEvalscript() {
     { m: 0.25, r: 0.84, g: 0.19, b: 0.15 },
     { m: 0.55, r: 0.98, g: 0.85, b: 0.35 },
     { m: 1.01, r: 0.12, g: 0.5, b: 0.22 },
-  ]);
+  ], { normalize: 'absolute' });
 }
 
 export function buildBsiSoilPreviewEvalscript() {
   return buildIndexPreview('bsi(s)', [
-    { m: 0.35, r: 0.12, g: 0.5, b: 0.22 },
-    { m: 0.65, r: 0.98, g: 0.85, b: 0.35 },
+    { m: 0.05, r: 0.263, g: 0.627, b: 0.278 },
+    { m: 0.2, r: 0.976, g: 0.659, b: 0.145 },
     { m: 1.01, r: 0.82, g: 0.71, b: 0.55 },
-  ]);
+  ], { normalize: 'absolute' });
 }
 
 export function buildNdmiWaterStressPreviewEvalscript() {
   return buildIndexPreview('ndmi(s)', [
-    { m: 0.25, r: 0.84, g: 0.19, b: 0.15 },
-    { m: 0.55, r: 0.98, g: 0.85, b: 0.35 },
-    { m: 1.01, r: 0.2, g: 0.45, b: 0.75 },
-  ]);
+    { m: 0.2, r: 0.749, g: 0.212, b: 0.047 },
+    { m: 0.4, r: 0.259, g: 0.647, b: 0.961 },
+    { m: 1.01, r: 0.082, g: 0.396, b: 0.753 },
+  ], { normalize: 'absolute' });
 }
 
 /** @param {string} visualMode */
