@@ -2,11 +2,19 @@ import { storeNdviPreviewPng } from '../ndviPreviewStorage.js';
 import { NDVI_ENGINE_VERSION } from '../sentinelNdviReliability.js';
 
 const DATASET = 'COPERNICUS/S2_SR_HARMONIZED';
+const CLOUD_SCORE_PLUS = 'GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED';
 const DEFAULT_MAX_CLOUD = 35;
 const GEE_RENDER_SCALE_M = 10;
+const GEE_SWIR_SCALE_M = 20;
 const DEFAULT_THUMB_SIZE = 2048;
 const DEFAULT_INNER_BUFFER_M = 10;
 const DEFAULT_SMOOTHING_RADIUS_PX = 1;
+const MINIMUM_CLOUD_SCORE_CDF = Number(process.env.GEE_MIN_CS_CDF || 0.65);
+const MASK_VERSION = 'scl_csplus_v1';
+const CLOUD_MASK_VERSION = 'cloud_score_plus_v1';
+const ALGORITHM_VERSION = 'spectral_objective_v1';
+const CLASSIFICATION_VERSION = 'post_harvest_v0.1';
+const REFLECTANCE_SCALE = 0.0001;
 
 const VISUAL_MODES = Object.freeze({
   NDVI_ABSOLUTE: 'ndvi_absolute',
@@ -17,6 +25,8 @@ const VISUAL_MODES = Object.freeze({
   SAVI: 'savi',
   BSI_SOIL: 'bsi_soil',
   NDMI_WATER_STRESS: 'ndmi_water_stress',
+  POST_HARVEST_COVER: 'post_harvest_cover',
+  NBR2: 'nbr2',
 });
 
 const NDVI_AGRONOMIC_PALETTE = [
@@ -33,6 +43,29 @@ const NDVI_AGRONOMIC_PALETTE = [
 ];
 const SOIL_PALETTE = ['C49A6C', 'D8C18A', '8BC34A', '2E7D32'];
 const WATER_STRESS_PALETTE = ['8D1B1B', 'E65100', 'F9A825', '66BB6A', '81D4FA', '0D47A1'];
+/** Paleta categórica pós-colheita — verde só para vegetação residual (classe 1). */
+const POST_HARVEST_PALETTE = [
+  '8E8E8E', // 0 unknown
+  '2E7D32', // 1 green residual
+  'C8A96B', // 2 dry residue
+  '8A7B55', // 3 wet residue
+  'B56A3A', // 4 bare dry soil
+  '6F6257', // 5 bare wet soil
+  '2D78B7', // 6 water
+  'D9D9D9', // 7 masked
+];
+
+const POST_HARVEST_THRESHOLDS = Object.freeze({
+  greenResidualNdviMin: 0.35,
+  greenResidualSaviMin: 0.25,
+  bareSoilNdviMax: 0.22,
+  bareSoilBsiMin: 0.05,
+  dryResidueNdviMax: 0.32,
+  dryResidueNdreMax: 0.15,
+  dryResidueBsiMax: 0.15,
+  wetSurfaceNdviMax: 0.30,
+  wetSurfaceNdmiMin: 0.05,
+});
 
 let initialized = false;
 let initializing = null;
@@ -56,6 +89,8 @@ function rendererVersionFor(mode) {
       return 'savi_v3_abs_colormap_gee_10m';
     case VISUAL_MODES.BSI_SOIL:
       return 'bsi_soil_v3_abs_colormap_gee_10m';
+    case VISUAL_MODES.POST_HARVEST_COVER:
+      return 'post_harvest_cover_categorical_v0_1';
     case VISUAL_MODES.NDMI_WATER_STRESS:
       return 'ndmi_water_stress_v4_abs_moisture_gee_10m';
     case VISUAL_MODES.NDVI_ABSOLUTE:
@@ -310,19 +345,215 @@ function geometryFromPolygon(gee, polygon) {
 
 function buildSclValidMask(image) {
   const scl = image.select('SCL');
+  // Remove: no data, saturated, cloud shadow, cloud med/high, cirrus, snow.
+  // Keep water (6) masked out of vegetation stats via separate water class when needed.
   return scl
     .neq(0)
     .and(scl.neq(1))
     .and(scl.neq(3))
-    .and(scl.neq(6))
     .and(scl.neq(8))
     .and(scl.neq(9))
     .and(scl.neq(10))
     .and(scl.neq(11));
 }
 
-function maskClouds(image) {
-  return image.updateMask(buildSclValidMask(image));
+function buildCloudScorePlusMask(gee, image) {
+  const cs = image.select('cs_cdf', 'cs');
+  const cdf = cs.select('cs_cdf');
+  const threshold = MINIMUM_CLOUD_SCORE_CDF;
+  return cdf.gte(threshold);
+}
+
+function buildCombinedClearMask(gee, image) {
+  // SCL + Cloud Score+ (anexado antes via attachCloudScorePlus).
+  return buildSclValidMask(image).and(
+    image.select('cs_cdf').gte(MINIMUM_CLOUD_SCORE_CDF),
+  );
+}
+
+function attachCloudScorePlus(gee, image) {
+  const csMatch = gee
+    .ImageCollection(CLOUD_SCORE_PLUS)
+    .filter(gee.Filter.eq('system:index', image.get('system:index')))
+    .first();
+  return image.addBands(csMatch.select(['cs', 'cs_cdf']), ['cs', 'cs_cdf'], true);
+}
+
+function toReflectance(image) {
+  const optical = image
+    .select(['B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B11', 'B12'])
+    .multiply(REFLECTANCE_SCALE);
+  return optical
+    .addBands(image.select('SCL'), null, true)
+    .addBands(image.select(['cs', 'cs_cdf']), ['cs', 'cs_cdf'], true)
+    .copyProperties(image, image.propertyNames());
+}
+
+/**
+ * Prepara imagem para análise:
+ * 1) anexa Cloud Score+;
+ * 2) máscara SCL+CS+;
+ * 3) reflectância 0.0001 nas bandas ópticas.
+ * Stats usam a imagem mascarada (não suavizada). Preview pode suavizar depois.
+ */
+function prepareAnalysisImage(gee, image) {
+  const withCs = attachCloudScorePlus(gee, image);
+  const reflectance = toReflectance(withCs);
+  return reflectance.updateMask(buildCombinedClearMask(gee, withCs));
+}
+
+function maskClouds(gee, image) {
+  return prepareAnalysisImage(gee, image);
+}
+
+function isoDateOnly(d) {
+  const x = d instanceof Date ? d : new Date(d);
+  return x.toISOString().slice(0, 10);
+}
+
+function daysBetween(a, b) {
+  const ms = Math.abs(new Date(a).getTime() - new Date(b).getTime());
+  return Math.round(ms / 86400000);
+}
+
+function scoreGeeSceneCandidate({
+  validPixelPercent = 0,
+  cloudScoreQuality = 0.5,
+  dateProximity01 = 0,
+  temporalConsistency01 = 0.5,
+}) {
+  return (
+    (validPixelPercent / 100) * 0.45 +
+    cloudScoreQuality * 0.25 +
+    dateProximity01 * 0.2 +
+    temporalConsistency01 * 0.1
+  );
+}
+
+/**
+ * Preferência: cena individual válida.
+ * Lookback: 10 → 20 → 35 → 60 dias.
+ * Composição só como fallback curto (até 12 dias).
+ */
+async function resolveGeeAnalysisImage(gee, {
+  sceneId,
+  geometry,
+  startDate,
+  endDate,
+  imageDate,
+  maxCloud,
+  allowCompositeFallback = true,
+}) {
+  if (sceneId) {
+    const image = prepareAnalysisImage(gee, gee.Image(sceneId));
+    const acquisitionDate =
+      imageDate ||
+      isoDateOnly(new Date(Number(await getInfo(image.get('system:time_start')))));
+    return {
+      image,
+      selectedSceneId: await getInfo(image.id()),
+      acquisitionDate,
+      processingType: 'single_scene',
+      compositeStart: null,
+      compositeEnd: null,
+      lookbackDaysUsed: null,
+      imageScore: null,
+    };
+  }
+
+  const requested = imageDate || endDate || isoDateOnly(new Date());
+  const lookbacks = [10, 20, 35, 60];
+  let best = null;
+
+  for (const days of lookbacks) {
+    const start = new Date(requested);
+    start.setUTCDate(start.getUTCDate() - days);
+    const collection = sentinelCollection(gee, {
+      geometry,
+      startDate: isoDateOnly(start),
+      endDate: requested,
+      maxCloud,
+    }).limit(12);
+
+    const meta = await getInfo(
+      gee.Dictionary({
+        ids: collection.aggregate_array('system:id'),
+        times: collection.aggregate_array('system:time_start'),
+        clouds: collection.aggregate_array('CLOUDY_PIXEL_PERCENTAGE'),
+      }),
+    );
+    const ids = meta.ids || [];
+    for (let i = 0; i < ids.length; i += 1) {
+      const id = ids[i];
+      const acq = isoDateOnly(new Date(Number(meta.times[i])));
+      const sceneCloud = Number(meta.clouds[i] ?? 100);
+      const image = prepareAnalysisImage(gee, gee.Image(id));
+      const validMask = buildSclValidMask(image);
+      const maskStats = await calculateGeeMaskStats(gee, {
+        image,
+        validMask,
+        geometry,
+        scaleMeters: GEE_SWIR_SCALE_M,
+      });
+      if (maskStats.validPixelPercent < 70) continue;
+      const dateProximity01 = Math.max(0, 1 - daysBetween(requested, acq) / Math.max(days, 1));
+      const cloudScoreQuality = Math.max(0, 1 - sceneCloud / 100);
+      const score = scoreGeeSceneCandidate({
+        validPixelPercent: maskStats.validPixelPercent,
+        cloudScoreQuality,
+        dateProximity01,
+        temporalConsistency01: 0.6,
+      });
+      if (!best || score > best.imageScore) {
+        best = {
+          image,
+          selectedSceneId: id,
+          acquisitionDate: acq,
+          processingType: 'single_scene',
+          compositeStart: null,
+          compositeEnd: null,
+          lookbackDaysUsed: days,
+          imageScore: score,
+          validPixelPercent: maskStats.validPixelPercent,
+        };
+      }
+    }
+    if (best && best.validPixelPercent >= 90) break;
+    if (best) break;
+  }
+
+  if (best) return best;
+
+  if (!allowCompositeFallback) {
+    const err = new Error('Nenhuma cena individual válida encontrada no lookback');
+    err.code = 'empty_scenes';
+    err.status = 404;
+    throw err;
+  }
+
+  const compositeEnd = new Date(requested);
+  const compositeStart = new Date(requested);
+  compositeStart.setUTCDate(compositeStart.getUTCDate() - 12);
+  const composite = sentinelCollection(gee, {
+    geometry,
+    startDate: isoDateOnly(compositeStart),
+    endDate: isoDateOnly(compositeEnd),
+    maxCloud,
+  })
+    .map((img) => prepareAnalysisImage(gee, img))
+    .median()
+    .clip(geometry);
+
+  return {
+    image: composite,
+    selectedSceneId: `composite_${isoDateOnly(compositeStart)}_${isoDateOnly(compositeEnd)}`,
+    acquisitionDate: requested,
+    processingType: 'composite',
+    compositeStart: isoDateOnly(compositeStart),
+    compositeEnd: isoDateOnly(compositeEnd),
+    lookbackDaysUsed: 12,
+    imageScore: null,
+  };
 }
 
 function buildNdviValidMask(gee, { image, ndvi, geometry }) {
@@ -335,7 +566,7 @@ function buildNdviValidMask(gee, { image, ndvi, geometry }) {
     .and(b4.gt(0))
     .and(b8.gt(0));
   const ndviMask = ndvi.gte(-1).and(ndvi.lte(1));
-  return buildSclValidMask(image)
+  return buildCombinedClearMask(gee, image)
     .and(bandMask)
     .and(ndviMask)
     .updateMask(plotMask)
@@ -352,14 +583,14 @@ function buildIndexValidMask(gee, { image, index, geometry, bands }) {
         .and(bandImage.gt(0)),
     gee.Image.constant(1));
   const indexMask = index.gte(-1).and(index.lte(1));
-  return buildSclValidMask(image)
+  return buildCombinedClearMask(gee, image)
     .and(bandMask)
     .and(indexMask)
     .updateMask(plotMask)
     .clip(geometry);
 }
 
-async function calculateGeeMaskStats(gee, { image, validMask, geometry }) {
+async function calculateGeeMaskStats(gee, { image, validMask, geometry, scaleMeters = GEE_RENDER_SCALE_M }) {
   const one = gee.Image.constant(1);
   const sclExcludedMask = buildSclValidMask(image).not();
   const counts = await getInfo(
@@ -370,29 +601,52 @@ async function calculateGeeMaskStats(gee, { image, validMask, geometry }) {
     ]).reduceRegion({
       reducer: gee.Reducer.count(),
       geometry,
-      scale: GEE_RENDER_SCALE_M,
+      scale: scaleMeters,
       maxPixels: 1e9,
-      bestEffort: true,
+      bestEffort: false,
+      tileScale: 4,
     }),
   );
   const totalPixels = Number(counts?.total || 0);
   const validPixels = Number(counts?.valid || 0);
   const sclExcludedPixels = Number(counts?.scl_excluded || 0);
+  const validPixelPercent = totalPixels > 0 ? (validPixels / totalPixels) * 100 : 0;
+  const invalidPercentInsidePlot = Math.max(0, 100 - validPixelPercent);
   return {
     totalPixels,
     validPixels,
     maskedPixels: Math.max(0, totalPixels - validPixels),
     sclExcludedPixels,
+    validPixelPercent,
+    invalidPercentInsidePlot,
+    cloudMaskVersion: CLOUD_MASK_VERSION,
+    maskVersion: MASK_VERSION,
   };
 }
 
 function sentinelCollection(gee, { geometry, startDate, endDate, maxCloud }) {
   const cloudLimit = Number(maxCloud ?? process.env.GEE_MAX_CLOUD ?? DEFAULT_MAX_CLOUD);
-  return gee
+  const s2 = gee
     .ImageCollection(DATASET)
     .filterBounds(geometry)
     .filterDate(startDate, exclusiveEndDate(endDate))
-    .filter(gee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', cloudLimit))
+    .filter(gee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', cloudLimit));
+
+  const cloudScore = gee.ImageCollection(CLOUD_SCORE_PLUS);
+  const linked = s2.linkCollection(cloudScore, ['cs', 'cs_cdf']);
+
+  return linked
+    .map((image) => {
+      const clear = buildCombinedClearMask(gee, image);
+      return image
+        .updateMask(clear)
+        .copyProperties(image, [
+          'system:time_start',
+          'system:index',
+          'CLOUDY_PIXEL_PERCENTAGE',
+        ]);
+    })
+    // Preferência: cena individual com menos nuvem na metadata; scoring fino no polígono depois.
     .sort('CLOUDY_PIXEL_PERCENTAGE')
     .sort('system:time_start', false);
 }
@@ -706,6 +960,7 @@ function buildRawDerivedIndices(maskedImage, fastPlan) {
   let rawSavi = null;
   let rawNdmi = null;
   let rawBsi = null;
+  let rawNbr2 = null;
   if (!fastPlan?.minimalIndices) {
     rawNdre = maskedImage.normalizedDifference(['B8A', 'B5']);
     rawSavi = maskedImage.expression('((nir - red) / (nir + red + 0.5)) * 1.5', {
@@ -722,7 +977,8 @@ function buildRawDerivedIndices(maskedImage, fastPlan) {
         blue: maskedImage.select('B2'),
       },
     );
-    return { rawNdre, rawSavi, rawNdmi, rawBsi };
+    rawNbr2 = maskedImage.normalizedDifference(['B11', 'B12']);
+    return { rawNdre, rawSavi, rawNdmi, rawBsi, rawNbr2 };
   }
   if (indexNeededForFastPlan(fastPlan, 'ndre')) {
     rawNdre = maskedImage.normalizedDifference(['B8A', 'B5']);
@@ -741,10 +997,59 @@ function buildRawDerivedIndices(maskedImage, fastPlan) {
       },
     );
   }
-  return { rawNdre, rawSavi, rawNdmi, rawBsi };
+  if (indexNeededForFastPlan(fastPlan, 'nbr2')) {
+    rawNbr2 = maskedImage.normalizedDifference(['B11', 'B12']);
+  }
+  return { rawNdre, rawSavi, rawNdmi, rawBsi, rawNbr2 };
 }
 
-function resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi }) {
+function classifyPostHarvestCoverImage(gee, { ndvi, savi, ndre, ndmi, bsi, nbr2 }) {
+  const t = POST_HARVEST_THRESHOLDS;
+  const baseNdvi = ndvi;
+  if (!baseNdvi || !gee) return null;
+
+  // Classe 0 = indefinido; regras aplicadas na ordem (última where vence).
+  let classification = gee.Image(0).rename('SURFACE_CLASS');
+
+  const bareDry =
+    baseNdvi.lte(t.bareSoilNdviMax).and(
+      bsi ? bsi.gte(t.bareSoilBsiMin) : gee.Image(1),
+    );
+  const bareWet = bareDry.and(
+    ndmi ? ndmi.gte(t.wetSurfaceNdmiMin) : gee.Image(0),
+  );
+  const dryResidue = baseNdvi
+    .lte(t.dryResidueNdviMax)
+    .and(baseNdvi.gt(t.bareSoilNdviMax * 0.5))
+    .and(ndre ? ndre.lte(t.dryResidueNdreMax) : gee.Image(1))
+    .and(bsi ? bsi.lte(t.dryResidueBsiMax) : gee.Image(1));
+  const wetResidue = baseNdvi
+    .lte(t.wetSurfaceNdviMax)
+    .and(ndmi ? ndmi.gte(t.wetSurfaceNdmiMin) : gee.Image(0))
+    .and(bsi ? bsi.lt(t.bareSoilBsiMin + 0.05) : gee.Image(1));
+  const greenResidual = baseNdvi.gte(t.greenResidualNdviMin).and(
+    savi
+      ? savi.gte(t.greenResidualSaviMin)
+      : ndre
+        ? ndre.gte(0.18)
+        : gee.Image(1),
+  );
+
+  classification = classification.where(bareDry, 4);
+  classification = classification.where(bareWet, 5);
+  classification = classification.where(dryResidue, 2);
+  classification = classification.where(wetResidue, 3);
+  classification = classification.where(greenResidual, 1);
+  // nbr2 opcional: reforça resíduo seco quando SWIR2 disponível
+  if (nbr2) {
+    const dryResidueNbr2 = dryResidue.and(nbr2.gte(0.05));
+    classification = classification.where(dryResidueNbr2, 2);
+  }
+
+  return classification.toUint8().updateMask(baseNdvi.mask());
+}
+
+function resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi, nbr2, geeApi = null }) {
   switch (mode) {
     case VISUAL_MODES.NDRE:
       // Nunca cair em NDVI — isso pinta o talhão verde com escala NDRE.
@@ -753,11 +1058,57 @@ function resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi }) {
       return savi || null;
     case VISUAL_MODES.BSI_SOIL:
       return bsi || null;
+    case VISUAL_MODES.POST_HARVEST_COVER:
+      return classifyPostHarvestCoverImage(geeApi || ee, {
+        ndvi,
+        savi,
+        ndre,
+        ndmi,
+        bsi,
+        nbr2,
+      });
+    case VISUAL_MODES.NBR2:
+      return nbr2 || null;
     case VISUAL_MODES.NDMI_WATER_STRESS:
       return ndmi || null;
     default:
       return ndvi;
   }
+}
+
+function analysisScaleForMode(mode) {
+  switch (mode) {
+    case VISUAL_MODES.NDRE:
+    case VISUAL_MODES.NDMI_WATER_STRESS:
+    case VISUAL_MODES.BSI_SOIL:
+    case VISUAL_MODES.POST_HARVEST_COVER:
+    case VISUAL_MODES.NBR2:
+      return GEE_SWIR_SCALE_M;
+    default:
+      return GEE_RENDER_SCALE_M;
+  }
+}
+
+function buildSceneCacheKeyParts({
+  farmId,
+  plotId,
+  geometryHash,
+  objective,
+  imageId,
+  requestedDate,
+}) {
+  const req = String(requestedDate || '').slice(0, 10);
+  return [
+    farmId || '',
+    plotId || '',
+    geometryHash || '',
+    objective || '',
+    imageId || '',
+    ALGORITHM_VERSION,
+    CLASSIFICATION_VERSION,
+    req,
+    CLOUD_MASK_VERSION,
+  ].join('|');
 }
 
 function resolveContrastStretch(stats = {}) {
@@ -851,6 +1202,15 @@ function visualizationFor({ mode = VISUAL_MODES.NDVI_CONTRAST, stats = {} } = {}
   }
   if (mode === VISUAL_MODES.BSI_SOIL) {
     return { min: -0.25, max: 0.45, palette: SOIL_PALETTE, forceRgbOutput: true };
+  }
+  if (mode === VISUAL_MODES.POST_HARVEST_COVER) {
+    // Categorical: classes 0–7, sem stretch relativo.
+    return {
+      min: 0,
+      max: 7,
+      palette: POST_HARVEST_PALETTE,
+      forceRgbOutput: true,
+    };
   }
   if (mode === VISUAL_MODES.NDMI_WATER_STRESS) {
     // Escala absoluta alinhada à legenda (Seco <0.2, Adequado <0.4, Úmido ≥0.4).
@@ -1054,25 +1414,30 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       maxCloud,
       farmId,
       plotId,
-      visualMode = VISUAL_MODES.NDVI_CONTRAST,
+      visualMode = VISUAL_MODES.NDVI_ABSOLUTE,
       resolutionKind = 'preview',
+      allowCompositeFallback = true,
+      requestedDate,
+      objective = 'recommended',
     }) {
       const gee = await ensureGeeInitialized();
-      const mode = visualModes().includes(visualMode) ? visualMode : VISUAL_MODES.NDVI_CONTRAST;
+      const mode = visualModes().includes(visualMode) ? visualMode : VISUAL_MODES.NDVI_ABSOLUTE;
       const fastPlan = resolveFastPackagePlan({ resolutionKind, modes: [mode] });
       const fastContrastOnly = fastPlan.fastContrastOnly;
       const geometry = geometryFromPolygon(gee, polygon);
       const statsGeometry = await safeStatsGeometry(gee, geometry);
       const plotGeometry = geometry;
-      const image = sceneId
-        ? gee.Image(sceneId)
-        : sentinelCollection(gee, {
-            geometry,
-            startDate: startDate || imageDate,
-            endDate: endDate || imageDate,
-            maxCloud,
-          }).first();
-      const selectedSceneId = await getInfo(image.id());
+      const resolved = await resolveGeeAnalysisImage(gee, {
+        sceneId,
+        geometry,
+        startDate: startDate || imageDate,
+        endDate: endDate || imageDate,
+        imageDate: imageDate || requestedDate,
+        maxCloud,
+        allowCompositeFallback,
+      });
+      const image = resolved.image;
+      const selectedSceneId = resolved.selectedSceneId;
       if (!selectedSceneId) {
         const err = new Error('Nenhuma imagem adequada foi encontrada para o período selecionado');
         err.code = 'empty_scenes';
@@ -1080,32 +1445,27 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         throw err;
       }
 
-      const [timeStart, cloudCoverage] = await Promise.all([
-        imageDate
-          ? Promise.resolve(null)
-          : getInfo(image.get('system:time_start')),
-        getInfo(image.get('CLOUDY_PIXEL_PERCENTAGE')).catch(() => null),
-      ]);
-      const selectedImageDate =
-        imageDate ||
-        new Date(Number(timeStart)).toISOString().slice(0, 10);
+      const cloudCoverage = await getInfo(image.get('CLOUDY_PIXEL_PERCENTAGE')).catch(() => null);
+      const selectedImageDate = resolved.acquisitionDate;
 
-      const maskedImage = maskClouds(image);
+      // Já mascarada + reflectância; não reaplicar maskClouds.
+      const maskedImage = image;
       const rawNdvi = maskedImage.normalizedDifference(['B8', 'B4']);
       const {
         rawNdre,
         rawSavi,
         rawNdmi,
         rawBsi,
+        rawNbr2,
       } = buildRawDerivedIndices(maskedImage, fastPlan);
 
       const statsValidMask = buildNdviValidMask(gee, {
-        image,
+        image: maskedImage,
         ndvi: rawNdvi,
         geometry: statsGeometry.geometry,
       });
       const renderValidMask = buildNdviValidMask(gee, {
-        image,
+        image: maskedImage,
         ndvi: rawNdvi,
         geometry: plotGeometry,
       });
@@ -1115,13 +1475,13 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       let renderNdmiMask = null;
       if (rawNdre) {
         statsNdreMask = buildIndexValidMask(gee, {
-          image,
+          image: maskedImage,
           index: rawNdre,
           geometry: statsGeometry.geometry,
           bands: ['B8A', 'B5'],
         });
         renderNdreMask = buildIndexValidMask(gee, {
-          image,
+          image: maskedImage,
           index: rawNdre,
           geometry: plotGeometry,
           bands: ['B8A', 'B5'],
@@ -1129,13 +1489,13 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       }
       if (rawNdmi) {
         statsNdmiMask = buildIndexValidMask(gee, {
-          image,
+          image: maskedImage,
           index: rawNdmi,
           geometry: statsGeometry.geometry,
           bands: ['B8', 'B11'],
         });
         renderNdmiMask = buildIndexValidMask(gee, {
-          image,
+          image: maskedImage,
           index: rawNdmi,
           geometry: plotGeometry,
           bands: ['B8', 'B11'],
@@ -1154,6 +1514,9 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       const bsi = rawBsi
         ? maskIndexToGeometry(gee, rawBsi.updateMask(statsValidMask), statsGeometry.geometry, 'BSI')
         : null;
+      const nbr2 = rawNbr2
+        ? maskIndexToGeometry(gee, rawNbr2.updateMask(statsValidMask), statsGeometry.geometry, 'NBR2')
+        : null;
       const renderNdvi = maskIndexToGeometry(gee, rawNdvi.updateMask(renderValidMask), plotGeometry, 'NDVI');
       const renderNdre = rawNdre && renderNdreMask
         ? maskIndexToGeometry(gee, rawNdre.updateMask(renderNdreMask), plotGeometry, 'NDRE')
@@ -1166,6 +1529,9 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         : null;
       const renderBsi = rawBsi
         ? maskIndexToGeometry(gee, rawBsi.updateMask(renderValidMask), plotGeometry, 'BSI')
+        : null;
+      const renderNbr2 = rawNbr2
+        ? maskIndexToGeometry(gee, rawNbr2.updateMask(renderValidMask), plotGeometry, 'NBR2')
         : null;
 
       const rendererVersion = rendererVersionFor(mode);
@@ -1315,6 +1681,8 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         savi: renderSavi,
         bsi: renderBsi,
         ndmi: renderNdmi,
+        nbr2: renderNbr2,
+        geeApi: gee,
       });
       if (!rawRenderImage) {
         const err = new Error(
@@ -1364,7 +1732,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         redBand: 'B4',
         nirBand: 'B8',
         sclAvailable: true,
-        cloudMaskVersion: 'scl_v1',
+        cloudMaskVersion: CLOUD_MASK_VERSION,
         validPixelCount: maskStats.validPixels,
         maskedPixelCount: maskStats.maskedPixels,
         sclExcludedPixelCount: maskStats.sclExcludedPixels,
@@ -1428,24 +1796,38 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
           : 0,
         source_context: {
           dataset: DATASET,
+          collectionId: DATASET,
           productLevel: 'L2A',
           redBand: 'B4',
           nirBand: 'B8',
           sclAvailable: true,
           usesUnclassifiedScl: true,
-          cloudMaskVersion: 'scl_v1',
+          cloudMaskVersion: CLOUD_MASK_VERSION,
+          maskVersion: MASK_VERSION,
+          algorithmVersion: ALGORITHM_VERSION,
+          classificationVersion: CLASSIFICATION_VERSION,
+          processingType: typeof resolved !== 'undefined' ? resolved.processingType : 'single_scene',
+          compositeStart: typeof resolved !== 'undefined' ? resolved.compositeStart : null,
+          compositeEnd: typeof resolved !== 'undefined' ? resolved.compositeEnd : null,
+          lookbackDaysUsed: typeof resolved !== 'undefined' ? resolved.lookbackDaysUsed : null,
+          imageScore: typeof resolved !== 'undefined' ? resolved.imageScore : null,
+          imageId: selectedSceneId,
+          acquisitionDate: selectedImageDate,
+          nativeAnalysisScaleMeters: analysisScaleForMode(mode),
           ndviEngineVersion: rendererVersion,
           rasterWidth: renderedPng.thumbSize,
           rasterHeight: renderedPng.thumbSize,
           bboxRequested: polygonToBounds(polygon),
           bboxReturned: polygonToBounds(polygon),
           crs: 'EPSG:4326',
-          resolutionMeters: GEE_RENDER_SCALE_M,
+          resolutionMeters: analysisScaleForMode(mode),
           fieldPolygonBounds: polygonToBounds(polygon),
           overlayBounds: polygonToBounds(polygon),
           validPixelCount: maskStats.validPixels,
           maskedPixelCount: maskStats.maskedPixels,
           sclExcludedPixelCount: maskStats.sclExcludedPixels,
+          validPixelPercent: maskStats.validPixelPercent,
+          invalidPercentInsidePlot: maskStats.invalidPercentInsidePlot,
         },
       };
 
@@ -1489,6 +1871,9 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       plotId,
       modes = visualModes(),
       resolutionKind = 'preview',
+      allowCompositeFallback = true,
+      requestedDate,
+      objective = 'recommended',
     }) {
       const startedAt = Date.now();
       const gee = await ensureGeeInitialized();
@@ -1503,15 +1888,17 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       const geometry = geometryFromPolygon(gee, polygon);
       const statsGeometry = await safeStatsGeometry(gee, geometry);
       const plotGeometry = geometry;
-      const image = sceneId
-        ? gee.Image(sceneId)
-        : sentinelCollection(gee, {
-            geometry,
-            startDate: startDate || imageDate,
-            endDate: endDate || imageDate,
-            maxCloud,
-          }).first();
-      const selectedSceneId = await getInfo(image.id());
+      const resolved = await resolveGeeAnalysisImage(gee, {
+        sceneId,
+        geometry,
+        startDate: startDate || imageDate,
+        endDate: endDate || imageDate,
+        imageDate: imageDate || requestedDate,
+        maxCloud,
+        allowCompositeFallback,
+      });
+      const image = resolved.image;
+      const selectedSceneId = resolved.selectedSceneId;
       if (!selectedSceneId) {
         const err = new Error('Nenhuma imagem adequada foi encontrada para o período selecionado');
         err.code = 'empty_scenes';
@@ -1519,16 +1906,9 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         throw err;
       }
 
-      const [timeStart, cloudCoverage] = await Promise.all([
-        imageDate
-          ? Promise.resolve(null)
-          : getInfo(image.get('system:time_start')),
-        getInfo(image.get('CLOUDY_PIXEL_PERCENTAGE')).catch(() => null),
-      ]);
-      const selectedImageDate =
-        imageDate ||
-        new Date(Number(timeStart)).toISOString().slice(0, 10);
-      const maskedImage = maskClouds(image);
+      const cloudCoverage = await getInfo(image.get('CLOUDY_PIXEL_PERCENTAGE')).catch(() => null);
+      const selectedImageDate = resolved.acquisitionDate;
+      const maskedImage = image;
 
       // Pacote único da cena: as bandas são selecionadas uma vez e todos os
       // índices são derivados desse mesmo contexto GEE.
@@ -1538,15 +1918,16 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         rawSavi,
         rawNdmi,
         rawBsi,
+        rawNbr2,
       } = buildRawDerivedIndices(maskedImage, fastPlan);
 
       const statsValidMask = buildNdviValidMask(gee, {
-        image,
+        image: maskedImage,
         ndvi: rawNdvi,
         geometry: statsGeometry.geometry,
       });
       const renderValidMask = buildNdviValidMask(gee, {
-        image,
+        image: maskedImage,
         ndvi: rawNdvi,
         geometry: plotGeometry,
       });
@@ -1562,7 +1943,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
           bands: ['B8A', 'B5'],
         });
         renderNdreMask = buildIndexValidMask(gee, {
-          image,
+          image: maskedImage,
           index: rawNdre,
           geometry: plotGeometry,
           bands: ['B8A', 'B5'],
@@ -1570,13 +1951,13 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       }
       if (rawNdmi) {
         statsNdmiMask = buildIndexValidMask(gee, {
-          image,
+          image: maskedImage,
           index: rawNdmi,
           geometry: statsGeometry.geometry,
           bands: ['B8', 'B11'],
         });
         renderNdmiMask = buildIndexValidMask(gee, {
-          image,
+          image: maskedImage,
           index: rawNdmi,
           geometry: plotGeometry,
           bands: ['B8', 'B11'],
@@ -1596,6 +1977,9 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       const bsi = rawBsi
         ? maskIndexToGeometry(gee, rawBsi.updateMask(statsValidMask), statsGeometry.geometry, 'BSI')
         : null;
+      const nbr2 = rawNbr2
+        ? maskIndexToGeometry(gee, rawNbr2.updateMask(statsValidMask), statsGeometry.geometry, 'NBR2')
+        : null;
       const renderNdvi = maskIndexToGeometry(gee, rawNdvi.updateMask(renderValidMask), plotGeometry, 'NDVI');
       const renderNdre = rawNdre && renderNdreMask
         ? maskIndexToGeometry(gee, rawNdre.updateMask(renderNdreMask), plotGeometry, 'NDRE')
@@ -1608,6 +1992,9 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         : null;
       const renderBsi = rawBsi
         ? maskIndexToGeometry(gee, rawBsi.updateMask(renderValidMask), plotGeometry, 'BSI')
+        : null;
+      const renderNbr2 = rawNbr2
+        ? maskIndexToGeometry(gee, rawNbr2.updateMask(renderValidMask), plotGeometry, 'NBR2')
         : null;
 
       const maskStats = await calculateGeeMaskStats(gee, {
@@ -1791,6 +2178,8 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
               savi: renderSavi,
               bsi: renderBsi,
               ndmi: renderNdmi,
+              nbr2: renderNbr2,
+              geeApi: gee,
             });
             if (!rawRenderImage) {
               return {
@@ -1841,15 +2230,29 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
               gee_smoothing_radius_px: renderedPng.smoothingApplied
                 ? numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX)
                 : 0,
-              source_context: {
-                dataset: DATASET,
-                productLevel: 'L2A',
-                redBand: 'B4',
-                nirBand: 'B8',
-                sclAvailable: true,
-                usesUnclassifiedScl: true,
-                cloudMaskVersion: 'scl_v1',
-                ndviEngineVersion: rendererVersion,
+        source_context: {
+          dataset: DATASET,
+          collectionId: DATASET,
+          productLevel: 'L2A',
+          redBand: 'B4',
+          nirBand: 'B8',
+          sclAvailable: true,
+          usesUnclassifiedScl: true,
+          cloudMaskVersion: CLOUD_MASK_VERSION,
+          maskVersion: MASK_VERSION,
+          algorithmVersion: ALGORITHM_VERSION,
+          classificationVersion: CLASSIFICATION_VERSION,
+          processingType: resolved.processingType,
+          compositeStart: resolved.compositeStart,
+          compositeEnd: resolved.compositeEnd,
+          lookbackDaysUsed: resolved.lookbackDaysUsed,
+          imageScore: resolved.imageScore,
+          imageId: selectedSceneId,
+          acquisitionDate: selectedImageDate,
+          requestedDate: requestedDate || imageDate || selectedImageDate,
+          objective,
+          nativeAnalysisScaleMeters: analysisScaleForMode(mode),
+          ndviEngineVersion: rendererVersion,
                 rasterWidth: renderedPng.thumbSize,
                 rasterHeight: renderedPng.thumbSize,
                 bboxRequested: polygonToBounds(polygon),

@@ -330,4 +330,5 @@ export const VISUAL_MODES = [
   'savi',
   'bsi_soil',
   'ndmi_water_stress',
+  'post_harvest_cover',
 ];

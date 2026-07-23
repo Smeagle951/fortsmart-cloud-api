@@ -89,9 +89,14 @@ function buildScenePackageKey({
   acquisitionDate,
   polygonHash,
   resolutionKind = 'preview',
-  cloudMaskVersion = 'scl_v2',
-  rendererVersion = 'agronomic_contrast_v7_inner_buffer',
+  cloudMaskVersion = 'cloud_score_plus_v1',
+  rendererVersion = 'spectral_objective_v1',
+  objective = 'recommended',
+  algorithmVersion = 'spectral_objective_v1',
+  classificationVersion = 'post_harvest_v0.1',
+  requestedDate,
 }) {
+  const req = String(requestedDate || acquisitionDate || '').slice(0, 10);
   return [
     farmId,
     plotId,
@@ -101,6 +106,10 @@ function buildScenePackageKey({
     resolutionKind,
     cloudMaskVersion,
     rendererVersion,
+    objective,
+    algorithmVersion,
+    classificationVersion,
+    req,
   ].join('_');
 }
 
@@ -181,6 +190,8 @@ function sourceBandsForMode(mode) {
       return ['B8A', 'B05'];
     case 'bsi_soil':
       return ['B04', 'B08', 'B11'];
+    case 'post_harvest_cover':
+      return ['B02', 'B04', 'B05', 'B08', 'B8A', 'B11', 'B12'];
     case 'ndvi_contrast':
     case 'ndvi_absolute':
     case 'ndvi_relative':
@@ -828,6 +839,7 @@ class SoilSamplingNdviService {
     modes = null,
     resolutionKind = 'preview',
     force = false,
+    objective = 'recommended',
   }) {
     const defaultModes = [
       'ndvi_contrast',
@@ -837,6 +849,7 @@ class SoilSamplingNdviService {
       'ndmi_water_stress',
       'ndre',
       'bsi_soil',
+      'post_harvest_cover',
     ];
     const requestedModes = Array.isArray(modes) && modes.length
       ? modes.map((mode) => resolveRequestedVisualMode(mode)).filter(Boolean)
@@ -892,6 +905,10 @@ class SoilSamplingNdviService {
       acquisitionDate: effectiveImageDate || normalizedImageDate,
       polygonHash,
       resolutionKind,
+      cloudMaskVersion: 'cloud_score_plus_v1',
+      rendererVersion: 'spectral_objective_v1',
+      objective: objective || 'recommended',
+      requestedDate: normalizedImageDate || effectiveImageDate,
     });
     console.log('[NDVI] CACHE_PACKAGE_LOOKUP', {
       key: packageCacheKey,
