@@ -41,7 +41,8 @@ const NDVI_AGRONOMIC_PALETTE = [
   '1A9850',
   '006837',
 ];
-const SOIL_PALETTE = ['C49A6C', 'D8C18A', '8BC34A', '2E7D32'];
+/** BSI: baixo = vegetação (verde), alto = solo exposto (marrom). Nunca inverter. */
+const SOIL_PALETTE = ['2E7D32', '8BC34A', 'F9A825', '8D6E63'];
 const WATER_STRESS_PALETTE = ['8D1B1B', 'E65100', 'F9A825', '66BB6A', '81D4FA', '0D47A1'];
 /** Paleta categórica pós-colheita — verde só para vegetação residual (classe 1). */
 const POST_HARVEST_PALETTE = [
@@ -67,6 +68,238 @@ const POST_HARVEST_THRESHOLDS = Object.freeze({
   wetSurfaceNdmiMin: 0.05,
 });
 
+const POST_HARVEST_CLASS_META = Object.freeze({
+  0: { id: 'unknown', label: 'Indefinido', countsInValidArea: false },
+  1: { id: 'greenResidualVegetation', label: 'Vegetação residual', countsInValidArea: true },
+  2: { id: 'probableDryResidue', label: 'Palhada seca provável', countsInValidArea: true },
+  3: { id: 'probableWetResidue', label: 'Palhada úmida aparente', countsInValidArea: true },
+  4: { id: 'probableBareDrySoil', label: 'Solo exposto seco', countsInValidArea: true },
+  5: { id: 'probableBareWetSoil', label: 'Solo exposto úmido', countsInValidArea: true },
+  6: { id: 'water', label: 'Água', countsInValidArea: true },
+  7: { id: 'masked', label: 'Mascarado', countsInValidArea: false },
+});
+
+/** Legenda Solo/cobertura (mesmas classes 0–7, rótulos de campo). */
+const SOIL_COVER_CLASS_META = Object.freeze({
+  0: { id: 'unknown', label: 'Indefinido', countsInValidArea: false },
+  1: { id: 'greenVegetation', label: 'Vegetação verde', countsInValidArea: true },
+  2: { id: 'dryResidue', label: 'Palhada', countsInValidArea: true },
+  3: { id: 'wetResidue', label: 'Palhada úmida aparente', countsInValidArea: true },
+  4: { id: 'bareDrySoil', label: 'Solo exposto', countsInValidArea: true },
+  5: { id: 'bareWetSoil', label: 'Solo úmido aparente', countsInValidArea: true },
+  6: { id: 'water', label: 'Água / umidade aparente', countsInValidArea: true },
+  7: { id: 'masked', label: 'Mascarado', countsInValidArea: false },
+});
+
+/** NDRE: 1 baixo / 2 médio / 3 alto — cores = legenda (não stretch contínuo). */
+const NDRE_CLASS_PALETTE = ['C62828', 'FDD835', '2E7D32'];
+/** NDMI: 1 seco / 2 adequado / 3 úmido. */
+const NDMI_CLASS_PALETTE = ['BF360C', '42A5F5', '1565C0'];
+
+function isCategoricalCoverMode(mode) {
+  return mode === VISUAL_MODES.POST_HARVEST_COVER || mode === VISUAL_MODES.BSI_SOIL;
+}
+
+function isDiscreteIndexClassMode(mode) {
+  return mode === VISUAL_MODES.NDRE || mode === VISUAL_MODES.NDMI_WATER_STRESS;
+}
+
+function isCategoricalRenderMode(mode) {
+  return isCategoricalCoverMode(mode) || isDiscreteIndexClassMode(mode);
+}
+
+function classMetaForMode(mode) {
+  if (mode === VISUAL_MODES.BSI_SOIL) return SOIL_COVER_CLASS_META;
+  return POST_HARVEST_CLASS_META;
+}
+
+function selectedBandForMode(mode) {
+  switch (mode) {
+    case VISUAL_MODES.POST_HARVEST_COVER:
+    case VISUAL_MODES.BSI_SOIL:
+      return 'SURFACE_CLASS';
+    case VISUAL_MODES.NDRE:
+      return 'NDRE_CLASS';
+    case VISUAL_MODES.NDMI_WATER_STRESS:
+      return 'NDMI_CLASS';
+    case VISUAL_MODES.SAVI:
+      return 'SAVI';
+    case VISUAL_MODES.NBR2:
+      return 'NBR2';
+    default:
+      return 'NDVI';
+  }
+}
+
+function renderTypeForMode(mode) {
+  return isCategoricalRenderMode(mode) ? 'categorical' : 'continuous';
+}
+
+function buildSpectralContractFields({
+  mode,
+  objective = 'recommended',
+  maskStats = {},
+  stats = {},
+  rendererVersion,
+}) {
+  const warnings = [];
+  if (mode === VISUAL_MODES.POST_HARVEST_COVER) {
+    warnings.push(
+      'Classificação pós-colheita em calibração (post_harvest_v0.1) — confiança operacional, não acurácia de campo.',
+    );
+  }
+  if (mode === VISUAL_MODES.BSI_SOIL) {
+    warnings.push(
+      'Solo e cobertura: classes estimadas (NDVI+BSI+NDMI+NDRE). Não confirma origem da palhada.',
+    );
+  }
+  if (mode === VISUAL_MODES.NDVI_CONTRAST) {
+    warnings.push(
+      'Contraste relativo é só inspeção interna; não representa classes absolutas de vigor.',
+    );
+  }
+  if (Number(maskStats.validPixelPercent) < 60) {
+    warnings.push(
+      'Poucos pixels válidos no talhão — interpretar com cautela.',
+    );
+  }
+  if (
+    mode === VISUAL_MODES.NDRE &&
+    Number.isFinite(Number(stats.ndre_mean)) &&
+    Number(stats.ndre_mean) < 0.2
+  ) {
+    warnings.push(
+      'NDRE baixo: valor espectral técnico; sem plantio vinculado não interpretar como clorofila da cultura.',
+    );
+  }
+
+  return {
+    recommendation: {
+      objective,
+      visualMode: mode,
+      selectedBand: selectedBandForMode(mode),
+      renderType: renderTypeForMode(mode),
+      rendererVersion,
+      algorithmVersion: ALGORITHM_VERSION,
+      classificationVersion: isCategoricalCoverMode(mode)
+        ? CLASSIFICATION_VERSION
+        : null,
+      releaseStatus:
+        mode === VISUAL_MODES.POST_HARVEST_COVER ? 'calibration' : 'operational',
+    },
+    quality: {
+      validPixelCount: maskStats.validPixels ?? stats.validPixelCount ?? null,
+      validPixelPercent: maskStats.validPixelPercent ?? null,
+      maskedPixelCount: maskStats.maskedPixels ?? stats.maskedPixelCount ?? null,
+      sclExcludedPixelCount: maskStats.sclExcludedPixels ?? null,
+      invalidPercentInsidePlot: maskStats.invalidPercentInsidePlot ?? null,
+      cloudMaskVersion: CLOUD_MASK_VERSION,
+      maskVersion: MASK_VERSION,
+      analysisScaleMeters: analysisScaleForMode(mode),
+    },
+    warnings,
+  };
+}
+
+async function calculateSurfaceClassAreas(gee, {
+  classification,
+  geometry,
+  scaleMeters = GEE_SWIR_SCALE_M,
+  classMeta = POST_HARVEST_CLASS_META,
+}) {
+  if (!classification || !gee) {
+    return {
+      status: 'insufficientData',
+      validPixelCount: 0,
+      validAreaHa: 0,
+      classAreas: [],
+      dominantClass: null,
+    };
+  }
+  const metaByCode = classMeta || POST_HARVEST_CLASS_META;
+  const pixelArea = gee.Image.pixelArea();
+  const areaBands = [];
+  for (let code = 0; code <= 7; code += 1) {
+    areaBands.push(
+      pixelArea.updateMask(classification.eq(code)).rename(`c${code}`),
+    );
+  }
+  const areas = await getInfo(
+    gee.Image.cat(areaBands).reduceRegion({
+      reducer: gee.Reducer.sum(),
+      geometry,
+      scale: scaleMeters,
+      maxPixels: 1e9,
+      bestEffort: true,
+    }),
+  );
+
+  const pixelAreaM2 = scaleMeters * scaleMeters;
+  let validAreaM2 = 0;
+  const rows = [];
+  for (let code = 0; code <= 7; code += 1) {
+    const meta = metaByCode[code] || POST_HARVEST_CLASS_META[code];
+    if (!meta) continue;
+    const areaM2 = Number(areas?.[`c${code}`] || 0);
+    if (!Number.isFinite(areaM2) || areaM2 <= 0) continue;
+    if (meta.countsInValidArea) validAreaM2 += areaM2;
+    rows.push({
+      classCode: code,
+      classId: meta.id,
+      label: meta.label,
+      areaHa: roundOrNull(areaM2 / 10000),
+      areaM2: roundOrNull(areaM2),
+      countsInValidArea: meta.countsInValidArea,
+    });
+  }
+
+  if (validAreaM2 <= 0) {
+    return {
+      status: 'insufficientData',
+      reason: 'Nenhum pixel válido foi retornado para esta camada.',
+      validPixelCount: 0,
+      validAreaHa: 0,
+      classAreas: [],
+      dominantClass: null,
+    };
+  }
+
+  const classAreas = rows
+    .filter((row) => row.countsInValidArea)
+    .map((row) => ({
+      classCode: row.classCode,
+      classId: row.classId,
+      label: row.label,
+      areaHa: row.areaHa,
+      percentValidArea: percent(row.areaM2, validAreaM2),
+    }))
+    .sort((a, b) => Number(b.percentValidArea || 0) - Number(a.percentValidArea || 0));
+
+  const dominant = classAreas[0] || null;
+  const bareSoilPercent = percent(
+    (Number(areas?.c4 || 0) + Number(areas?.c5 || 0)),
+    validAreaM2,
+  );
+  const strawPercent = percent(
+    (Number(areas?.c2 || 0) + Number(areas?.c3 || 0)),
+    validAreaM2,
+  );
+  const greenResidualPercent = percent(Number(areas?.c1 || 0), validAreaM2);
+
+  return {
+    status: 'ok',
+    validPixelCount: Math.round(validAreaM2 / pixelAreaM2),
+    validAreaHa: roundOrNull(validAreaM2 / 10000),
+    classAreas,
+    dominantClass: dominant
+      ? { classCode: dominant.classCode, classId: dominant.classId }
+      : null,
+    bare_soil_percent: bareSoilPercent,
+    straw_percent: strawPercent,
+    green_residual_percent: greenResidualPercent,
+  };
+}
+
 let initialized = false;
 let initializing = null;
 let ee = null;
@@ -84,15 +317,15 @@ function rendererVersionFor(mode) {
     case VISUAL_MODES.AGRONOMIC_CLASSES:
       return 'agronomic_classes_v2_gee_10m';
     case VISUAL_MODES.NDRE:
-      return 'ndre_v3_abs_colormap_gee_10m';
+      return 'ndre_v5_discrete_classes_gee_20m';
     case VISUAL_MODES.SAVI:
       return 'savi_v3_abs_colormap_gee_10m';
     case VISUAL_MODES.BSI_SOIL:
-      return 'bsi_soil_v3_abs_colormap_gee_10m';
+      return 'bsi_soil_v5_categorical_cover_gee_20m';
     case VISUAL_MODES.POST_HARVEST_COVER:
-      return 'post_harvest_cover_categorical_v0_1';
+      return 'post_harvest_cover_categorical_v0_2';
     case VISUAL_MODES.NDMI_WATER_STRESS:
-      return 'ndmi_water_stress_v4_abs_moisture_gee_10m';
+      return 'ndmi_water_stress_v5_discrete_classes_gee_20m';
     case VISUAL_MODES.NDVI_ABSOLUTE:
     default:
       return 'ndvi_absolute_v2_gee_10m';
@@ -308,7 +541,14 @@ function maskIndexToGeometry(gee, image, geometry, bandName) {
   return image.updateMask(plotMask).clip(geometry).rename(bandName);
 }
 
-function smoothForPreview(image, geometry) {
+function smoothForPreview(image, geometry, { categorical = false } = {}) {
+  // Categórico: nearest — bicubic/median misturaria classes (verde/palhada/solo).
+  if (categorical) {
+    return image
+      .resample('nearest')
+      .updateMask(image.mask())
+      .clip(geometry);
+  }
   const radius = numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX);
   const resampled = image.resample('bicubic');
   if (!Number.isFinite(radius) || radius <= 0) {
@@ -719,7 +959,7 @@ async function calculateIndexStats(gee, { ndre, savi, bsi, ndmi, geometry }) {
     calculateSingleIndexStats(gee, { image: bsi, bandName: 'BSI', geometry }),
     calculateSingleIndexStats(gee, { image: ndmi, bandName: 'NDMI', geometry }),
   ]);
-  const [moistureBuckets, chlorophyllBuckets] = await Promise.all([
+  const [moistureBuckets, chlorophyllBuckets, soilCoverBuckets] = await Promise.all([
     ndmi
       ? calculateThresholdPercents(gee, {
           geometry,
@@ -731,13 +971,27 @@ async function calculateIndexStats(gee, { ndre, savi, bsi, ndmi, geometry }) {
           },
         })
       : {},
-    ndre && Number.isFinite(ndreStats.p25) && Number.isFinite(ndreStats.p75)
+    // NDRE absoluto (não p25/p75 relativo) — evita “Médio 100%” em cena uniforme baixa.
+    ndre
       ? calculateThresholdPercents(gee, {
           geometry,
           baseImage: ndre,
           bands: {
-            lowChlorophyllPercent: ndre.lte(ndreStats.p25),
-            highChlorophyllPercent: ndre.gte(ndreStats.p75),
+            lowChlorophyllPercent: ndre.lt(0.2),
+            mediumChlorophyllPercent: ndre.gte(0.2).and(ndre.lt(0.35)),
+            highChlorophyllPercent: ndre.gte(0.35),
+          },
+        })
+      : {},
+    // BSI absoluto alinhado ao colormap local (baixo=veg, alto=solo).
+    bsi
+      ? calculateThresholdPercents(gee, {
+          geometry,
+          baseImage: bsi,
+          bands: {
+            vegetationCoverPercent: bsi.lt(0.05),
+            strawPercent: bsi.gte(0.05).and(bsi.lt(0.2)),
+            bareSoilPercent: bsi.gte(0.2),
           },
         })
       : {},
@@ -752,6 +1006,7 @@ async function calculateIndexStats(gee, { ndre, savi, bsi, ndmi, geometry }) {
     ndre_p75: ndreStats.p75,
     ndre_p95: ndreStats.p95,
     lowChlorophyllPercent: chlorophyllBuckets.lowChlorophyllPercent,
+    mediumChlorophyllPercent: chlorophyllBuckets.mediumChlorophyllPercent,
     highChlorophyllPercent: chlorophyllBuckets.highChlorophyllPercent,
     savi_mean: saviStats.mean,
     savi_min: saviStats.min,
@@ -765,6 +1020,9 @@ async function calculateIndexStats(gee, { ndre, savi, bsi, ndmi, geometry }) {
     bsi_p5: bsiStats.p5,
     bsi_p50: bsiStats.p50,
     bsi_p95: bsiStats.p95,
+    bare_soil_percent: soilCoverBuckets.bareSoilPercent,
+    straw_percent: soilCoverBuckets.strawPercent,
+    vegetation_cover_percent: soilCoverBuckets.vegetationCoverPercent,
     ndmi_mean: ndmiStats.mean,
     ndmi_min: ndmiStats.min,
     ndmi_max: ndmiStats.max,
@@ -883,7 +1141,7 @@ function resolveFastPackagePlan({ resolutionKind, modes }) {
       VISUAL_MODES.NDVI_ABSOLUTE,
       VISUAL_MODES.NDRE,
       VISUAL_MODES.NDMI_WATER_STRESS,
-      VISUAL_MODES.BSI_SOIL,
+      // BSI_SOIL categórico precisa NDVI+SAVI+NDRE+NDMI+BSI — sem fast single.
       VISUAL_MODES.NDVI_RELATIVE,
     ]);
     if (fastSingleModes.has(mode)) {
@@ -1008,8 +1266,12 @@ function classifyPostHarvestCoverImage(gee, { ndvi, savi, ndre, ndmi, bsi, nbr2 
   const baseNdvi = ndvi;
   if (!baseNdvi || !gee) return null;
 
-  // Classe 0 = indefinido; regras aplicadas na ordem (última where vence).
-  let classification = gee.Image(0).rename('SURFACE_CLASS');
+  // Pixels mascarados NÃO podem virar classe 0 (unknown) válida.
+  const validMask = baseNdvi.mask();
+  let classification = gee
+    .Image(0)
+    .rename('SURFACE_CLASS')
+    .updateMask(validMask);
 
   const bareDry =
     baseNdvi.lte(t.bareSoilNdviMax).and(
@@ -1046,18 +1308,53 @@ function classifyPostHarvestCoverImage(gee, { ndvi, savi, ndre, ndmi, bsi, nbr2 
     classification = classification.where(dryResidueNbr2, 2);
   }
 
-  return classification.toUint8().updateMask(baseNdvi.mask());
+  return classification.updateMask(validMask).toUint8();
+}
+
+/** Classes discretas NDRE alinhadas à legenda Baixo/Médio/Alto. */
+function classifyNdreClassImage(gee, ndre) {
+  if (!ndre || !gee) return null;
+  const validMask = ndre.mask();
+  let classification = gee
+    .Image(0)
+    .rename('NDRE_CLASS')
+    .updateMask(validMask);
+  classification = classification.where(ndre.lt(0.2), 1);
+  classification = classification.where(ndre.gte(0.2).and(ndre.lt(0.35)), 2);
+  classification = classification.where(ndre.gte(0.35), 3);
+  return classification.updateMask(validMask).toUint8();
+}
+
+/** Classes discretas NDMI alinhadas à legenda Seco/Adequado/Úmido. */
+function classifyNdmiClassImage(gee, ndmi) {
+  if (!ndmi || !gee) return null;
+  const validMask = ndmi.mask();
+  let classification = gee
+    .Image(0)
+    .rename('NDMI_CLASS')
+    .updateMask(validMask);
+  classification = classification.where(ndmi.lt(0.2), 1);
+  classification = classification.where(ndmi.gte(0.2).and(ndmi.lt(0.4)), 2);
+  classification = classification.where(ndmi.gte(0.4), 3);
+  return classification.updateMask(validMask).toUint8();
 }
 
 function resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi, nbr2, geeApi = null }) {
   switch (mode) {
     case VISUAL_MODES.NDRE:
-      // Nunca cair em NDVI — isso pinta o talhão verde com escala NDRE.
-      return ndre || null;
+      return classifyNdreClassImage(geeApi || ee, ndre);
     case VISUAL_MODES.SAVI:
       return savi || null;
     case VISUAL_MODES.BSI_SOIL:
-      return bsi || null;
+      // Solo/cobertura = classificação multi-índice (não BSI contínuo chapado).
+      return classifyPostHarvestCoverImage(geeApi || ee, {
+        ndvi,
+        savi,
+        ndre,
+        ndmi,
+        bsi,
+        nbr2,
+      });
     case VISUAL_MODES.POST_HARVEST_COVER:
       return classifyPostHarvestCoverImage(geeApi || ee, {
         ndvi,
@@ -1070,7 +1367,7 @@ function resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi, nbr2, geeApi = n
     case VISUAL_MODES.NBR2:
       return nbr2 || null;
     case VISUAL_MODES.NDMI_WATER_STRESS:
-      return ndmi || null;
+      return classifyNdmiClassImage(geeApi || ee, ndmi);
     default:
       return ndvi;
   }
@@ -1200,10 +1497,7 @@ function visualizationFor({ mode = VISUAL_MODES.NDVI_CONTRAST, stats = {} } = {}
       forceRgbOutput: true,
     };
   }
-  if (mode === VISUAL_MODES.BSI_SOIL) {
-    return { min: -0.25, max: 0.45, palette: SOIL_PALETTE, forceRgbOutput: true };
-  }
-  if (mode === VISUAL_MODES.POST_HARVEST_COVER) {
+  if (mode === VISUAL_MODES.BSI_SOIL || mode === VISUAL_MODES.POST_HARVEST_COVER) {
     // Categorical: classes 0–7, sem stretch relativo.
     return {
       min: 0,
@@ -1213,28 +1507,20 @@ function visualizationFor({ mode = VISUAL_MODES.NDVI_CONTRAST, stats = {} } = {}
     };
   }
   if (mode === VISUAL_MODES.NDMI_WATER_STRESS) {
-    // Escala absoluta alinhada à legenda (Seco <0.2, Adequado <0.4, Úmido ≥0.4).
-    // Stretch relativo p5–p95 pintava NDMI de verde/amarelo como NDVI.
+    // Classes discretas 1–3 = Seco / Adequado / Úmido (legenda).
     return {
-      min: -0.1,
-      max: 0.55,
-      palette: ['BF360C', 'E65100', '42A5F5', '0D47A1'],
+      min: 1,
+      max: 3,
+      palette: NDMI_CLASS_PALETTE,
       forceRgbOutput: true,
     };
   }
   if (mode === VISUAL_MODES.NDRE) {
-    // Escala absoluta alinhada à legenda (baixo <0.20, médio <0.35).
-    // Stretch relativo p5–p95 com NDVI fallback produzia círculo verde chapado.
+    // Classes discretas 1–3 = Baixo / Médio / Alto clorofila.
     return {
-      min: 0.0,
-      max: 0.55,
-      palette: [
-        'd73027',
-        'fc8d59',
-        'fee08b',
-        'a6d96a',
-        '1a9850',
-      ],
+      min: 1,
+      max: 3,
+      palette: NDRE_CLASS_PALETTE,
       forceRgbOutput: true,
     };
   }
@@ -1692,7 +1978,55 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         err.status = 422;
         throw err;
       }
-      const renderImage = smoothForPreview(rawRenderImage, plotGeometry);
+
+      stats.renderType = renderTypeForMode(mode);
+      stats.selectedBand = selectedBandForMode(mode);
+      if (isCategoricalCoverMode(mode)) {
+        const surfaceAreas = await calculateSurfaceClassAreas(gee, {
+          classification: rawRenderImage,
+          geometry: plotGeometry,
+          scaleMeters: analysisScaleForMode(mode),
+          classMeta: classMetaForMode(mode),
+        });
+        stats.classAreas = surfaceAreas.classAreas;
+        stats.classAreaStatus = surfaceAreas.status;
+        stats.dominantClass = surfaceAreas.dominantClass;
+        if (surfaceAreas.status === 'insufficientData') {
+          stats.validPixelCount = 0;
+          stats.validAreaHa = 0;
+        } else {
+          stats.validPixelCount = surfaceAreas.validPixelCount;
+          stats.validAreaHa = surfaceAreas.validAreaHa;
+          if (surfaceAreas.bare_soil_percent != null) {
+            stats.bare_soil_percent = surfaceAreas.bare_soil_percent;
+          }
+          if (surfaceAreas.straw_percent != null) {
+            stats.straw_percent = surfaceAreas.straw_percent;
+          }
+          if (surfaceAreas.green_residual_percent != null) {
+            stats.green_residual_percent = surfaceAreas.green_residual_percent;
+            stats.vegetation_cover_percent = surfaceAreas.green_residual_percent;
+          }
+        }
+        if (!Array.isArray(stats.classAreas) || stats.classAreas.length === 0) {
+          const err = new Error(
+            'Nenhum pixel válido foi retornado para esta camada.',
+          );
+          err.code = 'GEE_INSUFFICIENT_CLASS_PIXELS';
+          err.status = 422;
+          err.details = {
+            reason: surfaceAreas.reason || 'insufficientData',
+            validPixelCount: surfaceAreas.validPixelCount || 0,
+            selectedBand: selectedBandForMode(mode),
+            renderType: 'categorical',
+          };
+          throw err;
+        }
+      }
+
+      const renderImage = smoothForPreview(rawRenderImage, plotGeometry, {
+        categorical: isCategoricalRenderMode(mode),
+      });
       const renderedPng = await renderVisualPngWithFallback({
         image: renderImage,
         fallbackImage: rawRenderImage,
@@ -1794,6 +2128,13 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         gee_smoothing_radius_px: renderedPng.smoothingApplied
           ? numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX)
           : 0,
+        ...buildSpectralContractFields({
+          mode,
+          objective,
+          maskStats,
+          stats,
+          rendererVersion,
+        }),
         source_context: {
           dataset: DATASET,
           collectionId: DATASET,
@@ -2189,9 +2530,54 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
                 message: `Índice ${mode} indisponível nesta cena.`,
               };
             }
+
+            stats.renderType = renderTypeForMode(mode);
+            stats.selectedBand = selectedBandForMode(mode);
+            if (isCategoricalCoverMode(mode)) {
+              const surfaceAreas = await calculateSurfaceClassAreas(gee, {
+                classification: rawRenderImage,
+                geometry: plotGeometry,
+                scaleMeters: analysisScaleForMode(mode),
+                classMeta: classMetaForMode(mode),
+              });
+              stats.classAreas = surfaceAreas.classAreas;
+              stats.classAreaStatus = surfaceAreas.status;
+              stats.dominantClass = surfaceAreas.dominantClass;
+              if (surfaceAreas.status === 'insufficientData') {
+                stats.validPixelCount = 0;
+                stats.validAreaHa = 0;
+              } else {
+                stats.validPixelCount = surfaceAreas.validPixelCount;
+                stats.validAreaHa = surfaceAreas.validAreaHa;
+                if (surfaceAreas.bare_soil_percent != null) {
+                  stats.bare_soil_percent = surfaceAreas.bare_soil_percent;
+                }
+                if (surfaceAreas.straw_percent != null) {
+                  stats.straw_percent = surfaceAreas.straw_percent;
+                }
+                if (surfaceAreas.green_residual_percent != null) {
+                  stats.green_residual_percent =
+                    surfaceAreas.green_residual_percent;
+                  stats.vegetation_cover_percent =
+                    surfaceAreas.green_residual_percent;
+                }
+              }
+              if (!Array.isArray(stats.classAreas) || stats.classAreas.length === 0) {
+                return {
+                  mode,
+                  status: 'unavailable',
+                  code: 'GEE_INSUFFICIENT_CLASS_PIXELS',
+                  message:
+                    'Nenhum pixel válido foi retornado para esta camada.',
+                };
+              }
+            }
+
             const renderImage = minimalIndices
               ? rawRenderImage
-              : smoothForPreview(rawRenderImage, plotGeometry);
+              : smoothForPreview(rawRenderImage, plotGeometry, {
+                  categorical: isCategoricalRenderMode(mode),
+                });
             const renderedPng = await renderVisualPngWithFallback({
               image: renderImage,
               fallbackImage: rawRenderImage,
@@ -2230,6 +2616,13 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
               gee_smoothing_radius_px: renderedPng.smoothingApplied
                 ? numberFromEnv('GEE_SMOOTHING_RADIUS_PX', DEFAULT_SMOOTHING_RADIUS_PX)
                 : 0,
+              ...buildSpectralContractFields({
+                mode,
+                objective,
+                maskStats,
+                stats,
+                rendererVersion,
+              }),
         source_context: {
           dataset: DATASET,
           collectionId: DATASET,

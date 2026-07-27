@@ -15,17 +15,16 @@ const AGRONOMIC_STOPS = [
   { max: 1.01, rgb: [0.102, 0.596, 0.314] }, // #1a9850
 ];
 
-/** Limiares absolutos NDRE alinhados ao motor local / legenda % área. */
+/** Limiares absolutos NDRE alinhados às classes Baixo/Médio/Alto. */
 const NDRE_STOPS = [
-  { max: 0.2, rgb: [0.843, 0.188, 0.153] }, // baixo vigor
-  { max: 0.35, rgb: [0.992, 0.847, 0.208] }, // médio
-  { max: 0.5, rgb: [0.651, 0.851, 0.416] }, // médio-alto
-  { max: 1.01, rgb: [0.106, 0.62, 0.467] }, // alto
+  { max: 0.2, rgb: [0.776, 0.157, 0.157] }, // #C62828 baixo
+  { max: 0.35, rgb: [0.992, 0.847, 0.208] }, // #FDD835 médio
+  { max: 1.01, rgb: [0.180, 0.490, 0.196] }, // #2E7D32 alto
 ];
 
 /** Limiares NDMI alinhados à legenda Seco / Adequado / Úmido. */
 const NDMI_STOPS = [
-  { max: 0.2, rgb: [0.749, 0.212, 0.047] }, // seco (<0.2)
+  { max: 0.2, rgb: [0.749, 0.212, 0.047] }, // seco
   { max: 0.4, rgb: [0.259, 0.647, 0.961] }, // adequado
   { max: 1.01, rgb: [0.082, 0.396, 0.753] }, // úmido
 ];
@@ -39,10 +38,11 @@ const CONTRAST_LEGEND_REFS = [
   { key: 'darkGreenPercent', t: 0.95 },
 ];
 
+/** Solo/cobertura: classes por BSI (fallback Copernicus); GEE usa SURFACE_CLASS. */
 const BSI_STOPS = [
-  { max: 0.05, rgb: [0.263, 0.627, 0.278] }, // vegetação
-  { max: 0.2, rgb: [0.976, 0.659, 0.145] }, // palhada / misto
-  { max: 1.01, rgb: [0.553, 0.431, 0.388] }, // solo
+  { max: 0.05, rgb: [0.180, 0.490, 0.196] }, // vegetação #2E7D32
+  { max: 0.15, rgb: [0.784, 0.663, 0.420] }, // palhada #C8A96B
+  { max: 1.01, rgb: [0.710, 0.416, 0.227] }, // solo #B56A3A
 ];
 
 function colorFromStops(value, stops) {

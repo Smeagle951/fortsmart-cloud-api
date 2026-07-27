@@ -180,6 +180,22 @@ function pickAgronomic(row) {
       raw?.maskedPixelCount ?? raw?.masked_pixel_count ?? raw?.masked_pixels ?? row?.maskedPixelCount ?? null,
     validAreaHa: raw?.validAreaHa ?? raw?.valid_area_ha ?? row?.validAreaHa ?? null,
     maskedAreaHa: raw?.maskedAreaHa ?? raw?.masked_area_ha ?? row?.maskedAreaHa ?? null,
+    renderType: raw?.renderType ?? raw?.render_type ?? row?.renderType ?? null,
+    selectedBand: raw?.selectedBand ?? raw?.selected_band ?? row?.selectedBand ?? null,
+    classAreas: raw?.classAreas ?? raw?.class_areas ?? row?.classAreas ?? null,
+    classAreaStatus:
+      raw?.classAreaStatus ?? raw?.class_area_status ?? row?.classAreaStatus ?? null,
+    dominantClass:
+      raw?.dominantClass ?? raw?.dominant_class ?? row?.dominantClass ?? null,
+    recommendation: raw?.recommendation ?? row?.recommendation ?? null,
+    warnings: raw?.warnings ?? row?.warnings ?? null,
+    quality: raw?.quality ?? row?.quality ?? null,
+    mediumChlorophyllPercent:
+      raw?.mediumChlorophyllPercent ?? raw?.medium_chlorophyll_percent ?? null,
+    vegetation_cover_percent:
+      raw?.vegetation_cover_percent ?? raw?.vegetationCoverPercent ?? null,
+    green_residual_percent:
+      raw?.green_residual_percent ?? raw?.greenResidualPercent ?? null,
     raster_url: raw?.raster_url ?? row?.raster_url ?? null,
     raster_available: raw?.raster_available ?? row?.raster_available ?? null,
     raster_format: raw?.raster_format ?? row?.raster_format ?? null,
