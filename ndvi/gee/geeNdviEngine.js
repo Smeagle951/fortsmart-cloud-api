@@ -631,12 +631,21 @@ function toReflectance(image) {
 
 /**
  * Prepara imagem para análise:
- * 1) anexa Cloud Score+;
- * 2) máscara SCL+CS+;
+ * 1) anexa Cloud Score+ (exceto fast);
+ * 2) máscara SCL(+CS+);
  * 3) reflectância 0.0001 nas bandas ópticas.
- * Stats usam a imagem mascarada (não suavizada). Preview pode suavizar depois.
+ * Fast: só B4/B8/SCL — sem Cloud Score+ (muito mais rápido para preview).
  */
-function prepareAnalysisImage(gee, image) {
+function prepareAnalysisImage(gee, image, { fast = false } = {}) {
+  if (fast) {
+    const optical = image
+      .select(['B4', 'B8'])
+      .multiply(REFLECTANCE_SCALE);
+    const withScl = optical
+      .addBands(image.select('SCL'), null, true)
+      .copyProperties(image, image.propertyNames());
+    return withScl.updateMask(buildSclValidMask(image));
+  }
   const withCs = attachCloudScorePlus(gee, image);
   const reflectance = toReflectance(withCs);
   return reflectance.updateMask(buildCombinedClearMask(gee, withCs));
@@ -683,15 +692,22 @@ async function resolveGeeAnalysisImage(gee, {
   imageDate,
   maxCloud,
   allowCompositeFallback = true,
+  fastPrepare = false,
 }) {
   if (sceneId) {
-    const image = prepareAnalysisImage(gee, gee.Image(sceneId));
-    const acquisitionDate =
-      imageDate ||
-      isoDateOnly(new Date(Number(await getInfo(image.get('system:time_start')))));
+    const image = prepareAnalysisImage(gee, gee.Image(sceneId), {
+      fast: fastPrepare,
+    });
+    // Evita getInfo extras quando a data já veio do app (ganho ~1–3s).
+    let acquisitionDate = imageDate ? isoDateOnly(imageDate) : null;
+    if (!acquisitionDate) {
+      acquisitionDate = isoDateOnly(
+        new Date(Number(await getInfo(image.get('system:time_start')))),
+      );
+    }
     return {
       image,
-      selectedSceneId: await getInfo(image.id()),
+      selectedSceneId: sceneId,
       acquisitionDate,
       processingType: 'single_scene',
       compositeStart: null,
@@ -1190,8 +1206,8 @@ async function calculateGeeContrastStatsFast(gee, { ndvi, geometry }) {
     ndvi.reduceRegion({
       reducer: gee.Reducer.percentile([5, 50, 95]).combine(gee.Reducer.mean(), '', true),
       geometry,
-      scale: GEE_RENDER_SCALE_M,
-      maxPixels: 1e9,
+      scale: 20, // preview rápido
+      maxPixels: 1e8,
       bestEffort: true,
     }),
   );
@@ -1548,10 +1564,10 @@ function visualizationFor({ mode = VISUAL_MODES.NDVI_CONTRAST, stats = {} } = {}
   };
 }
 
-async function downloadPng(url, fetchImpl) {
+async function downloadPng(url, fetchImpl, { timeoutMs = 90_000 } = {}) {
   const response = await fetchImpl(url, {
     method: 'GET',
-    signal: AbortSignal.timeout(90_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) {
     const err = new Error(`GEE thumbnail falhou com status ${response.status}`);
@@ -1588,9 +1604,10 @@ function packageThumbSizes(areaHa, modeCount = 1, resolutionKind = 'preview') {
   if (isFastLikeResolution(resolutionKind)) {
     const configured = numberFromEnv(
       'GEE_FAST_PREVIEW_THUMB_SIZE',
-      numberFromEnv('GEE_FAST_THUMB_SIZE', 512),
+      numberFromEnv('GEE_FAST_THUMB_SIZE', 384),
     );
-    return [Math.max(256, Math.round(configured))];
+    // Preview rápido: 384px basta para mapa no celular (antes 512–2048).
+    return [Math.max(256, Math.min(512, Math.round(configured)))];
   }
   if (resolutionKind === 'final') {
     const configured = numberFromEnv('GEE_FINAL_THUMB_SIZE', 1024);
@@ -1657,8 +1674,11 @@ async function renderVisualPngWithFallback({
           dimensions: size,
           format: 'png',
         });
+        const thumbTimeoutMs = size <= 512 ? 45_000 : 90_000;
         return {
-          buffer: await downloadPng(thumbUrl, fetchImpl),
+          buffer: await downloadPng(thumbUrl, fetchImpl, {
+            timeoutMs: thumbTimeoutMs,
+          }),
           thumbSize: size,
           smoothingApplied: candidate.smoothingApplied,
         };
@@ -1737,6 +1757,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         imageDate: imageDate || requestedDate,
         maxCloud,
         allowCompositeFallback,
+        fastPrepare: fastContrastOnly,
       });
       const image = resolved.image;
       const selectedSceneId = resolved.selectedSceneId;
@@ -1841,6 +1862,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         image,
         validMask: renderValidMask,
         geometry: plotGeometry,
+        scaleMeters: fastContrastOnly ? 30 : GEE_RENDER_SCALE_M,
       });
       const stats = fastContrastOnly
         ? await calculateGeeContrastStatsFast(gee, {
@@ -1887,7 +1909,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       stats.validPixelCount = maskStats.validPixels;
       stats.maskedPixelCount = maskStats.maskedPixels;
       stats.sclExcludedPixelCount = maskStats.sclExcludedPixels;
-      stats.validAreaHa = roundOrNull((maskStats.validPixels * GEE_RENDER_SCALE_M * GEE_RENDER_SCALE_M) / 10000);
+      stats.validAreaHa = roundOrNull((maskStats.validPixels * (fastContrastOnly ? 30 : GEE_RENDER_SCALE_M) * (fastContrastOnly ? 30 : GEE_RENDER_SCALE_M)) / 10000);
       stats.maskedAreaHa = roundOrNull((maskStats.maskedPixels * GEE_RENDER_SCALE_M * GEE_RENDER_SCALE_M) / 10000);
       if (maskStats.validPixels < minValidPixels) {
         const err = new Error('insufficient_valid_ndvi_pixels');
@@ -2040,9 +2062,16 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         }
       }
 
-      const renderImage = smoothForPreview(rawRenderImage, plotGeometry, {
-        categorical: isCategoricalRenderMode(mode),
-      });
+      const renderImage = fastContrastOnly
+        ? rawRenderImage.clip(plotGeometry)
+        : smoothForPreview(rawRenderImage, plotGeometry, {
+            categorical: isCategoricalRenderMode(mode),
+          });
+      const thumbSizesToUse = packageThumbSizes(
+        statsGeometry.fullAreaHa,
+        1,
+        resolutionKind,
+      );
       const renderedPng = await renderVisualPngWithFallback({
         image: renderImage,
         fallbackImage: rawRenderImage,
@@ -2051,6 +2080,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         geometry: plotGeometry,
         areaHa: statsGeometry.fullAreaHa,
         fetchImpl,
+        thumbSizes: thumbSizesToUse,
       });
       const pngBuffer = renderedPng.buffer;
       const previewUrl = await storeNdviPreviewPng({
@@ -2253,6 +2283,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         imageDate: imageDate || requestedDate,
         maxCloud,
         allowCompositeFallback,
+        fastPrepare: fastContrastOnly,
       });
       const image = resolved.image;
       const selectedSceneId = resolved.selectedSceneId;
@@ -2358,6 +2389,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         image,
         validMask: renderValidMask,
         geometry: plotGeometry,
+        scaleMeters: fastContrastOnly ? 30 : GEE_RENDER_SCALE_M,
       });
       const baseStats = fastContrastOnly
         ? await calculateGeeContrastStatsFast(gee, {
