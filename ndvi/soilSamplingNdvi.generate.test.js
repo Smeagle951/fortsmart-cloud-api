@@ -617,3 +617,71 @@ describe('SceneBandPackage generate-package', () => {
     assert.equal(result.statusesByMode.ndre.status, 'failed');
   });
 });
+
+describe('SoilSamplingNdviService.searchScenes', () => {
+  it('prioriza GEE quando pacote GEE está preferido e Copernicus falha', async () => {
+    const previousEnv = {
+      NDVI_PROVIDER: process.env.NDVI_PROVIDER,
+      NDVI_PACKAGE_PROVIDER: process.env.NDVI_PACKAGE_PROVIDER,
+      GEE_ALLOW_USAGE: process.env.GEE_ALLOW_USAGE,
+      GEE_CLIENT_EMAIL: process.env.GEE_CLIENT_EMAIL,
+      GEE_PRIVATE_KEY: process.env.GEE_PRIVATE_KEY,
+    };
+    process.env.NDVI_PROVIDER = 'copernicus';
+    process.env.NDVI_PACKAGE_PROVIDER = 'gee';
+    process.env.GEE_ALLOW_USAGE = 'true';
+    process.env.GEE_CLIENT_EMAIL = 'gee@example.com';
+    process.env.GEE_PRIVATE_KEY =
+      '-----BEGIN PRIVATE KEY-----\\ntest\\n-----END PRIVATE KEY-----';
+
+    try {
+      const service = new SoilSamplingNdviService({
+        repository: {
+          ensureSchema: async () => {},
+          listByPlot: async () => [],
+        },
+        catalogClient: {
+          polygonToBbox: () => [-54.48, -15.38, -54.47, -15.37],
+          searchSentinelScenes: async () => {
+            throw Object.assign(new Error('Timeout ao consultar catálogo Sentinel'), {
+              code: 'copernicus_timeout',
+              status: 504,
+            });
+          },
+        },
+        processClient: {},
+        authClient: { isConfigured: () => true },
+        geeClient: {
+          isImplemented: () => true,
+          searchScenes: async () => [
+            {
+              scene_id: 'gee-scene-1',
+              id: 'gee-scene-1',
+              image_date: '2026-06-08',
+              cloud_coverage: 4,
+              source: 'gee_sentinel_2_l2a',
+            },
+          ],
+        },
+      });
+
+      const scenes = await service.searchScenes({
+        farmId: 'f1',
+        plotId: 'p1',
+        campaignId: '16',
+        polygon,
+        startDate: '2026-01-01',
+        endDate: '2026-07-20',
+        maxCloud: 40,
+      });
+
+      assert.equal(scenes.length, 1);
+      assert.equal(scenes[0].scene_id || scenes[0].id, 'gee-scene-1');
+    } finally {
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+});

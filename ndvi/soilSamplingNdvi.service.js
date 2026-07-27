@@ -477,6 +477,7 @@ class SoilSamplingNdviService {
     startDate,
     endDate,
     maxCloud = 20,
+    preferredProvider = null,
   }) {
     this._requireScope({ farmId, plotId });
     if (!campaignId) {
@@ -503,34 +504,76 @@ class SoilSamplingNdviService {
     const started = Date.now();
     await this._tryEnsureSchema('searchScenes');
 
+    // Com GEE disponível (pacote ou primary), busca GEE primeiro: o STAC
+    // Copernicus tem timeout frequente e o app corta a espera em ~55s.
+    const requested = String(preferredProvider || '').toLowerCase();
+    const geeSearchReady =
+      this._geeReady({ packageMode: true }) || this._geeReady();
+    const forceCopernicus =
+      requested === 'copernicus' || requested === 'copernicus_dataspace';
+    const preferGeeSearch = geeSearchReady && !forceCopernicus;
+
     let rawScenes;
     let scenesProvider = 'copernicus_dataspace';
-    if (this._geeReady()) {
+    let lastSearchError = null;
+
+    const tryGeeSearch = async () => {
+      if (!geeSearchReady) return null;
       try {
-        rawScenes = await this.geeClient.searchScenes({
-      polygon,
-      startDate,
-      endDate,
-      maxCloud,
-    });
-        scenesProvider = 'google_earth_engine';
-      } catch (error) {
-        console.warn(
-          `⚠️ [NDVI] GEE search falhou, fallback Copernicus: ${error?.message || error}`,
-        );
-      }
-    }
-    if (!rawScenes) {
-      try {
-        rawScenes = await this.catalogClient.searchSentinelScenes({
+        const scenes = await this.geeClient.searchScenes({
           polygon,
           startDate,
           endDate,
           maxCloud,
         });
+        scenesProvider = 'google_earth_engine';
+        return scenes;
       } catch (error) {
-        throw this._providerError(error, 'Falha ao buscar cenas Sentinel no provedor NDVI');
+        lastSearchError = error;
+        console.warn(
+          `⚠️ [NDVI] GEE search falhou: ${error?.message || error}`,
+        );
+        return null;
       }
+    };
+
+    const tryCopernicusSearch = async () => {
+      try {
+        const scenes = await this.catalogClient.searchSentinelScenes({
+          polygon,
+          startDate,
+          endDate,
+          maxCloud,
+        });
+        scenesProvider = 'copernicus_dataspace';
+        return scenes;
+      } catch (error) {
+        lastSearchError = error;
+        console.warn(
+          `⚠️ [NDVI] Copernicus search falhou: ${error?.message || error}`,
+        );
+        return null;
+      }
+    };
+
+    if (preferGeeSearch) {
+      rawScenes = await tryGeeSearch();
+      if (!rawScenes) {
+        rawScenes = await tryCopernicusSearch();
+      }
+    } else {
+      rawScenes = await tryCopernicusSearch();
+      if (!rawScenes) {
+        rawScenes = await tryGeeSearch();
+      }
+    }
+
+    if (!rawScenes) {
+      throw this._providerError(
+        lastSearchError ||
+          new Error('Nenhum provedor NDVI respondeu na busca de cenas'),
+        'Falha ao buscar cenas Sentinel no provedor NDVI',
+      );
     }
 
     let layers = [];

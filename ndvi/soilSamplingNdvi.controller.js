@@ -162,6 +162,8 @@ class SoilSamplingNdviController {
         start_date: startDate,
         end_date: endDate,
         max_cloud: maxCloud,
+        provider,
+        ndvi_provider: ndviProvider,
       } = req.body;
 
       const scenes = await this.service.searchScenes({
@@ -172,6 +174,7 @@ class SoilSamplingNdviController {
         startDate,
         endDate,
         maxCloud: maxCloud != null ? Number(maxCloud) : 20,
+        preferredProvider: provider || ndviProvider || null,
       });
 
       res.json({ success: true, scenes });
