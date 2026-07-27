@@ -12,6 +12,12 @@ export const RASTER_VISUAL_MODES = Object.freeze([
   'ndmi_water_stress',
 ]);
 
+/** Modos que exigem GEE (classificação categórica / multi-banda). */
+export const GEE_ONLY_VISUAL_MODES = Object.freeze([
+  'post_harvest_cover',
+  'nbr2',
+]);
+
 export function normalizeVisualModeKey(value) {
   const mode = String(value || 'ndvi_contrast').trim().replace(/[-\s]+/g, '_').toLowerCase();
   switch (mode) {
@@ -30,7 +36,12 @@ export function normalizeVisualModeKey(value) {
     case 'soil_palhada':
     case 'solo_palhada':
     case 'solo_planta':
+    case 'solo_cobertura':
       return 'bsi_soil';
+    case 'post_harvest':
+    case 'pos_colheita':
+    case 'cobertura_pos_colheita':
+      return 'post_harvest_cover';
     default:
       return mode || 'ndvi_contrast';
   }
@@ -56,6 +67,11 @@ export function missingBandsForVisualMode(visualMode, raster) {
   if (mode === 'savi' && !bands.savi?.length) missing.push('B04/B08');
   if (mode === 'bsi_soil' && !bands.bsi?.length) missing.push('B04/B08/B11');
   if (mode === 'ndmi_water_stress' && !bands.ndmi?.length) missing.push('B08/B11');
+  if (mode === 'post_harvest_cover') {
+    if (!bands.ndvi?.length) missing.push('B04/B08');
+    if (!bands.bsi?.length) missing.push('B02/B11');
+    if (!bands.ndmi?.length) missing.push('B11');
+  }
   return missing;
 }
 
@@ -66,10 +82,29 @@ export function assertVisualModeSupported({
 } = {}) {
   const mode = normalizeVisualModeKey(visualMode);
   if (mode === 'ndvi_contrast') return mode;
-  // GEE só entra com opt-in explícito; por padrão Copernicus usa raster persistido.
-  if (geeAvailable && RASTER_VISUAL_MODES.includes(mode)) return mode;
-  // Sem GEE: só liberamos modos avançados se houver raster persistido (Copernicus).
+
+  // GEE: aceita modos raster avançados E modos só-GEE (pós-colheita).
+  if (geeAvailable) {
+    if (
+      RASTER_VISUAL_MODES.includes(mode) ||
+      GEE_ONLY_VISUAL_MODES.includes(mode)
+    ) {
+      return mode;
+    }
+  }
+
+  // Sem GEE: só modos com raster Copernicus persistido.
   if (canRenderFromPersistedRaster(mode, raster)) return mode;
+
+  if (GEE_ONLY_VISUAL_MODES.includes(mode) && !geeAvailable) {
+    const err = new Error(
+      `“${mode}” exige Google Earth Engine. Ative NDVI_PACKAGE_PROVIDER=gee no servidor.`,
+    );
+    err.code = 'unsupported_visual_mode';
+    err.status = 422;
+    err.details = { visualMode: mode, requiresGee: true };
+    throw err;
+  }
 
   const missing = missingBandsForVisualMode(mode, raster);
   const reason = missing.length

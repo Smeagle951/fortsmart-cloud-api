@@ -323,7 +323,7 @@ function rendererVersionFor(mode) {
     case VISUAL_MODES.BSI_SOIL:
       return 'bsi_soil_v5_categorical_cover_gee_20m';
     case VISUAL_MODES.POST_HARVEST_COVER:
-      return 'post_harvest_cover_categorical_v0_2';
+      return 'post_harvest_cover_categorical_v0_3';
     case VISUAL_MODES.NDMI_WATER_STRESS:
       return 'ndmi_water_stress_v5_discrete_classes_gee_20m';
     case VISUAL_MODES.NDVI_ABSOLUTE:
@@ -1307,6 +1307,22 @@ function classifyPostHarvestCoverImage(gee, { ndvi, savi, ndre, ndmi, bsi, nbr2 
     const dryResidueNbr2 = dryResidue.and(nbr2.gte(0.05));
     classification = classification.where(dryResidueNbr2, 2);
   }
+
+  // Catch-all: pixels ainda em 0 (unknown) recebem classe agronômica.
+  // Evita GEE_INSUFFICIENT_CLASS_PIXELS em talhões pós-colheita típicos.
+  const stillUnknown = classification.eq(0);
+  classification = classification.where(
+    stillUnknown.and(baseNdvi.gte(0.40)),
+    1, // vegetação residual
+  );
+  classification = classification.where(
+    stillUnknown.and(baseNdvi.gte(0.22).and(baseNdvi.lt(0.40))),
+    2, // palhada / cobertura esparsa
+  );
+  classification = classification.where(
+    stillUnknown.and(baseNdvi.lt(0.22)),
+    4, // solo exposto seco
+  );
 
   return classification.updateMask(validMask).toUint8();
 }

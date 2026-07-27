@@ -157,7 +157,26 @@ function normalizePackageModeError(mode, error) {
       out.message = /banda/i.test(rawMessage)
         ? rawMessage
         : 'Banda B04/B08/B11 ausente para Solo/Palhada.';
+    } else if (mode === 'post_harvest_cover') {
+      out.code = 'postHarvestCoverUnavailable';
+      out.message = /gee|earth engine|banda|pixel/i.test(rawMessage)
+        ? rawMessage
+        : 'Cobertura pós-colheita indisponível nesta cena (exige GEE + SWIR).';
     }
+  } else if (
+    rawCode === 'GEE_INSUFFICIENT_CLASS_PIXELS' ||
+    rawCode === 'gee_insufficient_class_pixels'
+  ) {
+    out.status = 'unavailable';
+    out.code = 'GEE_INSUFFICIENT_CLASS_PIXELS';
+    out.message =
+      rawMessage ||
+      'Nenhum pixel válido para classificação de cobertura nesta cena.';
+  } else if (rawCode === 'GEE_INDEX_UNAVAILABLE' || rawCode === 'gee_index_unavailable') {
+    out.status = 'unavailable';
+    out.code = 'GEE_INDEX_UNAVAILABLE';
+    out.message =
+      rawMessage || 'Índice de cobertura indisponível nesta cena.';
   } else if (rawCode === 'NDVI_PROVIDER_ERROR' || rawCode === 'ndvi_provider_error') {
     if (mode === 'ndre') {
       out.code = 'redEdgeProviderError';
@@ -203,15 +222,33 @@ function sourceBandsForMode(mode) {
 
 function hasCoreRenderableNdviStats(stats) {
   if (!stats || typeof stats !== 'object') return false;
+
+  // Camadas categóricas (solo/cobertura, pós-colheita): classAreas + pixels.
+  const classAreas = stats.classAreas ?? stats.class_areas;
+  const renderType = String(stats.renderType || stats.render_type || '').toLowerCase();
+  const selectedBand = String(stats.selectedBand || stats.selected_band || '');
+  const validPixels = num(
+    stats.validPixelCount ?? stats.valid_pixel_count ?? stats.valid_pixels,
+  );
+  if (
+    (renderType === 'categorical' ||
+      selectedBand === 'SURFACE_CLASS' ||
+      (Array.isArray(classAreas) && classAreas.length > 0)) &&
+    validPixels != null &&
+    validPixels > 0
+  ) {
+    return true;
+  }
+  if (Array.isArray(classAreas) && classAreas.length > 0) {
+    return true;
+  }
+
   const mean = num(stats.ndvi_mean ?? stats.ndviMean);
   const min = num(stats.ndvi_min ?? stats.ndviMin);
   const max = num(stats.ndvi_max ?? stats.ndviMax);
   const p5 = num(stats.ndvi_p5 ?? stats.ndviP5 ?? stats.contrast?.p5);
   const p50 = num(stats.ndvi_p50 ?? stats.ndviP50 ?? stats.contrast?.p50);
   const p95 = num(stats.ndvi_p95 ?? stats.ndviP95 ?? stats.contrast?.p95);
-  const validPixels = num(
-    stats.validPixelCount ?? stats.valid_pixel_count ?? stats.valid_pixels,
-  );
   if ([mean, min, max, p5, p50, p95].some((value) => value == null)) {
     return false;
   }
