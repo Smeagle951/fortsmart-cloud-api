@@ -208,9 +208,12 @@ function sourceBandsForMode(mode) {
     case 'ndre':
       return ['B8A', 'B05'];
     case 'bsi_soil':
+    case 'soil_cover_classification':
       return ['B04', 'B08', 'B11'];
     case 'post_harvest_cover':
       return ['B02', 'B04', 'B05', 'B08', 'B8A', 'B11', 'B12'];
+    case 'senescence_desiccation':
+      return ['B04', 'B05', 'B08', 'B8A'];
     case 'ndvi_contrast':
     case 'ndvi_absolute':
     case 'ndvi_relative':

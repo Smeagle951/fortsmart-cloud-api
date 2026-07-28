@@ -15,6 +15,8 @@ export const RASTER_VISUAL_MODES = Object.freeze([
 /** Modos que exigem GEE (classificação categórica / multi-banda). */
 export const GEE_ONLY_VISUAL_MODES = Object.freeze([
   'post_harvest_cover',
+  'soil_cover_classification',
+  'senescence_desiccation',
   'nbr2',
 ]);
 
@@ -30,6 +32,7 @@ export function normalizeVisualModeKey(value) {
       return 'ndmi_water_stress';
     case 'rededge':
     case 'red_edge':
+    case 'chlorophyll_red_edge':
       return 'ndre';
     case 'soilplant':
     case 'soil_plant':
@@ -37,11 +40,21 @@ export function normalizeVisualModeKey(value) {
     case 'solo_palhada':
     case 'solo_planta':
     case 'solo_cobertura':
+    case 'soil_cover_classification':
+    case 'soil_and_cover':
       return 'bsi_soil';
     case 'post_harvest':
     case 'pos_colheita':
     case 'cobertura_pos_colheita':
       return 'post_harvest_cover';
+    case 'senescence':
+    case 'desiccation':
+    case 'senescence_and_desiccation':
+      return 'senescence_desiccation';
+    case 'crop_vigor':
+      return 'ndvi_absolute';
+    case 'canopy_moisture':
+      return 'ndmi_water_stress';
     default:
       return mode || 'ndvi_contrast';
   }

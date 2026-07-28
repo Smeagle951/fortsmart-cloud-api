@@ -26,7 +26,17 @@ const VISUAL_MODES = Object.freeze({
   BSI_SOIL: 'bsi_soil',
   NDMI_WATER_STRESS: 'ndmi_water_stress',
   POST_HARVEST_COVER: 'post_harvest_cover',
+  SENESCENCE_DESICCATION: 'senescence_desiccation',
   NBR2: 'nbr2',
+});
+
+/** SENESCENCE_CLASS: 1 ativo / 2 senescendo / 3 dessecado/seco. */
+const SENESCENCE_CLASS_PALETTE = ['2E7D32', 'F9A825', '8D6E63'];
+const SENESCENCE_CLASS_META = Object.freeze({
+  0: { id: 'unknown', label: 'Indefinido', countsInValidArea: false },
+  1: { id: 'activeCanopy', label: 'Dossel ativo', countsInValidArea: true },
+  2: { id: 'senescing', label: 'Senescência', countsInValidArea: true },
+  3: { id: 'desiccatedDry', label: 'Dessecado / seco', countsInValidArea: true },
 });
 
 const NDVI_AGRONOMIC_PALETTE = [
@@ -97,7 +107,11 @@ const NDRE_CLASS_PALETTE = ['C62828', 'FDD835', '2E7D32'];
 const NDMI_CLASS_PALETTE = ['BF360C', '42A5F5', '1565C0'];
 
 function isCategoricalCoverMode(mode) {
-  return mode === VISUAL_MODES.POST_HARVEST_COVER || mode === VISUAL_MODES.BSI_SOIL;
+  return (
+    mode === VISUAL_MODES.POST_HARVEST_COVER ||
+    mode === VISUAL_MODES.BSI_SOIL ||
+    mode === VISUAL_MODES.SENESCENCE_DESICCATION
+  );
 }
 
 function isDiscreteIndexClassMode(mode) {
@@ -110,6 +124,7 @@ function isCategoricalRenderMode(mode) {
 
 function classMetaForMode(mode) {
   if (mode === VISUAL_MODES.BSI_SOIL) return SOIL_COVER_CLASS_META;
+  if (mode === VISUAL_MODES.SENESCENCE_DESICCATION) return SENESCENCE_CLASS_META;
   return POST_HARVEST_CLASS_META;
 }
 
@@ -118,6 +133,8 @@ function selectedBandForMode(mode) {
     case VISUAL_MODES.POST_HARVEST_COVER:
     case VISUAL_MODES.BSI_SOIL:
       return 'SURFACE_CLASS';
+    case VISUAL_MODES.SENESCENCE_DESICCATION:
+      return 'SENESCENCE_CLASS';
     case VISUAL_MODES.NDRE:
       return 'NDRE_CLASS';
     case VISUAL_MODES.NDMI_WATER_STRESS:
@@ -151,6 +168,11 @@ function buildSpectralContractFields({
   if (mode === VISUAL_MODES.BSI_SOIL) {
     warnings.push(
       'Solo e cobertura: classes estimadas (NDVI+BSI+NDMI+NDRE). Não confirma origem da palhada.',
+    );
+  }
+  if (mode === VISUAL_MODES.SENESCENCE_DESICCATION) {
+    warnings.push(
+      'Senescência/dessecação: classes compostas (NDVI+NDRE). Evento operacional prevalece sobre o índice.',
     );
   }
   if (mode === VISUAL_MODES.NDVI_CONTRAST) {
@@ -324,6 +346,8 @@ function rendererVersionFor(mode) {
       return 'bsi_soil_v5_categorical_cover_gee_20m';
     case VISUAL_MODES.POST_HARVEST_COVER:
       return 'post_harvest_cover_categorical_v0_3';
+    case VISUAL_MODES.SENESCENCE_DESICCATION:
+      return 'senescence_desiccation_v1_categorical_gee_20m';
     case VISUAL_MODES.NDMI_WATER_STRESS:
       return 'ndmi_water_stress_v5_discrete_classes_gee_20m';
     case VISUAL_MODES.NDVI_ABSOLUTE:
@@ -1371,6 +1395,36 @@ function classifyNdmiClassImage(gee, ndmi) {
   return classification.updateMask(validMask).toUint8();
 }
 
+/** Classes SENESCENCE_CLASS: ativo / senescendo / dessecado. */
+function classifySenescenceClassImage(gee, { ndvi, ndre }) {
+  if (!ndvi || !gee) return null;
+  const validMask = ndvi.mask();
+  let classification = gee
+    .Image(0)
+    .rename('SENESCENCE_CLASS')
+    .updateMask(validMask);
+
+  const active = ndvi.gte(0.45).and(ndre ? ndre.gte(0.22) : gee.Image(1));
+  const senescing = ndvi.gte(0.25).and(ndvi.lt(0.45));
+  const desiccated = ndvi.lt(0.25).or(
+    ndre ? ndre.lt(0.12).and(ndvi.lt(0.40)) : gee.Image(0),
+  );
+
+  classification = classification.where(desiccated, 3);
+  classification = classification.where(senescing, 2);
+  classification = classification.where(active, 1);
+
+  const stillUnknown = classification.eq(0);
+  classification = classification.where(stillUnknown.and(ndvi.gte(0.40)), 1);
+  classification = classification.where(
+    stillUnknown.and(ndvi.gte(0.25).and(ndvi.lt(0.40))),
+    2,
+  );
+  classification = classification.where(stillUnknown.and(ndvi.lt(0.25)), 3);
+
+  return classification.updateMask(validMask).toUint8();
+}
+
 function resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi, nbr2, geeApi = null }) {
   switch (mode) {
     case VISUAL_MODES.NDRE:
@@ -1396,6 +1450,8 @@ function resolveIndexImage({ mode, ndvi, ndre, savi, bsi, ndmi, nbr2, geeApi = n
         bsi,
         nbr2,
       });
+    case VISUAL_MODES.SENESCENCE_DESICCATION:
+      return classifySenescenceClassImage(geeApi || ee, { ndvi, ndre });
     case VISUAL_MODES.NBR2:
       return nbr2 || null;
     case VISUAL_MODES.NDMI_WATER_STRESS:
@@ -1411,6 +1467,7 @@ function analysisScaleForMode(mode) {
     case VISUAL_MODES.NDMI_WATER_STRESS:
     case VISUAL_MODES.BSI_SOIL:
     case VISUAL_MODES.POST_HARVEST_COVER:
+    case VISUAL_MODES.SENESCENCE_DESICCATION:
     case VISUAL_MODES.NBR2:
       return GEE_SWIR_SCALE_M;
     default:
@@ -1535,6 +1592,14 @@ function visualizationFor({ mode = VISUAL_MODES.NDVI_CONTRAST, stats = {} } = {}
       min: 0,
       max: 7,
       palette: POST_HARVEST_PALETTE,
+      forceRgbOutput: true,
+    };
+  }
+  if (mode === VISUAL_MODES.SENESCENCE_DESICCATION) {
+    return {
+      min: 1,
+      max: 3,
+      palette: SENESCENCE_CLASS_PALETTE,
       forceRgbOutput: true,
     };
   }
