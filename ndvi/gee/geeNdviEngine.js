@@ -1174,15 +1174,18 @@ function resolveFastPackagePlan({ resolutionKind, modes }) {
   const unique = [...new Set(Array.isArray(modes) ? modes : [])];
   if (isFastLikeResolution(resolutionKind) && unique.length === 1) {
     const mode = unique[0];
-    if (mode === VISUAL_MODES.NDVI_CONTRAST) {
+    // Absolute/relative/contrast: caminho leve (B04+B08+SCL + stats p5/p50/p95).
+    if (
+      mode === VISUAL_MODES.NDVI_CONTRAST ||
+      mode === VISUAL_MODES.NDVI_ABSOLUTE ||
+      mode === VISUAL_MODES.NDVI_RELATIVE
+    ) {
       return { minimalIndices: true, fastContrastOnly: true, fastSingleMode: mode };
     }
     const fastSingleModes = new Set([
-      VISUAL_MODES.NDVI_ABSOLUTE,
       VISUAL_MODES.NDRE,
       VISUAL_MODES.NDMI_WATER_STRESS,
       // BSI_SOIL categórico precisa NDVI+SAVI+NDRE+NDMI+BSI — sem fast single.
-      VISUAL_MODES.NDVI_RELATIVE,
     ]);
     if (fastSingleModes.has(mode)) {
       return { minimalIndices: true, fastContrastOnly: false, fastSingleMode: mode };
@@ -1238,11 +1241,20 @@ async function calculateGeeContrastStatsFast(gee, { ndvi, geometry }) {
   const p5 = roundOrNull(basicStats.NDVI_p5);
   const p50 = roundOrNull(basicStats.NDVI_p50);
   const p95 = roundOrNull(basicStats.NDVI_p95);
+  const spread =
+    Number.isFinite(p5) && Number.isFinite(p95) ? Number(p95) - Number(p5) : null;
+  // Aproxima σ a partir da amplitude p5–p95 (~3.3σ em distribuição normal).
+  const approxStd =
+    Number.isFinite(spread) ? Number((spread / 3.3).toFixed(4)) : null;
+  const homogeneity = homogeneityScore({ std: approxStd, p5, p95 });
   return {
     ndvi_mean: roundOrNull(basicStats.NDVI_mean ?? basicStats.NDVI),
     ndvi_p5: p5,
     ndvi_p50: p50,
     ndvi_p95: p95,
+    ndvi_std: approxStd,
+    homogeneity_score: homogeneity,
+    homogeneity_label: homogeneityLabel(homogeneity),
     contrast: {
       p5,
       p50,
