@@ -33,7 +33,7 @@ const VISUAL_MODES = Object.freeze({
 /** SENESCENCE_CLASS: 1 ativo / 2 senescendo / 3 dessecado/seco. */
 const SENESCENCE_CLASS_PALETTE = ['2E7D32', 'F9A825', '8D6E63'];
 const SENESCENCE_CLASS_META = Object.freeze({
-  0: { id: 'unknown', label: 'Indefinido', countsInValidArea: false },
+  0: { id: 'unknown', label: 'Inconclusivo', countsInValidArea: true },
   1: { id: 'activeCanopy', label: 'Dossel ativo', countsInValidArea: true },
   2: { id: 'senescing', label: 'Senescência', countsInValidArea: true },
   3: { id: 'desiccatedDry', label: 'Dessecado / seco', countsInValidArea: true },
@@ -79,7 +79,7 @@ const POST_HARVEST_THRESHOLDS = Object.freeze({
 });
 
 const POST_HARVEST_CLASS_META = Object.freeze({
-  0: { id: 'unknown', label: 'Indefinido', countsInValidArea: false },
+  0: { id: 'unknown', label: 'Inconclusivo', countsInValidArea: true },
   1: { id: 'greenResidualVegetation', label: 'Vegetação residual', countsInValidArea: true },
   2: { id: 'probableDryResidue', label: 'Palhada seca provável', countsInValidArea: true },
   3: { id: 'probableWetResidue', label: 'Palhada úmida aparente', countsInValidArea: true },
@@ -91,7 +91,7 @@ const POST_HARVEST_CLASS_META = Object.freeze({
 
 /** Legenda Solo/cobertura (mesmas classes 0–7, rótulos de campo). */
 const SOIL_COVER_CLASS_META = Object.freeze({
-  0: { id: 'unknown', label: 'Indefinido', countsInValidArea: false },
+  0: { id: 'unknown', label: 'Inconclusivo', countsInValidArea: true },
   1: { id: 'greenVegetation', label: 'Vegetação verde', countsInValidArea: true },
   2: { id: 'dryResidue', label: 'Palhada', countsInValidArea: true },
   3: { id: 'wetResidue', label: 'Palhada úmida aparente', countsInValidArea: true },
@@ -345,7 +345,7 @@ function rendererVersionFor(mode) {
     case VISUAL_MODES.BSI_SOIL:
       return 'bsi_soil_v5_categorical_cover_gee_20m';
     case VISUAL_MODES.POST_HARVEST_COVER:
-      return 'post_harvest_cover_categorical_v0_3';
+      return 'post_harvest_cover_categorical_v1_cdse';
     case VISUAL_MODES.SENESCENCE_DESICCATION:
       return 'senescence_desiccation_v1_categorical_gee_20m';
     case VISUAL_MODES.NDMI_WATER_STRESS:
@@ -1360,22 +1360,7 @@ function classifyPostHarvestCoverImage(gee, { ndvi, savi, ndre, ndmi, bsi, nbr2 
     classification = classification.where(dryResidueNbr2, 2);
   }
 
-  // Catch-all: pixels ainda em 0 (unknown) recebem classe agronômica.
-  // Evita GEE_INSUFFICIENT_CLASS_PIXELS em talhões pós-colheita típicos.
-  const stillUnknown = classification.eq(0);
-  classification = classification.where(
-    stillUnknown.and(baseNdvi.gte(0.40)),
-    1, // vegetação residual
-  );
-  classification = classification.where(
-    stillUnknown.and(baseNdvi.gte(0.22).and(baseNdvi.lt(0.40))),
-    2, // palhada / cobertura esparsa
-  );
-  classification = classification.where(
-    stillUnknown.and(baseNdvi.lt(0.22)),
-    4, // solo exposto seco
-  );
-
+  // Catch-all NDVI removido: pixels sem evidência multi-índice ficam inconclusivos (0).
   return classification.updateMask(validMask).toUint8();
 }
 

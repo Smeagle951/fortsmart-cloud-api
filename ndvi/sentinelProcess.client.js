@@ -3,10 +3,18 @@
  */
 import { PNG } from 'pngjs';
 import { computeAgronomicStatsFromPackedPngs } from './ndviAgronomicStats.js';
+import { computeSurfaceCoverStatsFromPackedPng } from './ndviSurfaceCoverStats.js';
+import {
+  buildSurfaceCoverPackedEvalscript,
+  buildSurfaceCoverPreviewEvalscript,
+} from './ndviSurfaceCoverEvalscript.js';
+import {
+  isCdseSurfaceCoverMode,
+  SURFACE_COVER_ALGORITHM,
+} from './ndviSurfaceCoverCore.js';
 import {
   buildAgronomicPackedStatsEvalscript,
   buildIndicesPackedStatsEvalscript,
-  buildPreviewEvalscript,
   VISUAL_MODES,
 } from './ndviAgronomicEvalscript.js';
 import { storeNdviPreviewPng } from './ndviPreviewStorage.js';
@@ -309,6 +317,8 @@ class SentinelProcessClient {
     visualMode,
     colormapMode,
   }) {
+    const resolvedVisual = normalizeVisualMode(visualMode, colormapMode);
+    if (isCdseSurfaceCoverMode(resolvedVisual)) return null;
     const raster = await loadInternalGrid({
       plotId,
       sceneId,
@@ -434,6 +444,35 @@ class SentinelProcessClient {
           sceneId,
           mode,
         });
+        if (isCdseSurfaceCoverMode(mode)) {
+          const layer = await this.generateNdviLayer({
+            sceneId,
+            polygon,
+            imageDate: date,
+            farmId,
+            plotId,
+            visualMode: mode,
+            forceRemote: true,
+          });
+          if (!layer?.preview_url) {
+            statusesByMode[mode] = {
+              status: 'unavailable',
+              code: 'surfaceCoverNotComputed',
+              message:
+                'Classificação de cobertura não gerada (bandas SWIR/Red Edge insuficientes ou cena inválida).',
+              elapsedMs: Date.now() - modeStarted,
+            };
+            return;
+          }
+          layersByMode[mode] = layer;
+          statusesByMode[mode] = {
+            status: 'ready',
+            elapsedMs: Date.now() - modeStarted,
+            preview: true,
+            source: 'cdse_surface_cover',
+          };
+          return;
+        }
         const layer = await this._layerFromPersistedRaster({
           raster,
           sceneId,
@@ -539,6 +578,17 @@ class SentinelProcessClient {
     }
 
     const resolvedVisual = normalizeVisualMode(visualMode, colormapMode);
+    if (isCdseSurfaceCoverMode(resolvedVisual)) {
+      return this._generateSurfaceCoverLayer({
+        token,
+        polygon,
+        date,
+        sceneId,
+        farmId,
+        plotId,
+        visualMode: resolvedVisual,
+      });
+    }
 
     if (!forceRemote) {
       const reused = await this.tryGenerateFromPersistedRaster({
@@ -842,6 +892,115 @@ class SentinelProcessClient {
     } catch (error) {
       console.warn(`⚠️ [NDVI][Process] falha sceneId=${sceneId}: ${error.message}`);
       return { preview_url: null, status: 'metadata_only' };
+    }
+  }
+
+  async _generateSurfaceCoverLayer({
+    token,
+    polygon,
+    date,
+    sceneId,
+    farmId,
+    plotId,
+    visualMode,
+  }) {
+    const rendererVersion = `${SURFACE_COVER_ALGORITHM}_${visualMode}`;
+    try {
+      const [packedBuf, previewBuf] = await Promise.all([
+        this._postProcessPng({
+          token,
+          polygon,
+          date,
+          evalscript: buildSurfaceCoverPackedEvalscript(),
+          width: 256,
+          height: 256,
+          sceneId,
+          label: 'surface_cover_packed',
+        }),
+        this._postProcessPng({
+          token,
+          polygon,
+          date,
+          evalscript: buildSurfaceCoverPreviewEvalscript(),
+          width: 512,
+          height: 512,
+          sceneId,
+          label: 'surface_cover_preview',
+        }),
+      ]);
+
+      const coverStats = packedBuf
+        ? computeSurfaceCoverStatsFromPackedPng(packedBuf, { resolutionM: 20 })
+        : null;
+      if (!coverStats || coverStats.status !== 'ok' || !previewBuf) {
+        console.warn(
+          `⚠️ [NDVI][SurfaceCover] indisponível sceneId=${sceneId} packed=${Boolean(packedBuf)} preview=${Boolean(previewBuf)} status=${coverStats?.status || '-'}`,
+        );
+        return { preview_url: null, status: 'metadata_only', visual_mode: visualMode };
+      }
+
+      const bounds = polygonToBounds(polygon);
+      const preview_url = await storeNdviPreviewPng({
+        farmId,
+        plotId,
+        sceneId,
+        imageDate: date,
+        visualMode,
+        rendererVersion,
+        buffer: previewBuf,
+      });
+
+      const agronomic = {
+        schema_version: SURFACE_COVER_ALGORITHM,
+        visual_mode: visualMode,
+        renderType: 'categorical',
+        selectedBand: 'SURFACE_CLASS',
+        rendererVersion,
+        renderer_version: rendererVersion,
+        classAreas: coverStats.classAreas,
+        classAreaStatus: coverStats.status,
+        dominantClass: coverStats.dominantClass,
+        validPixelCount: coverStats.validPixelCount,
+        validAreaHa: coverStats.validAreaHa,
+        meanConfidence: coverStats.meanConfidence,
+        bare_soil_percent: coverStats.bare_soil_percent,
+        straw_percent: coverStats.straw_percent,
+        green_residual_percent: coverStats.green_residual_percent,
+        vegetation_cover_percent: coverStats.vegetation_cover_percent,
+        inconclusive_percent: coverStats.inconclusive_percent,
+        dataQuality: 'estimated',
+        algorithmVersion: SURFACE_COVER_ALGORITHM,
+      };
+
+      return {
+        preview_url,
+        tile_url: null,
+        bounds,
+        visual_mode: visualMode,
+        colormap_mode: visualMode,
+        processing_engine: 'copernicus_process_api',
+        provider: 'copernicus_dataspace',
+        source: 'sentinel-2-l2a',
+        status: preview_url ? 'generated' : 'metadata_only',
+        rendererVersion,
+        renderer_version: rendererVersion,
+        renderType: 'categorical',
+        selectedBand: 'SURFACE_CLASS',
+        classAreas: coverStats.classAreas,
+        classAreaStatus: coverStats.status,
+        dominantClass: coverStats.dominantClass,
+        validPixelCount: coverStats.validPixelCount,
+        validAreaHa: coverStats.validAreaHa,
+        meanConfidence: coverStats.meanConfidence,
+        stats: agronomic,
+        agronomic_stats: agronomic,
+        ...agronomic,
+      };
+    } catch (error) {
+      console.warn(
+        `⚠️ [NDVI][SurfaceCover] falha sceneId=${sceneId}: ${error.message}`,
+      );
+      return { preview_url: null, status: 'metadata_only', visual_mode: visualMode };
     }
   }
 

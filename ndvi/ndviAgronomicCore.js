@@ -1,5 +1,9 @@
 /**
  * Índices e classificação agronômica Sentinel-2 L2A (espelho do evalscript + testes).
+ *
+ * Camadas:
+ *   índice (medido) → classificação de superfície (estimada) → vigor (só com NDRE)
+ * NDVI isolado NÃO classifica palhada. Sem evidência → SKIP (inconclusivo).
  */
 
 export const AGRONOMIC_CLASS = {
@@ -14,30 +18,68 @@ export const AGRONOMIC_CLASS = {
   STRESS_CANDIDATE: 8,
 };
 
+export const ALGORITHM_VERSION = 'spectral_index_engine_v1';
+
 const SCL_WATER_CLOUD = new Set([0, 1, 2, 3, 6, 8, 9, 10, 11]);
 
 export function safeDiv(a, b) {
   const den = Number(b);
-  if (!Number.isFinite(den) || Math.abs(den) < 1e-9) return 0;
-  return Number(a) / den;
+  if (!Number.isFinite(den) || Math.abs(den) < 1e-9) return null;
+  const v = Number(a) / den;
+  return Number.isFinite(v) ? v : null;
+}
+
+function band(sample, ...keys) {
+  for (const key of keys) {
+    if (sample[key] == null || sample[key] === '') continue;
+    const n = Number(sample[key]);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
 }
 
 export function computeIndices(sample) {
-  const B02 = Number(sample.B02 ?? sample.b02 ?? 0);
-  const B04 = Number(sample.B04 ?? sample.b04 ?? 0);
-  const B05 = Number(sample.B05 ?? sample.b05 ?? 0);
-  const B08 = Number(sample.B08 ?? sample.b08 ?? 0);
-  const B8A = Number(sample.B8A ?? sample.b8a ?? B08);
-  const B11 = Number(sample.B11 ?? sample.b11 ?? 0);
+  const B02 = band(sample, 'B02', 'b02');
+  const B04 = band(sample, 'B04', 'b04');
+  const B05 = band(sample, 'B05', 'b05');
+  const B08 = band(sample, 'B08', 'b08');
+  const B8A = band(sample, 'B8A', 'b8a');
+  const B11 = band(sample, 'B11', 'b11');
+  const B12 = band(sample, 'B12', 'b12');
+  const nirNarrow = B8A ?? B08;
 
-  const ndvi = safeDiv(B08 - B04, B08 + B04);
-  const ndre = safeDiv(B8A - B05, B8A + B05);
-  const savi = safeDiv(B08 - B04, B08 + B04 + 0.5) * 1.5;
-  const bsi = safeDiv(B11 + B04 - (B08 + B02), B11 + B04 + B08 + B02);
-  const ndmi = safeDiv(B08 - B11, B08 + B11);
-  const swirRatio = safeDiv(B11, B08 + 1e-6);
+  const ndvi = B08 != null && B04 != null ? safeDiv(B08 - B04, B08 + B04) : null;
+  const ndre =
+    nirNarrow != null && B05 != null ? safeDiv(nirNarrow - B05, nirNarrow + B05) : null;
+  const saviNum =
+    B08 != null && B04 != null ? safeDiv(B08 - B04, B08 + B04 + 0.5) : null;
+  const savi = saviNum != null ? saviNum * 1.5 : null;
+  const bsi =
+    B11 != null && B04 != null && B08 != null && B02 != null
+      ? safeDiv(B11 + B04 - (B08 + B02), B11 + B04 + B08 + B02)
+      : null;
+  const ndmi = B08 != null && B11 != null ? safeDiv(B08 - B11, B08 + B11) : null;
+  const nbr2 = B11 != null && B12 != null ? safeDiv(B11 - B12, B11 + B12) : null;
+  const msi = B08 != null && B11 != null ? safeDiv(B11, B08) : null;
+  const swirRatio = B08 != null && B11 != null ? safeDiv(B11, B08) : null;
 
-  return { ndvi, ndre, savi, bsi, ndmi, swirRatio, B02, B04, B08, B11 };
+  return {
+    ndvi,
+    ndre,
+    savi,
+    bsi,
+    ndmi,
+    nbr2,
+    ndti: nbr2,
+    msi,
+    swirRatio,
+    B02,
+    B04,
+    B05,
+    B08,
+    B11,
+    B12,
+  };
 }
 
 export function isWaterCloudShadow(scl) {
@@ -45,37 +87,50 @@ export function isWaterCloudShadow(scl) {
 }
 
 /**
- * Classificação pixel a pixel (ordem de precedência agronômica).
+ * Classificação pixel a pixel.
+ * Sem NDRE não há vigor. Sem SWIR+B12 não há palhada. Caso contrário: SKIP.
  */
 export function classifyAgronomicPixel(sample) {
   const scl = sample.SCL ?? sample.scl;
   if (sample.dataMask === 0) return AGRONOMIC_CLASS.SKIP;
 
-  const { ndvi, ndre, bsi, ndmi, swirRatio } = computeIndices(sample);
+  const { ndvi, ndre, bsi, ndmi, nbr2 } = computeIndices(sample);
 
   if (!Number.isFinite(ndvi)) return AGRONOMIC_CLASS.SKIP;
   if (isWaterCloudShadow(scl)) return AGRONOMIC_CLASS.WATER_CLOUD_SHADOW;
 
-  if (ndvi < 0.25 && bsi > 0.18) return AGRONOMIC_CLASS.BARE_SOIL;
+  if (Number.isFinite(bsi) && ndvi < 0.25 && bsi > 0.18) {
+    return AGRONOMIC_CLASS.BARE_SOIL;
+  }
 
-  const isStress =
-    ndvi < 0.45 && ndre < 0.22 && ndmi < 0.12 && ndvi >= 0.08;
-  if (isStress) return AGRONOMIC_CLASS.STRESS_CANDIDATE;
+  const strawEvidence =
+    Number.isFinite(nbr2) &&
+    ndvi >= 0.08 &&
+    ndvi < 0.40 &&
+    (!Number.isFinite(ndre) || ndre < 0.15) &&
+    Number.isFinite(bsi) &&
+    bsi > 0.02 &&
+    bsi < 0.35 &&
+    nbr2 > 0.02;
+  if (strawEvidence) return AGRONOMIC_CLASS.STRAW;
 
-  const isStraw =
-    ndvi >= 0.12 &&
-    ndvi < 0.48 &&
-    bsi > 0.04 &&
-    bsi < 0.38 &&
-    swirRatio > 0.35 &&
-    ndmi < 0.22;
-  if (isStraw) return AGRONOMIC_CLASS.STRAW;
+  if (Number.isFinite(ndre) && ndvi >= 0.35 && ndre >= 0.18) {
+    if (ndvi < 0.45) return AGRONOMIC_CLASS.LOW_VIGOR;
+    if (ndvi < 0.65) return AGRONOMIC_CLASS.MEDIUM_VIGOR;
+    if (ndvi <= 0.8) return AGRONOMIC_CLASS.HIGH_VIGOR;
+    return AGRONOMIC_CLASS.VERY_HIGH_VIGOR;
+  }
 
-  if (ndvi < 0.25) return AGRONOMIC_CLASS.LOW_VIGOR;
-  if (ndvi < 0.45) return AGRONOMIC_CLASS.LOW_VIGOR;
-  if (ndvi < 0.65) return AGRONOMIC_CLASS.MEDIUM_VIGOR;
-  if (ndvi <= 0.8) return AGRONOMIC_CLASS.HIGH_VIGOR;
-  return AGRONOMIC_CLASS.VERY_HIGH_VIGOR;
+  if (
+    Number.isFinite(ndre) &&
+    ndvi >= 0.35 &&
+    ndre < 0.18 &&
+    (!Number.isFinite(ndmi) || ndmi < 0.15)
+  ) {
+    return AGRONOMIC_CLASS.STRESS_CANDIDATE;
+  }
+
+  return AGRONOMIC_CLASS.SKIP;
 }
 
 export function classIdToPercentKey(classId) {

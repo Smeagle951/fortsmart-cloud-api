@@ -40,7 +40,7 @@ describe('ndviAgronomicCore', () => {
     assert.equal(cid, AGRONOMIC_CLASS.BARE_SOIL);
   });
 
-  it('pixel com NDVI médio + SWIR padrão pode virar straw', () => {
+  it('NDVI+SWIR sem B12 não classifica palhada', () => {
     const cid = classifyAgronomicPixel({
       dataMask: 1,
       SCL: 5,
@@ -51,19 +51,40 @@ describe('ndviAgronomicCore', () => {
       B8A: 0.19,
       B11: 0.14,
     });
-    assert.ok(
-      cid === AGRONOMIC_CLASS.STRAW ||
-        cid === AGRONOMIC_CLASS.LOW_VIGOR ||
-        cid === AGRONOMIC_CLASS.MEDIUM_VIGOR,
-    );
+    assert.equal(cid, AGRONOMIC_CLASS.SKIP);
   });
 
-  it('NDRE baixo com NDVI baixo vira stress_candidate', () => {
+  it('palhada exige NBR2 (B11+B12) e NDRE baixo', () => {
+    const cid = classifyAgronomicPixel({
+      dataMask: 1,
+      SCL: 5,
+      B02: 0.1,
+      B04: 0.12,
+      B05: 0.18,
+      B08: 0.18,
+      B8A: 0.19,
+      B11: 0.22,
+      B12: 0.16,
+    });
+    assert.equal(cid, AGRONOMIC_CLASS.STRAW);
+  });
+
+  it('NDVI alto sem B05 não vira vigor (inconclusivo)', () => {
+    const cid = classifyAgronomicPixel({
+      dataMask: 1,
+      SCL: 4,
+      B04: 0.04,
+      B08: 0.45,
+    });
+    assert.equal(cid, AGRONOMIC_CLASS.SKIP);
+  });
+
+  it('NDRE baixo com NDVI de dossel vira stress_candidate', () => {
     const cid = classifyAgronomicPixel({
       dataMask: 1,
       SCL: 4,
       B02: 0.08,
-      B04: 0.28,
+      B04: 0.20,
       B05: 0.12,
       B08: 0.55,
       B8A: 0.13,
@@ -133,5 +154,12 @@ describe('ndviAgronomicCore', () => {
     assert.ok(Number.isFinite(idx.savi));
     assert.ok(Number.isFinite(idx.bsi));
     assert.ok(Number.isFinite(idx.ndmi));
+    assert.equal(idx.nbr2, null);
+  });
+
+  it('B05 ausente deixa NDRE nulo — não inventa red-edge', () => {
+    const idx = computeIndices({ B04: 0.1, B08: 0.4 });
+    assert.ok(Number.isFinite(idx.ndvi));
+    assert.equal(idx.ndre, null);
   });
 });

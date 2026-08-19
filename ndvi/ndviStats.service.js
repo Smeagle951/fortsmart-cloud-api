@@ -127,6 +127,27 @@ class NdviStatsService {
       maskedPixelCount: num(raw?.maskedPixelCount ?? raw?.masked_pixel_count ?? raw?.masked_pixels),
       validAreaHa: num(raw?.validAreaHa ?? raw?.valid_area_ha),
       maskedAreaHa: num(raw?.maskedAreaHa ?? raw?.masked_area_ha),
+      renderType: raw?.renderType ?? raw?.render_type ?? assets?.renderType ?? null,
+      selectedBand:
+        raw?.selectedBand ??
+        raw?.selected_band ??
+        assets?.selectedBand ??
+        null,
+      classAreas: raw?.classAreas ?? raw?.class_areas ?? assets?.classAreas ?? null,
+      classAreaStatus:
+        raw?.classAreaStatus ?? raw?.class_area_status ?? assets?.classAreaStatus ?? null,
+      dominantClass:
+        raw?.dominantClass ?? raw?.dominant_class ?? assets?.dominantClass ?? null,
+      meanConfidence: num(raw?.meanConfidence ?? raw?.mean_confidence),
+      inconclusive_percent: num(
+        raw?.inconclusive_percent ?? raw?.inconclusivePercent,
+      ),
+      green_residual_percent: num(
+        raw?.green_residual_percent ?? raw?.greenResidualPercent,
+      ),
+      vegetation_cover_percent: num(
+        raw?.vegetation_cover_percent ?? raw?.vegetationCoverPercent,
+      ),
       classes,
       has_raster: hasRaster,
     };

@@ -9,11 +9,11 @@ const INDEX_HELPERS = `
 function normalizeReflectance(v){if(!isFinite(v))return NaN;return v>2?v/10000:v;}
 function safeDiv(a,b){return Math.abs(b)<0.000001?NaN:a/b;}
 function ndvi(s){const n=normalizeReflectance(s.B08);const r=normalizeReflectance(s.B04);const v=safeDiv(n-r,n+r);return v>=-1&&v<=1?v:NaN;}
-function ndre(s){const n=normalizeReflectance(s.B8A);const r=normalizeReflectance(s.B05);const v=safeDiv(n-r,n+r);return v>=-1&&v<=1?v:NaN;}
+function ndre(s){const re=normalizeReflectance(s.B05);if(!isFinite(re)||re<0.001)return NaN;const n=normalizeReflectance(isFinite(s.B8A)&&s.B8A>0?s.B8A:s.B08);const v=safeDiv(n-re,n+re);return v>=-1&&v<=1?v:NaN;}
 function savi(s){const n=normalizeReflectance(s.B08);const r=normalizeReflectance(s.B04);return safeDiv(n-r,n+r+0.5)*1.5;}
 function bsi(s){const sw=normalizeReflectance(s.B11);const r=normalizeReflectance(s.B04);const n=normalizeReflectance(s.B08);const b=normalizeReflectance(s.B02);return safeDiv((sw+r)-(n+b),(sw+r)+(n+b));}
 function ndmi(s){const n=normalizeReflectance(s.B08);const sw=normalizeReflectance(s.B11);const v=safeDiv(n-sw,n+sw);return v>=-1&&v<=1?v:NaN;}
-function swirRatio(s){const sw=normalizeReflectance(s.B11);const n=normalizeReflectance(s.B08);return safeDiv(sw,n+0.000001);}
+function nbr2(s){const a=normalizeReflectance(s.B11);const b=normalizeReflectance(s.B12);if(!isFinite(a)||!isFinite(b)||b<0.001)return NaN;return safeDiv(a-b,a+b);}
 function isWaterCloud(scl){
   return [0,1,3,6,8,9,10,11].indexOf(scl)>=0;
 }
@@ -24,16 +24,19 @@ function classify(sample){
   const r=ndre(sample);
   const b=bsi(sample);
   const m=ndmi(sample);
-  const w=swirRatio(sample);
+  const nb=nbr2(sample);
   if(!isFinite(n)) return 0;
   if(isWaterCloud(scl)) return 1;
-  if(n<0.25 && b>0.18) return 2;
-  if(n<0.45 && r<0.22 && m<0.12 && n>=0.08) return 8;
-  if(n>=0.12 && n<0.48 && b>0.04 && b<0.38 && w>0.35 && m<0.22) return 3;
-  if(n<0.45) return 4;
-  if(n<0.65) return 5;
-  if(n<=0.8) return 6;
-  return 7;
+  if(isFinite(b)&&n<0.25&&b>0.18) return 2;
+  if(isFinite(nb)&&n>=0.08&&n<0.40&&(!isFinite(r)||r<0.15)&&isFinite(b)&&b>0.02&&b<0.35&&nb>0.02) return 3;
+  if(isFinite(r)&&n>=0.35&&r>=0.18){
+    if(n<0.45) return 4;
+    if(n<0.65) return 5;
+    if(n<=0.8) return 6;
+    return 7;
+  }
+  if(isFinite(r)&&n>=0.35&&r<0.18&&(!isFinite(m)||m<0.15)) return 8;
+  return 0;
 }
 function colorForClass(cid){
   if(cid===1) return [0,0,0,0];

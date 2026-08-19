@@ -1,3 +1,5 @@
+import { isCdseSurfaceCoverMode } from './ndviSurfaceCoverCore.js';
+
 export class NdviProviderClient {
   async searchScenes() {
     throw new Error('searchScenes must be implemented by NDVI provider');
@@ -144,8 +146,9 @@ export class NdviProviderManager {
 
   async generateLayer(params) {
     const requestedVisualMode = params?.visualMode || params?.visual_mode || 'ndvi_contrast';
+    const cdseCover = isCdseSurfaceCoverMode(requestedVisualMode);
 
-    if (this._geeReady()) {
+    if (this._geeReady() && !cdseCover) {
       try {
         const layer = await this.geeClient.generateLayer(params);
         return { provider: 'google_earth_engine', fallbackUsed: false, layer };
@@ -158,7 +161,7 @@ export class NdviProviderManager {
           `⚠️ [NDVI] GEE generate (ndvi_contrast) falhou, fallback Copernicus: ${error?.message || error}`,
         );
       }
-    } else if (requestedVisualMode !== 'ndvi_contrast') {
+    } else if (requestedVisualMode !== 'ndvi_contrast' && !cdseCover) {
       // GEE indisponível e modo avançado pedido sem raster persistido:
       // o gate de modo já barra antes, mas aqui é a última linha de defesa.
       throw unsupportedVisualMode(requestedVisualMode);

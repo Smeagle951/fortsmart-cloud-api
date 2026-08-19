@@ -1,6 +1,8 @@
 /**
  * Modos disponíveis via raster persistido (Copernicus + internal grid).
  */
+import { isCdseSurfaceCoverMode } from './ndviSurfaceCoverCore.js';
+
 export const RASTER_VISUAL_MODES = Object.freeze([
   'ndvi_contrast',
   'ndvi_absolute',
@@ -10,12 +12,11 @@ export const RASTER_VISUAL_MODES = Object.freeze([
   'savi',
   'bsi_soil',
   'ndmi_water_stress',
+  'post_harvest_cover',
 ]);
 
-/** Modos que exigem GEE (classificação categórica / multi-banda). */
+/** Senescência categórica ainda depende do pipeline GEE. */
 export const GEE_ONLY_VISUAL_MODES = Object.freeze([
-  'post_harvest_cover',
-  'soil_cover_classification',
   'senescence_desiccation',
   'nbr2',
 ]);
@@ -95,6 +96,7 @@ export function assertVisualModeSupported({
 } = {}) {
   const mode = normalizeVisualModeKey(visualMode);
   if (mode === 'ndvi_contrast') return mode;
+  if (isCdseSurfaceCoverMode(mode)) return mode;
 
   // GEE: aceita modos raster avançados E modos só-GEE (pós-colheita).
   if (geeAvailable) {

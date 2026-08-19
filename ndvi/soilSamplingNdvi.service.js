@@ -29,6 +29,7 @@ import {
   validateNdviContrastHttpResponse,
 } from './ndviContrastHttpValidity.js';
 import { assertVisualModeSupported } from './ndviVisualModeGate.js';
+import { isCdseSurfaceCoverMode } from './ndviSurfaceCoverCore.js';
 import { loadInternalGrid } from './ndviRasterStore.js';
 import { RASTER_SCHEMA_NUM } from './ndviRasterSerializer.js';
 
@@ -159,9 +160,9 @@ function normalizePackageModeError(mode, error) {
         : 'Banda B04/B08/B11 ausente para Solo/Palhada.';
     } else if (mode === 'post_harvest_cover') {
       out.code = 'postHarvestCoverUnavailable';
-      out.message = /gee|earth engine|banda|pixel/i.test(rawMessage)
+      out.message = /banda|pixel|swir|b12/i.test(rawMessage)
         ? rawMessage
-        : 'Cobertura pós-colheita indisponível nesta cena (exige GEE + SWIR).';
+        : 'Cobertura pós-colheita indisponível: a cena não tem evidência espectral suficiente (NIR+SWIR+Red Edge).';
     }
   } else if (
     rawCode === 'GEE_INSUFFICIENT_CLASS_PIXELS' ||
@@ -542,12 +543,12 @@ class SoilSamplingNdviService {
 
     const tryCopernicusSearch = async () => {
       try {
-        const scenes = await this.catalogClient.searchSentinelScenes({
-          polygon,
-          startDate,
-          endDate,
-          maxCloud,
-        });
+    const scenes = await this.catalogClient.searchSentinelScenes({
+      polygon,
+      startDate,
+      endDate,
+      maxCloud,
+    });
         scenesProvider = 'copernicus_dataspace';
         return scenes;
       } catch (error) {
@@ -962,7 +963,7 @@ class SoilSamplingNdviService {
       field: plotId,
       scene: sceneId,
       resolution: 'preview',
-      expectedBands: ['B02', 'B04', 'B05', 'B08', 'B8A', 'B11', 'SCL'],
+      expectedBands: ['B02', 'B04', 'B05', 'B08', 'B8A', 'B11', 'B12', 'SCL'],
       modes: uniqueModes,
     });
 
@@ -1042,7 +1043,7 @@ class SoilSamplingNdviService {
     if (this._geeReady({ packageMode: true }) && this.geeClient?.generateLayerPackage) {
       try {
         console.log('[NDVI_PACKAGE_BANDS]', {
-          bandsRequested: ['B02', 'B04', 'B05', 'B08', 'B8A', 'B11', 'SCL'],
+          bandsRequested: ['B02', 'B04', 'B05', 'B08', 'B8A', 'B11', 'B12', 'SCL'],
           bandsAvailable: 'gee_dynamic',
           bandsMissing: [],
           productLevel: 'L2A',
@@ -1449,6 +1450,7 @@ class SoilSamplingNdviService {
           `collection=sentinel-2-l2a bands=B04,B08`,
       );
       const geeAvailable = this._geeReady();
+      const cdseCover = isCdseSurfaceCoverMode(requestedVisualMode);
 
       if (process.env.NDVI_PROVIDER === 'gee' && !providerStatus.gee_configured) {
         throw this._error(
@@ -1731,7 +1733,7 @@ class SoilSamplingNdviService {
       }
 
       stage = 'process';
-      logGenerateStage(meta, stage, `provider=${geeAvailable ? 'gee' : 'copernicus'}`);
+      logGenerateStage(meta, stage, `provider=${geeAvailable && !cdseCover ? 'gee' : 'copernicus'}`);
       const processParams = {
         sceneId: targetSceneId,
         polygon,
@@ -1749,7 +1751,7 @@ class SoilSamplingNdviService {
 
       let assets;
       let assetProvider = 'copernicus_dataspace';
-      if (geeAvailable) {
+      if (geeAvailable && !cdseCover) {
         try {
           assets = await this.geeClient.generateLayer(processParams);
           // O manager/cliente devolve { provider, layer } ou layer direto.
