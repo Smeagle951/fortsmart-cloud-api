@@ -1453,11 +1453,9 @@ class SoilSamplingNdviService {
       const cdseCover = isCdseSurfaceCoverMode(requestedVisualMode);
 
       if (process.env.NDVI_PROVIDER === 'gee' && !providerStatus.gee_configured) {
-        throw this._error(
-          'Google Earth Engine não está configurado no servidor (GEE_PROJECT_ID, GEE_CLIENT_EMAIL, GEE_PRIVATE_KEY).',
-          'gee_not_configured',
-          503,
-          { provider: providerStatus },
+        // GEE pedido no env mas sem credenciais: segue no CDSE em vez de abortar.
+        console.warn(
+          '⚠️ [NDVI] NDVI_PROVIDER=gee sem credenciais GEE — usando Copernicus/CDSE',
         );
       }
 
@@ -1762,8 +1760,15 @@ class SoilSamplingNdviService {
             assetProvider = assets?.provider_used || assets?.provider || 'google_earth_engine';
           }
         } catch (geeError) {
-          // Modos avançados não fazem fallback Copernicus → propaga 422.
-          if (requestedVisualMode !== 'ndvi_contrast') {
+          // CDSE cobre NDVI absoluto/contraste e cobertura categórica.
+          // Só modos avançados sem fallback CDSE propagam 422.
+          const cdseFallbackModes = new Set([
+            'ndvi_contrast',
+            'ndvi_absolute',
+            'post_harvest_cover',
+            'bsi_soil',
+          ]);
+          if (!cdseFallbackModes.has(String(requestedVisualMode))) {
             throw this._error(
               geeError?.message ||
                 `Modo "${requestedVisualMode}" exige Google Earth Engine.`,
@@ -1773,7 +1778,7 @@ class SoilSamplingNdviService {
             );
           }
           console.warn(
-            `⚠️ [NDVI] GEE falhou (ndvi_contrast), fallback Copernicus: ${geeError?.message || geeError}`,
+            `⚠️ [NDVI] GEE falhou (${requestedVisualMode}), fallback Copernicus: ${geeError?.message || geeError}`,
           );
           assets = null;
         }

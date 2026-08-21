@@ -153,15 +153,24 @@ export class NdviProviderManager {
         const layer = await this.geeClient.generateLayer(params);
         return { provider: 'google_earth_engine', fallbackUsed: false, layer };
       } catch (error) {
-        // Modos avançados não têm fallback Copernicus — propaga 422.
-        if (requestedVisualMode !== 'ndvi_contrast') {
+        const cdseFallbackModes = new Set([
+          'ndvi_contrast',
+          'ndvi_absolute',
+          'post_harvest_cover',
+          'bsi_soil',
+        ]);
+        if (!cdseFallbackModes.has(String(requestedVisualMode))) {
           throw unsupportedVisualMode(requestedVisualMode, error);
         }
         console.warn(
-          `⚠️ [NDVI] GEE generate (ndvi_contrast) falhou, fallback Copernicus: ${error?.message || error}`,
+          `⚠️ [NDVI] GEE generate (${requestedVisualMode}) falhou, fallback Copernicus: ${error?.message || error}`,
         );
       }
-    } else if (requestedVisualMode !== 'ndvi_contrast' && !cdseCover) {
+    } else if (
+      requestedVisualMode !== 'ndvi_contrast' &&
+      requestedVisualMode !== 'ndvi_absolute' &&
+      !cdseCover
+    ) {
       // GEE indisponível e modo avançado pedido sem raster persistido:
       // o gate de modo já barra antes, mas aqui é a última linha de defesa.
       throw unsupportedVisualMode(requestedVisualMode);
