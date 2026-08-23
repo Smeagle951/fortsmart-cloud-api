@@ -5,7 +5,9 @@ export type OperationalModule =
   | 'planting'
   | 'plant-stand'
   | 'phenology'
-  | 'geo-export';
+  | 'geo-export'
+  | 'harvest'
+  | 'inventory';
 
 export type OperationalPushBody = {
   device_id: string;
@@ -26,6 +28,8 @@ const payloadKeys: Record<OperationalModule, string> = {
   'plant-stand': 'plant_stand_records',
   phenology: 'phenology_records',
   'geo-export': 'geo_exports',
+  harvest: 'harvest_records',
+  inventory: 'inventory_records',
 };
 
 function optRecordList(raw: unknown): Record<string, unknown>[] | undefined {

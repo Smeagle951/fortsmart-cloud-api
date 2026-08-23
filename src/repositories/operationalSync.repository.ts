@@ -204,6 +204,50 @@ const specs: Record<OperationalModule, ModuleSpec> = {
       };
     },
   },
+  harvest: {
+    module: 'harvest',
+    table: 'harvest_records',
+    entity: 'harvest_record',
+    buildValues(record, farmId) {
+      const raw = (record.raw as Record<string, unknown> | undefined) ?? record;
+      return {
+        ...baseLinked(record, farmId),
+        source_table:
+          str(record, '_source_table') ?? str(raw, '_source_table') ?? 'harvest_event',
+        season_local_id: str(record, 'season_local_id') ?? str(raw, 'safra_id'),
+        crop_local_id: str(record, 'crop_local_id') ?? str(raw, 'cultura_id'),
+        crop_name: str(raw, 'cultura_name') ?? str(raw, 'crop_name'),
+        event_date: iso(
+          raw.event_date ?? raw.updated_at ?? raw.created_at ?? record.date,
+        ),
+        net_weight_kg: num(raw, 'net_weight_kg'),
+        area_ha: num(raw, 'area_ha'),
+        moisture_pct: num(raw, 'moisture_pct'),
+        notes: str(raw, 'observacao') ?? str(raw, 'notes'),
+      };
+    },
+  },
+  inventory: {
+    module: 'inventory',
+    table: 'inventory_records',
+    entity: 'inventory_record',
+    buildValues(record, farmId) {
+      const raw = (record.raw as Record<string, unknown> | undefined) ?? record;
+      return {
+        ...baseLinked(record, farmId),
+        source_table:
+          str(record, '_source_table') ??
+          str(raw, '_source_table') ??
+          'inventory_products',
+        product_name: str(raw, 'name') ?? str(raw, 'product_name'),
+        batch_number: str(raw, 'batch_number') ?? str(raw, 'lote'),
+        quantity: num(raw, 'quantity') ?? num(raw, 'current_stock'),
+        unit: str(raw, 'unit') ?? str(raw, 'unidade'),
+        transaction_type: str(raw, 'type') ?? str(raw, 'transaction_type'),
+        notes: str(raw, 'notes') ?? str(raw, 'observations'),
+      };
+    },
+  },
 };
 
 export function getOperationalSpec(module: OperationalModule): ModuleSpec {

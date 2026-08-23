@@ -11,6 +11,7 @@ import type {
   OperationalPushBody,
 } from '../validators/operationalSync.validator.js';
 import { ensurePlantingModuleTables } from '../db/ensurePlantingSchema.js';
+import { ensureHarvestInventoryTables } from '../db/ensureHarvestInventorySchema.js';
 
 export type OperationalPushResult = {
   farm_cloud_id: string;
@@ -42,6 +43,7 @@ async function ensureOperationalCompatibilityColumns(
   client: import('pg').PoolClient,
 ): Promise<void> {
   await ensurePlantingModuleTables(client);
+  await ensureHarvestInventoryTables(client);
   await client.query(`
     ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS material_name TEXT;
     ALTER TABLE planting_records ADD COLUMN IF NOT EXISTS crop_name TEXT;

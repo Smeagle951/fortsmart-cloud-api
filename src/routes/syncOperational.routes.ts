@@ -38,6 +38,8 @@ registerPush('/sync/planting/push', 'planting');
 registerPush('/sync/plant-stand/push', 'plant-stand');
 registerPush('/sync/phenology/push', 'phenology');
 registerPush('/sync/geo-export/push', 'geo-export');
+registerPush('/sync/harvest/push', 'harvest');
+registerPush('/sync/inventory/push', 'inventory');
 
 // Upload multipart de imagens (monitoramento / plantio) no mesmo router que os `push`,
 // para instâncias que montam apenas `syncOperationalRouter` sem `monitoringMediaRouter`.
