@@ -393,8 +393,13 @@ export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast'
       visualMode: mode,
     });
     contrast = rendered.contrast;
-    colorValues = rendered.visualValues;
-    valuesAreVisual = !contrast?.lowContrastScene;
+    // Cena homogênea / baixa biomassa: usar NDVI bruto com escala absoluta.
+    // visualValues esticados (0–1) + colormap absoluto geravam verde/amarelo falso.
+    const useRawNdviForColor =
+      contrast?.lowContrastScene === true ||
+      contrast?.usedLowContrastFallback === true;
+    colorValues = useRawNdviForColor ? maskedRawValues : rendered.visualValues;
+    valuesAreVisual = !useRawNdviForColor;
     outWidth = rendered.width || width;
     outHeight = rendered.height || height;
   } else if (isAbsoluteIndexVisualMode(mode)) {

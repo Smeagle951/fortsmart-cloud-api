@@ -11,6 +11,39 @@ export function contrastIsComplete(contrast) {
   );
 }
 
+/** Contraste relativo que exagera solo nu / pós-colheita — não publicar como vigor. */
+export function isMisleadingContrastLayer(layer) {
+  if (!layer) return false;
+  const mode = layer.visual_mode ?? layer.visualMode;
+  if (mode !== 'ndvi_contrast') return false;
+  const contrast = readLayerContrast(layer);
+  if (!contrast) return false;
+  const mean = Number(
+    layer.ndvi_mean ??
+      layer.ndviMean ??
+      contrast.p50 ??
+      contrast.mean,
+  );
+  const p95 = Number(contrast.p95 ?? layer.ndvi_max ?? layer.ndviMax);
+  const p5 = Number(contrast.p5 ?? layer.ndvi_min ?? layer.ndviMin);
+  if (contrast.usedLowContrastFallback === true && Number.isFinite(mean) && mean < 0.30) {
+    return true;
+  }
+  if (
+    contrast.lowContrastScene === true &&
+    Number.isFinite(mean) &&
+    mean < 0.30 &&
+    Number.isFinite(p95) &&
+    p95 < 0.40
+  ) {
+    return true;
+  }
+  if (Number.isFinite(p5) && Number.isFinite(p95) && p95 - p5 < 0.01 && mean < 0.30) {
+    return true;
+  }
+  return false;
+}
+
 function isFiniteNumber(value) {
   return Number.isFinite(Number(value));
 }
@@ -188,6 +221,7 @@ export function layerMeetsContrastContract(
   if (mode !== 'ndvi_contrast') return false;
   if (!isNdviV3Schema(layer)) return false;
   if (isLegacyLayer(layer)) return false;
+  if (isMisleadingContrastLayer(layer)) return false;
   if (!contrastIsComplete(readLayerContrast(layer))) return false;
   const bounds = readLayerBounds(layer);
   if (!bounds) return false;
@@ -236,6 +270,7 @@ export function validateNdviContrastHttpResponse(
     (layer?.previewUrl && String(layer.previewUrl).trim())
   );
   const boundsMatchRequest = boundsCloseToRequest(bounds, requestBounds);
+  const misleadingContrast = isMisleadingContrastLayer(layer);
   const ok =
     resultVisualMode === 'ndvi_contrast' &&
     schemaOk &&
@@ -243,7 +278,8 @@ export function validateNdviContrastHttpResponse(
     hasContrast &&
     hasPreview &&
     !!bounds &&
-    boundsMatchRequest;
+    boundsMatchRequest &&
+    !misleadingContrast;
 
   return {
     ok,

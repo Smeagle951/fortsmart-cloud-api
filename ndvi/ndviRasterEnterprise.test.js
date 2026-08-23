@@ -226,6 +226,35 @@ test('generatePreviewFromRaster NDRE com valores baixos pinta vermelho/amarelo, 
   );
 });
 
+test('generatePreviewFromRaster solo nu não pinta verde/amarelo falso no contraste', () => {
+  const raster = syntheticGrid(8, 8);
+  for (let i = 0; i < raster.bands.ndvi.length; i += 1) {
+    raster.bands.ndvi[i] = 0.10 + (i / (raster.bands.ndvi.length - 1)) * 0.04;
+  }
+  const loaded = deserializeInternalGridBuffer(
+    serializeInternalGridDocument(raster).buffer,
+  );
+  const out = generatePreviewFromRaster({ raster: loaded, visualMode: 'ndvi_contrast' });
+  assert.equal(out.contrast.lowContrastScene, true);
+
+  const png = PNG.sync.read(out.buffer);
+  let greenPixels = 0;
+  let visiblePixels = 0;
+  for (let i = 0; i < png.data.length; i += 4) {
+    if (png.data[i + 3] < 40) continue;
+    visiblePixels += 1;
+    const r = png.data[i];
+    const g = png.data[i + 1];
+    const b = png.data[i + 2];
+    if (g > r + 25 && g > b + 10) greenPixels += 1;
+  }
+  assert.ok(visiblePixels > 0);
+  assert.ok(
+    greenPixels / visiblePixels < 0.15,
+    `solo nu não deve ser majoritariamente verde (${greenPixels}/${visiblePixels})`,
+  );
+});
+
 test('cache científico e visual têm chaves distintas', () => {
   const sci = scientificRasterCacheKey({ plotId: 'p', sceneId: 's' });
   const vis = visualPreviewCacheKey({

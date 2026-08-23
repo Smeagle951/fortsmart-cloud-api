@@ -28,10 +28,28 @@ function std(values) {
   return round(Math.sqrt(variance), 4);
 }
 
+const LOW_BIOMASS_MEAN_MAX = 0.30;
+const LOW_BIOMASS_P95_MAX = 0.40;
+
 function resolveStretch(percentiles) {
   const p5 = Number(percentiles.p5);
   const p50 = Number(percentiles.p50);
   const p95 = Number(percentiles.p95);
+  const mean = Number(percentiles.mean ?? p50);
+  if (
+    Number.isFinite(mean) &&
+    mean < LOW_BIOMASS_MEAN_MAX &&
+    Number.isFinite(p95) &&
+    p95 < LOW_BIOMASS_P95_MAX
+  ) {
+    return {
+      pLow: -0.1,
+      pHigh: 0.5,
+      stretchMode: 'low_biomass_absolute',
+      lowContrastScene: true,
+      usedLowContrastFallback: true,
+    };
+  }
   if (Number.isFinite(p5) && Number.isFinite(p95) && p95 - p5 >= 0.01) {
     return {
       pLow: p5,
