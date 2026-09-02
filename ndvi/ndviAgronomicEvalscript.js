@@ -2,8 +2,30 @@
  * Evalscripts Copernicus Process API — multibandas agronômicas.
  */
 
-const INPUT_BANDS =
+/** Pacote completo — só para NDRE/NDMI/BSI/cobertura (não usar no NDVI V1). */
+const INPUT_BANDS_FULL =
   '["B02","B03","B04","B05","B06","B07","B08","B8A","B11","B12","SCL","dataMask"]';
+
+/** NDVI V1: apenas o necessário para (B8−B4)/(B8+B4) + máscara. */
+const INPUT_BANDS_NDVI_ONLY = '["B04","B08","SCL","dataMask"]';
+
+const NDVI_ONLY_HELPERS = `
+function normalizeReflectance(v){if(!isFinite(v))return NaN;return v>2?v/10000:v;}
+function safeDiv(a,b){return Math.abs(b)<0.000001?NaN:a/b;}
+function ndvi(s){const n=normalizeReflectance(s.B08);const r=normalizeReflectance(s.B04);const v=safeDiv(n-r,n+r);return v>=-1&&v<=1?v:NaN;}
+function isWaterCloud(scl){return [0,1,3,6,8,9,10,11].indexOf(scl)>=0;}
+function classifyNdviOnly(sample){
+  if(sample.dataMask===0) return 0;
+  if(isWaterCloud(sample.SCL)) return 1;
+  const n=ndvi(sample);
+  if(!isFinite(n)) return 0;
+  if(n<0.15) return 2;
+  if(n<0.35) return 4;
+  if(n<0.55) return 5;
+  if(n<0.75) return 6;
+  return 7;
+}
+`;
 
 const INDEX_HELPERS = `
 function normalizeReflectance(v){if(!isFinite(v))return NaN;return v>2?v/10000:v;}
@@ -51,12 +73,41 @@ function colorForClass(cid){
 }
 `;
 
-/** PNG stats: R=NDVI, G=classe, B=NDRE */
+/** NDVI V1 — PNG stats com B04+B08+SCL apenas. R=NDVI, G=classe simples, B=0. */
+export function buildNdviOnlyPackedStatsEvalscript() {
+  return `//VERSION=3
+${NDVI_ONLY_HELPERS}
+function setup(){
+  return {input:${INPUT_BANDS_NDVI_ONLY},output:{bands:4,sampleType:'AUTO'}};
+}
+function evaluatePixel(sample){
+  if(sample.dataMask===0) return [0,0,0,0];
+  const n=ndvi(sample);
+  if(!isFinite(n)) return [0,0,0,0];
+  const cid=classifyNdviOnly(sample);
+  if(cid===0 || cid===1) return [0,0,0,0];
+  const r=(Math.max(-1,Math.min(1,n))+1)/2;
+  const g=cid/8;
+  return [r,g,0,1];
+}`;
+}
+
+export function isNdviOnlyVisualMode(mode) {
+  const m = String(mode || '').toLowerCase();
+  return (
+    m === 'ndvi_contrast' ||
+    m === 'ndvi_absolute' ||
+    m === 'ndvi_relative' ||
+    m === 'agronomic_classes'
+  );
+}
+
+/** PNG stats: R=NDVI, G=classe, B=NDRE (pacote completo — legado/avançado). */
 export function buildAgronomicPackedStatsEvalscript() {
   return `//VERSION=3
 ${INDEX_HELPERS}
 function setup(){
-  return {input:${INPUT_BANDS},output:{bands:4,sampleType:'AUTO'}};
+  return {input:${INPUT_BANDS_FULL},output:{bands:4,sampleType:'AUTO'}};
 }
 function evaluatePixel(sample){
   if(sample.dataMask===0) return [0,0,0,0];
@@ -77,7 +128,7 @@ export function buildIndicesPackedStatsEvalscript() {
   return `//VERSION=3
 ${INDEX_HELPERS}
 function setup(){
-  return {input:${INPUT_BANDS},output:{bands:4,sampleType:'AUTO'}};
+  return {input:${INPUT_BANDS_FULL},output:{bands:4,sampleType:'AUTO'}};
 }
 function evaluatePixel(sample){
   if(sample.dataMask===0) return [0,0,0,0];
@@ -97,7 +148,7 @@ export function buildAgronomicClassesPreviewEvalscript() {
   return `//VERSION=3
 ${INDEX_HELPERS}
 function setup(){
-  return {input:${INPUT_BANDS},output:{bands:4,sampleType:'AUTO'}};
+  return {input:${INPUT_BANDS_FULL},output:{bands:4,sampleType:'AUTO'}};
 }
 function evaluatePixel(sample){
   if(sample.dataMask===0) return [0,0,0,0];
@@ -169,7 +220,7 @@ function buildIndexPreview(evalExpr, stops, { normalize = 'absolute' } = {}) {
   const useUnitInterval = normalize === 'unit';
   return `//VERSION=3
 const STOPS=${JSON.stringify(stops)};
-function setup(){return {input:${INPUT_BANDS},output:{bands:4,sampleType:'AUTO'}};}
+function setup(){return {input:${INPUT_BANDS_FULL},output:{bands:4,sampleType:'AUTO'}};}
 function isWaterCloud(scl){return [0,1,3,6,8,9,10,11].indexOf(scl)>=0;}
 function colorT(t){
   const x=Math.max(0,Math.min(1,t));

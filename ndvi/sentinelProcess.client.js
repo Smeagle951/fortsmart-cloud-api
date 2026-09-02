@@ -15,8 +15,11 @@ import {
 import {
   buildAgronomicPackedStatsEvalscript,
   buildIndicesPackedStatsEvalscript,
+  buildNdviOnlyPackedStatsEvalscript,
+  isNdviOnlyVisualMode,
   VISUAL_MODES,
 } from './ndviAgronomicEvalscript.js';
+import { createNdviTimingTrace, newNdviRequestId } from './ndviGenerateLogger.js';
 import { storeNdviPreviewPng } from './ndviPreviewStorage.js';
 import {
   colorBucketsForValues,
@@ -604,35 +607,87 @@ class SentinelProcessClient {
     }
 
     try {
-      // Primary + indices em paralelo (~50% do cold path Process API).
-      const [primaryBuf, indicesBuf] = await Promise.all([
-        this._postProcessPng({
-          token,
-          polygon,
-          date,
-          evalscript: buildAgronomicPackedStatsEvalscript(),
-          width: 256,
-          height: 256,
-          sceneId,
-          label: 'agro_stats_primary',
-        }),
-        this._postProcessPng({
-          token,
-          polygon,
-          date,
-          evalscript: buildIndicesPackedStatsEvalscript(),
-          width: 256,
-          height: 256,
-          sceneId,
-          label: 'agro_stats_indices',
-        }),
-      ]);
+      const timing = createNdviTimingTrace({
+        requestId: newNdviRequestId('process'),
+        plotId,
+        sceneId,
+        farmId,
+        mode: resolvedVisual,
+        source: 'sentinelProcess',
+      });
+      timing.mark('request_started', { forceRemote: Boolean(forceRemote) });
+      timing.mark('cdse_auth_ok');
 
+      const ndviOnly = isNdviOnlyVisualMode(resolvedVisual);
+      let primaryBuf;
+      let indicesBuf = null;
+
+      if (ndviOnly) {
+        // NDVI V1: uma chamada Process com B04+B08+SCL — sem B05/B8A/B11/B12.
+        timing.mark('bands_selected', { bands: 'B04,B08,SCL', path: 'ndvi_v1' });
+        timing.mark('download_started', { calls: 1, size: '256x256' });
+        primaryBuf = await this._postProcessPng({
+          token,
+          polygon,
+          date,
+          evalscript: buildNdviOnlyPackedStatsEvalscript(),
+          width: 256,
+          height: 256,
+          sceneId,
+          label: 'ndvi_v1_stats',
+        });
+        timing.mark('download_completed', {
+          primaryBytes: primaryBuf?.length ?? 0,
+          indicesBytes: 0,
+        });
+      } else {
+        timing.mark('bands_selected', {
+          bands: 'B02,B03,B04,B05,B06,B07,B08,B8A,B11,B12,SCL',
+          path: 'full_package',
+        });
+        timing.mark('download_started', { calls: 2, size: '256x256' });
+        // Avançado: primary + indices em paralelo.
+        const pair = await Promise.all([
+          this._postProcessPng({
+            token,
+            polygon,
+            date,
+            evalscript: buildAgronomicPackedStatsEvalscript(),
+            width: 256,
+            height: 256,
+            sceneId,
+            label: 'agro_stats_primary',
+          }),
+          this._postProcessPng({
+            token,
+            polygon,
+            date,
+            evalscript: buildIndicesPackedStatsEvalscript(),
+            width: 256,
+            height: 256,
+            sceneId,
+            label: 'agro_stats_indices',
+          }),
+        ]);
+        primaryBuf = pair[0];
+        indicesBuf = pair[1];
+        timing.mark('download_completed', {
+          primaryBytes: primaryBuf?.length ?? 0,
+          indicesBytes: indicesBuf?.length ?? 0,
+        });
+      }
+
+      timing.mark('processing_started');
       const stats = computeAgronomicStatsFromPackedPngs(primaryBuf, indicesBuf, {
         sceneId,
       });
+      timing.mark('ndvi_calculated', {
+        mean: stats?.ndvi_mean ?? '-',
+        validPixels: stats?.valid_pixel_count ?? stats?.validPixelCount ?? '-',
+      });
 
       if (!stats) {
+        timing.summary('stats_empty');
         console.warn(`⚠️ [NDVI][Process] stats agronômicas indisponíveis sceneId=${sceneId}`);
         return { preview_url: null, status: 'metadata_only' };
       }
@@ -847,6 +902,15 @@ class SentinelProcessClient {
           `largestLowZoneHa=${enrichedStats.spatial_metrics?.largestLowZoneHa ?? '-'} ` +
           `homogeneityScore=${enrichedStats.spatial_metrics?.homogeneityScore ?? '-'}`,
       );
+
+      timing.mark('raster_saved', {
+        rasterAvailable: Boolean(
+          rasterPersist?.raster_storage_key ?? rasterPersist?.storageKey,
+        ),
+        preview: preview_url ? 'yes' : 'no',
+      });
+      timing.mark('response_ready');
+      timing.summary(preview_url ? 'success' : 'metadata_only');
 
       return {
         preview_url,

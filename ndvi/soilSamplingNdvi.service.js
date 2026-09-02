@@ -3,10 +3,12 @@ import NdviStatsService from './ndviStats.service.js';
 import * as NdviResponseMapper from './ndviResponse.mapper.js';
 import { assertCopernicusReady, getNdviProviderStatus } from './ndviEnv.js';
 import {
+  createNdviTimingTrace,
   logGenerateFail,
   logGenerateOk,
   logGenerateStage,
   logGenerateStart,
+  newNdviRequestId,
 } from './ndviGenerateLogger.js';
 import { isPlaceholderPreviewUrl } from './ndviPngStats.js';
 import {
@@ -222,6 +224,17 @@ function sourceBandsForMode(mode) {
     default:
       return ['B04', 'B08'];
   }
+}
+
+/** União mínima de bandas para os modos pedidos (+ SCL). */
+function bandsRequestedForModes(modes = []) {
+  const set = new Set(['SCL']);
+  for (const mode of modes) {
+    for (const band of sourceBandsForMode(mode)) {
+      set.add(band);
+    }
+  }
+  return [...set];
 }
 
 function hasCoreRenderableNdviStats(stats) {
@@ -942,6 +955,20 @@ class SoilSamplingNdviService {
     const startedAt = Date.now();
     const layersByMode = {};
     const statusesByMode = {};
+    const bandsRequested = bandsRequestedForModes(uniqueModes);
+    const timing = createNdviTimingTrace({
+      requestId: newNdviRequestId('pkg'),
+      plotId,
+      sceneId,
+      farmId,
+      mode: uniqueModes.join(','),
+      source: 'generatePackage',
+    });
+    timing.mark('request_started', {
+      modes: uniqueModes.join(','),
+      bands: bandsRequested.join(','),
+      force: Boolean(force),
+    });
 
     const providerStatus = getNdviProviderStatus();
     console.log('[NDVI_PACKAGE_BACKEND_START]', {
@@ -951,6 +978,7 @@ class SoilSamplingNdviService {
       imageDate,
       polygonValid: Boolean(polygon && polygon.type === 'Polygon'),
       modes: uniqueModes,
+      bandsRequested,
       force,
       provider: {
         ndviProvider: providerStatus.ndvi_provider,
@@ -962,8 +990,8 @@ class SoilSamplingNdviService {
     console.log('[Package] generate-package request', {
       field: plotId,
       scene: sceneId,
-      resolution: 'preview',
-      expectedBands: ['B02', 'B04', 'B05', 'B08', 'B8A', 'B11', 'B12', 'SCL'],
+      resolution: resolutionKind || 'preview',
+      expectedBands: bandsRequested,
       modes: uniqueModes,
     });
 
@@ -1014,6 +1042,8 @@ class SoilSamplingNdviService {
     Object.assign(statusesByMode, cachedPackage.statusesByMode);
     const pendingModes = uniqueModes.filter((mode) => !layersByMode[mode]);
     if (pendingModes.length === 0) {
+      timing.mark('cache_hit', { modes: uniqueModes.join(',') });
+      timing.summary('cache_hit');
       console.log('[NDVI] CACHE_PACKAGE_HIT', {
         key: packageCacheKey,
         sceneId,
@@ -1034,6 +1064,7 @@ class SoilSamplingNdviService {
         elapsedMs: Date.now() - startedAt,
       };
     }
+    timing.mark('cache_miss', { pending: pendingModes.join(',') });
     console.log('[NDVI] CACHE_PACKAGE_MISS', {
       key: packageCacheKey,
       sceneId,
@@ -1042,17 +1073,20 @@ class SoilSamplingNdviService {
     });
     if (this._geeReady({ packageMode: true }) && this.geeClient?.generateLayerPackage) {
       try {
+        const pendingBands = bandsRequestedForModes(pendingModes);
         console.log('[NDVI_PACKAGE_BANDS]', {
-          bandsRequested: ['B02', 'B04', 'B05', 'B08', 'B8A', 'B11', 'B12', 'SCL'],
+          bandsRequested: pendingBands,
           bandsAvailable: 'gee_dynamic',
           bandsMissing: [],
           productLevel: 'L2A',
           tileId: sceneId || null,
         });
+        timing.mark('bands_selected', { bands: pendingBands.join(','), provider: 'gee' });
         console.log('[Package] using single-pass GEE package renderer', {
           field: plotId,
           scene: sceneId,
           modes: pendingModes,
+          bands: pendingBands,
         });
         const packageResult = await this.geeClient.generateLayerPackage({
           sceneId,
@@ -1437,8 +1471,21 @@ class SoilSamplingNdviService {
       imageDate: resolveSceneAcquisitionDate({ sceneId, imageDate }),
     };
     let stage = 'init';
+    const requestBands = sourceBandsForMode(requestedVisualMode);
+    const timing = createNdviTimingTrace({
+      requestId: newNdviRequestId('gen'),
+      plotId,
+      sceneId: sceneId || '-',
+      farmId,
+      mode: requestedVisualMode,
+      source: 'generateLayer',
+    });
 
     try {
+      timing.mark('request_started', {
+        bands: requestBands.join(','),
+        force: Boolean(force),
+      });
       logGenerateStart(meta);
       stage = 'provider_check';
       const providerStatus = getNdviProviderStatus();
@@ -1447,7 +1494,7 @@ class SoilSamplingNdviService {
         stage,
         `providerRequested=${providerStatus.ndvi_provider} ` +
           `providerUsed=${providerStatus.cloud_api_uses} activeProvider=${providerStatus.active_provider} ` +
-          `collection=sentinel-2-l2a bands=B04,B08`,
+          `collection=sentinel-2-l2a bands=${requestBands.join(',')}`,
       );
       const geeAvailable = this._geeReady();
       const cdseCover = isCdseSurfaceCoverMode(requestedVisualMode);
@@ -1627,6 +1674,8 @@ class SoilSamplingNdviService {
             requestedVisualMode,
             polygon,
           });
+          timing.mark('cache_hit');
+          timing.summary('cache_hit');
           logGenerateOk(meta, mapped, { cacheHit: true });
           return mapped;
         }
