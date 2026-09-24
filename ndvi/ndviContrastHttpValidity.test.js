@@ -86,4 +86,25 @@ describe('ndviContrastHttpValidity', () => {
     assert.equal(validation.ok, false);
     assert.equal(validation.legacy, true);
   });
+
+  it('201 quando contraste em solo nu / baixa biomassa (V2)', () => {
+    const layer = {
+      layer_id: 'bare-contrast',
+      preview_url: 'https://cdn.example/bare.png',
+      visual_mode: 'ndvi_contrast',
+      schema_version: 'ndvi_v3',
+      ndvi_mean: 0.14,
+      contrast: {
+        p5: 0.1,
+        p50: 0.12,
+        p95: 0.16,
+        lowContrastScene: true,
+        usedLowContrastFallback: true,
+      },
+      bounds: { west: -54.5, south: -15.4, east: -54.4, north: -15.3 },
+    };
+    const validation = validateNdviContrastHttpResponse(layer, 'ndvi_contrast');
+    assert.equal(validation.ok, true);
+    assert.equal(validation.statusToReturn, 201);
+  });
 });

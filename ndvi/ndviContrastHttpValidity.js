@@ -11,37 +11,38 @@ export function contrastIsComplete(contrast) {
   );
 }
 
-/** Contraste relativo que exagera solo nu / pós-colheita — não publicar como vigor. */
+/** Indisponibilidade técnica do contraste — não confundir com baixa biomassa (NDVI V2). */
 export function isMisleadingContrastLayer(layer) {
   if (!layer) return false;
   const mode = layer.visual_mode ?? layer.visualMode;
   if (mode !== 'ndvi_contrast') return false;
-  const contrast = readLayerContrast(layer);
-  if (!contrast) return false;
-  const mean = Number(
-    layer.ndvi_mean ??
-      layer.ndviMean ??
-      contrast.p50 ??
-      contrast.mean,
-  );
-  const p95 = Number(contrast.p95 ?? layer.ndvi_max ?? layer.ndviMax);
-  const p5 = Number(contrast.p5 ?? layer.ndvi_min ?? layer.ndviMin);
-  if (contrast.usedLowContrastFallback === true && Number.isFinite(mean) && mean < 0.30) {
-    return true;
-  }
-  if (
-    contrast.lowContrastScene === true &&
-    Number.isFinite(mean) &&
-    mean < 0.30 &&
-    Number.isFinite(p95) &&
-    p95 < 0.40
-  ) {
-    return true;
-  }
-  if (Number.isFinite(p5) && Number.isFinite(p95) && p95 - p5 < 0.01 && mean < 0.30) {
-    return true;
-  }
+  const status = String(
+    layer.status ?? layer.processing_status ?? layer.processingStatus ?? '',
+  )
+    .trim()
+    .toLowerCase();
+  if (status === 'failed') return true;
+  const preview =
+    (layer.preview_url && String(layer.preview_url).trim()) ||
+    (layer.previewUrl && String(layer.previewUrl).trim());
+  if (!preview) return true;
+  if (!contrastIsComplete(readLayerContrast(layer))) return true;
   return false;
+}
+
+const LOW_BIOMASS_MEAN = 0.3;
+const LOW_BIOMASS_P95 = 0.4;
+
+/** Contexto agronômico: contraste publicado com interpretação de superfície. */
+export function isLowBiomassSurfaceContrast(layer) {
+  if (!layer) return false;
+  const contrast = readLayerContrast(layer);
+  const mean = Number(
+    layer.ndvi_mean ?? layer.ndviMean ?? contrast?.p50 ?? contrast?.mean,
+  );
+  const p95 = Number(contrast?.p95 ?? layer.ndvi_max ?? layer.ndviMax);
+  if (!Number.isFinite(mean) || !Number.isFinite(p95)) return false;
+  return mean < LOW_BIOMASS_MEAN && p95 < LOW_BIOMASS_P95;
 }
 
 function isFiniteNumber(value) {
