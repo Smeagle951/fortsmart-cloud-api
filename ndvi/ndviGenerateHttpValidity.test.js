@@ -75,6 +75,24 @@ describe('ndviGenerateHttpValidity', () => {
     );
   });
 
+  it('aceita contraste em baixa biomassa sem pacote agronômico completo', () => {
+    assert.equal(
+      isValidNdviGenerateHttpPayload({
+        preview_url: 'https://x/p.png',
+        visual_mode: 'ndvi_contrast',
+        ndvi_mean: 0.1,
+        ndvi_min: 0.05,
+        ndvi_max: 0.15,
+        ndvi_p5: 0.08,
+        ndvi_p50: 0.1,
+        ndvi_p95: 0.12,
+        valid_pixel_count: 800,
+        contrast: { p5: 0.08, p50: 0.1, p95: 0.12 },
+      }),
+      true,
+    );
+  });
+
   it('rejeita sem raster', () => {
     assert.equal(
       isValidNdviGenerateHttpPayload({

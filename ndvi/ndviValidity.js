@@ -95,6 +95,48 @@ export function invalidNdviStatsReason(stats) {
   return null;
 }
 
+/** Stats mínimas para publicar camada (incl. contraste em baixa biomassa). */
+export function hasCoreRenderableNdviStats(stats) {
+  if (!stats || typeof stats !== 'object') return false;
+
+  const classAreas = stats.classAreas ?? stats.class_areas;
+  const renderType = String(stats.renderType || stats.render_type || '').toLowerCase();
+  const selectedBand = String(stats.selectedBand || stats.selected_band || '');
+  const validPixels = toNum(
+    stats.validPixelCount ?? stats.valid_pixel_count ?? stats.valid_pixels,
+  );
+  if (
+    (renderType === 'categorical' ||
+      selectedBand === 'SURFACE_CLASS' ||
+      (Array.isArray(classAreas) && classAreas.length > 0)) &&
+    validPixels != null &&
+    validPixels > 0
+  ) {
+    return true;
+  }
+  if (Array.isArray(classAreas) && classAreas.length > 0) {
+    return true;
+  }
+
+  const contrastObj =
+    stats.contrast && typeof stats.contrast === 'object' ? stats.contrast : null;
+  const mean = toNum(stats.ndvi_mean ?? stats.ndviMean);
+  const min = toNum(stats.ndvi_min ?? stats.ndviMin);
+  const max = toNum(stats.ndvi_max ?? stats.ndviMax);
+  const p5 = toNum(stats.ndvi_p5 ?? stats.ndviP5 ?? contrastObj?.p5);
+  const p50 = toNum(stats.ndvi_p50 ?? stats.ndviP50 ?? contrastObj?.p50);
+  const p95 = toNum(stats.ndvi_p95 ?? stats.ndviP95 ?? contrastObj?.p95);
+  if ([mean, min, max, p5, p50, p95].some((value) => value == null)) {
+    return false;
+  }
+  if (mean < -1 || mean > 1 || min < -1 || max > 1 || min > mean || mean > max) {
+    return false;
+  }
+  if (p5 > p50 || p50 > p95) return false;
+  if (validPixels != null && validPixels < 24) return false;
+  return true;
+}
+
 export function isValidNdviLayerRow(row) {
   if (!row) return false;
   if (!layerHasRaster(row)) return false;
@@ -125,8 +167,21 @@ export function isValidNdviLayerRow(row) {
     bsi_mean: row.bsi_mean ?? agro?.bsi_mean,
     ndmi_mean: row.ndmi_mean ?? agro?.ndmi_mean,
     classes: row.classes ?? agro?.classes,
+    contrast: agro?.contrast ?? row.contrast,
+    validPixelCount:
+      row.valid_pixel_count ??
+      row.validPixelCount ??
+      agro?.valid_pixel_count ??
+      agro?.validPixelCount,
   };
-  return isValidNdviStats(merged);
+  if (isValidNdviStats(merged)) return true;
+  const visualMode = String(
+    row.visual_mode ?? row.visualMode ?? agro?.visual_mode ?? '',
+  ).toLowerCase();
+  if (visualMode === 'ndvi_contrast' && hasCoreRenderableNdviStats(merged)) {
+    return true;
+  }
+  return false;
 }
 
 export { hasAgronomicClassPercents, isValidAgronomicNdviStats };

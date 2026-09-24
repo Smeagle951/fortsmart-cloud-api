@@ -19,6 +19,7 @@ import {
   sortScenesForDisplay,
 } from './ndviScenePipeline.js';
 import {
+  hasCoreRenderableNdviStats,
   invalidNdviStatsReason,
   isValidNdviLayerRow,
   isValidNdviStats,
@@ -237,46 +238,6 @@ function bandsRequestedForModes(modes = []) {
   return [...set];
 }
 
-function hasCoreRenderableNdviStats(stats) {
-  if (!stats || typeof stats !== 'object') return false;
-
-  // Camadas categóricas (solo/cobertura, pós-colheita): classAreas + pixels.
-  const classAreas = stats.classAreas ?? stats.class_areas;
-  const renderType = String(stats.renderType || stats.render_type || '').toLowerCase();
-  const selectedBand = String(stats.selectedBand || stats.selected_band || '');
-  const validPixels = num(
-    stats.validPixelCount ?? stats.valid_pixel_count ?? stats.valid_pixels,
-  );
-  if (
-    (renderType === 'categorical' ||
-      selectedBand === 'SURFACE_CLASS' ||
-      (Array.isArray(classAreas) && classAreas.length > 0)) &&
-    validPixels != null &&
-    validPixels > 0
-  ) {
-    return true;
-  }
-  if (Array.isArray(classAreas) && classAreas.length > 0) {
-    return true;
-  }
-
-  const mean = num(stats.ndvi_mean ?? stats.ndviMean);
-  const min = num(stats.ndvi_min ?? stats.ndviMin);
-  const max = num(stats.ndvi_max ?? stats.ndviMax);
-  const p5 = num(stats.ndvi_p5 ?? stats.ndviP5 ?? stats.contrast?.p5);
-  const p50 = num(stats.ndvi_p50 ?? stats.ndviP50 ?? stats.contrast?.p50);
-  const p95 = num(stats.ndvi_p95 ?? stats.ndviP95 ?? stats.contrast?.p95);
-  if ([mean, min, max, p5, p50, p95].some((value) => value == null)) {
-    return false;
-  }
-  if (mean < -1 || mean > 1 || min < -1 || max > 1 || min > mean || mean > max) {
-    return false;
-  }
-  if (p5 > p50 || p50 > p95) return false;
-  if (validPixels != null && validPixels < 24) return false;
-  return true;
-}
-
 function resolvePackageStatus(layersByMode = {}, statusesByMode = {}) {
   const readyCount = Object.keys(layersByMode).length;
   const statuses = Object.values(statusesByMode);
@@ -300,13 +261,37 @@ class SoilSamplingNdviService {
     this.geeClient = geeClient;
   }
 
-  /** GEE dormente por padrão; só usa com opt-in explícito para evitar custo. */
-  _geeReady({ packageMode = false } = {}) {
+  /**
+   * GEE só com opt-in no servidor + credenciais.
+   * preferredProvider do app (plano):
+   * - 'copernicus' → nunca usa GEE nesta request
+   * - 'gee' → usa GEE se disponível; senão CDSE
+   * - null → segue env NDVI_PROVIDER
+   */
+  _geeReady({ packageMode = false, preferredProvider = null } = {}) {
+    const requested = String(preferredProvider || '').toLowerCase();
+    if (
+      requested === 'copernicus' ||
+      requested === 'copernicus_dataspace'
+    ) {
+      return false;
+    }
+
     const providerStatus = getNdviProviderStatus();
-    const requested = packageMode
+    if (!this.geeClient?.isImplemented?.()) return false;
+    if (!providerStatus.gee_configured) return false;
+
+    // Plano pago pediu GEE: basta GEE estar habilitado/configurado no servidor.
+    if (requested === 'gee' || requested === 'google_earth_engine') {
+      return Boolean(
+        providerStatus.gee_usage_allowed || providerStatus.gee_enabled,
+      );
+    }
+
+    const envPreferred = packageMode
       ? providerStatus.gee_package_preferred
       : providerStatus.gee_primary;
-    return Boolean(requested && this.geeClient?.isImplemented?.());
+    return Boolean(envPreferred);
   }
 
   _logRequest(meta) {
@@ -937,6 +922,7 @@ class SoilSamplingNdviService {
     resolutionKind = 'preview',
     force = false,
     objective = 'recommended',
+    preferredProvider = null,
   }) {
     const defaultModes = [
       'ndvi_contrast',
@@ -984,7 +970,7 @@ class SoilSamplingNdviService {
         ndviProvider: providerStatus.ndvi_provider,
         packageProvider: providerStatus.package_provider,
         geePackagePreferred: providerStatus.gee_package_preferred,
-        geeReady: this._geeReady({ packageMode: true }),
+        geeReady: this._geeReady({ packageMode: true, preferredProvider }),
       },
     });
     console.log('[Package] generate-package request', {
@@ -1071,7 +1057,7 @@ class SoilSamplingNdviService {
       readyModes: Object.keys(layersByMode),
       pendingModes,
     });
-    if (this._geeReady({ packageMode: true }) && this.geeClient?.generateLayerPackage) {
+    if (this._geeReady({ packageMode: true, preferredProvider }) && this.geeClient?.generateLayerPackage) {
       try {
         const pendingBands = bandsRequestedForModes(pendingModes);
         console.log('[NDVI_PACKAGE_BANDS]', {
@@ -1459,6 +1445,7 @@ class SoilSamplingNdviService {
     colormapMode = 'ndvi_contrast',
     visualMode = null,
     force = false,
+    preferredProvider = null,
   }) {
     const requestedVisualMode = resolveRequestedVisualMode(
       visualMode || colormapMode || 'ndvi_contrast',
@@ -1496,7 +1483,7 @@ class SoilSamplingNdviService {
           `providerUsed=${providerStatus.cloud_api_uses} activeProvider=${providerStatus.active_provider} ` +
           `collection=sentinel-2-l2a bands=${requestBands.join(',')}`,
       );
-      const geeAvailable = this._geeReady();
+      const geeAvailable = this._geeReady({ preferredProvider });
       const cdseCover = isCdseSurfaceCoverMode(requestedVisualMode);
 
       if (process.env.NDVI_PROVIDER === 'gee' && !providerStatus.gee_configured) {

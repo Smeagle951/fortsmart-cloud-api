@@ -3,6 +3,7 @@
  */
 
 import { countComputedIndices, hasAgronomicClassPercents } from './ndviAgronomicValidity.js';
+import { hasCoreRenderableNdviStats } from './ndviValidity.js';
 
 export const NDVI_HTTP_VALIDATION_VERSION = 'v3';
 
@@ -75,10 +76,49 @@ export function isValidNdviGenerateHttpPayload(result) {
   if (min > mean || mean > max) return false;
   if (Math.abs(mean) < 1e-6) return false;
 
+  const visualMode = String(
+    result?.visual_mode ?? result?.visualMode ?? 'ndvi_contrast',
+  )
+    .trim()
+    .toLowerCase();
+  const contrastRaw =
+    result?.contrast ??
+    result?.stats?.contrast ??
+    parseAgronomicContrast(result);
+  if (visualMode === 'ndvi_contrast' || visualMode === 'contrast') {
+    const contrastStats = {
+      ...s,
+      contrast: contrastRaw,
+      ndvi_p5: pickNum(result, 'ndvi_p5', 'ndviP5') ?? pickNum(contrastRaw, 'p5'),
+      ndvi_p50: pickNum(result, 'ndvi_p50', 'ndviP50') ?? pickNum(contrastRaw, 'p50'),
+      ndvi_p95: pickNum(result, 'ndvi_p95', 'ndviP95') ?? pickNum(contrastRaw, 'p95'),
+      validPixelCount:
+        pickNum(result, 'valid_pixel_count', 'validPixelCount') ??
+        pickNum(s, 'valid_pixels'),
+    };
+    if (hasCoreRenderableNdviStats(contrastStats)) {
+      return true;
+    }
+  }
+
   if (countComputedIndices(s) < 3) return false;
   if (!hasAgronomicClassPercents(s)) return false;
 
   return true;
+}
+
+function parseAgronomicContrast(result) {
+  const raw = result?.agronomic_stats ?? result?.agronomicStats;
+  if (raw == null) return null;
+  if (typeof raw === 'object') return raw.contrast ?? null;
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      return JSON.parse(raw)?.contrast ?? null;
+    } catch (_) {
+      return null;
+    }
+  }
+  return null;
 }
 
 export function readNdviGenerateStatsForDetails(result) {

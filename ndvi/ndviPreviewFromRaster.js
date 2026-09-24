@@ -15,6 +15,8 @@ import {
 import {
   applyPolygonMaskToPngBuffer,
   applyInnerPixelBufferToValues,
+  boundsFromPolygon,
+  buildPolygonMask,
   maskValuesToPolygon,
 } from './ndviPolygonMask.js';
 
@@ -226,6 +228,30 @@ export function rasterValuesToPngBuffer({
   return PNG.sync.write(png);
 }
 
+/** Preenche buracos (nuvem/SCL) dentro do talhão em cenas homogêneas/baixa biomassa. */
+function fillPolygonInteriorNulls({
+  values,
+  width,
+  height,
+  bounds,
+  polygon,
+  fillValue,
+}) {
+  const fill = Number(fillValue);
+  if (!Number.isFinite(fill) || !Array.isArray(values)) return values;
+  const polygonMask = buildPolygonMask({ width, height, bounds, polygon });
+  if (!polygonMask?.mask) return values;
+  const out = values.slice();
+  for (let i = 0; i < out.length; i += 1) {
+    if (polygonMask.mask[i] !== 1) continue;
+    const v = out[i];
+    if (v == null || !Number.isFinite(Number(v))) {
+      out[i] = fill;
+    }
+  }
+  return out;
+}
+
 export function buildStatsFromRasterValues({
   raster,
   maskedNdviValues,
@@ -402,6 +428,20 @@ export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast'
     valuesAreVisual = !useRawNdviForColor;
     outWidth = rendered.width || width;
     outHeight = rendered.height || height;
+    if (contrast?.lowContrastScene === true || contrast?.usedLowContrastFallback === true) {
+      const fillValue =
+        contrast?.p50 ??
+        statsForValues(percentileValues)?.p50 ??
+        statsForValues(maskedRawValues)?.mean;
+      colorValues = fillPolygonInteriorNulls({
+        values: colorValues,
+        width,
+        height,
+        bounds,
+        polygon,
+        fillValue,
+      });
+    }
   } else if (isAbsoluteIndexVisualMode(mode)) {
     // NDRE/NDMI/BSI/SAVI: colorir índice bruto com limiares absolutos.
     // NÃO reaplicar stretch relativo (isso pintava NDRE ~0,17 de verde chapado).
@@ -496,10 +536,12 @@ export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast'
     // Mantém buckets do renderer se a leitura do PNG falhar.
   }
 
+  const overlayBounds = boundsFromPolygon(polygon) ?? bounds;
+
   return {
     buffer,
     contrast,
-    bounds,
+    bounds: overlayBounds,
     maskStats,
     zones: zones.zones,
     spatial_metrics: zones.spatialMetrics,

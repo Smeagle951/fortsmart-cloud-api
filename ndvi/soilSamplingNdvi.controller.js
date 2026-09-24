@@ -298,6 +298,8 @@ class SoilSamplingNdviController {
         colormapMode: colormapMode || 'auto',
         visualMode: requestedVisualMode,
         force: isForce,
+        preferredProvider:
+          req.body.provider || req.body.ndvi_provider || null,
       });
 
       let layer = getLayerPayload(result);
@@ -562,6 +564,8 @@ class SoilSamplingNdviController {
         modes: resolvedModes,
         resolutionKind: resolvedResolutionKind,
         force: isForce,
+        preferredProvider:
+          req.body.provider || req.body.ndvi_provider || null,
       });
       const layersByMode = result.layersByMode || {};
       const statusesByMode = normalizePackageStatuses(result.statusesByMode || {});

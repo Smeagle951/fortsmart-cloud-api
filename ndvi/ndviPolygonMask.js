@@ -39,6 +39,29 @@ function normalizeBounds(bounds) {
   return { west, south, east, north };
 }
 
+/** Bbox do anel externo do polígono (overlay = talhão). */
+export function boundsFromPolygon(polygon) {
+  const coords = polygon?.coordinates?.[0];
+  if (!Array.isArray(coords) || coords.length === 0) return null;
+  let west = Infinity;
+  let east = -Infinity;
+  let south = Infinity;
+  let north = -Infinity;
+  for (const point of coords) {
+    if (!Array.isArray(point) || point.length < 2) continue;
+    const lon = Number(point[0]);
+    const lat = Number(point[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    west = Math.min(west, lon);
+    east = Math.max(east, lon);
+    south = Math.min(south, lat);
+    north = Math.max(north, lat);
+  }
+  if (![west, east, south, north].every(Number.isFinite)) return null;
+  if (west >= east || south >= north) return null;
+  return { west, south, east, north };
+}
+
 function pixelToLngLat({ x, y, width, height, bounds }) {
   const { west, south, east, north } = bounds;
   return {
