@@ -93,6 +93,23 @@ describe('ndviGenerateHttpValidity', () => {
     );
   });
 
+  it('aceita stats clássicas NDVI (ndvi_absolute) sem pacote v3', () => {
+    assert.equal(
+      isValidNdviGenerateHttpPayload({
+        preview_url: 'https://x/p.png',
+        visual_mode: 'ndvi_absolute',
+        ndvi_mean: 0.55,
+        ndvi_min: 0.2,
+        ndvi_max: 0.82,
+        very_low_percent: 5,
+        low_percent: 15,
+        medium_percent: 40,
+        high_percent: 40,
+      }),
+      true,
+    );
+  });
+
   it('rejeita sem raster', () => {
     assert.equal(
       isValidNdviGenerateHttpPayload({

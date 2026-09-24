@@ -3,7 +3,7 @@
  */
 
 import { countComputedIndices, hasAgronomicClassPercents } from './ndviAgronomicValidity.js';
-import { hasCoreRenderableNdviStats } from './ndviValidity.js';
+import { hasCoreRenderableNdviStats, isValidNdviStats } from './ndviValidity.js';
 
 export const NDVI_HTTP_VALIDATION_VERSION = 'v3';
 
@@ -99,6 +99,11 @@ export function isValidNdviGenerateHttpPayload(result) {
     if (hasCoreRenderableNdviStats(contrastStats)) {
       return true;
     }
+  }
+
+  // NDVI absoluto / índices: stats clássicas (mean/min/max) + preview — não exige pacote v3 completo.
+  if (isValidNdviStats(s)) {
+    return true;
   }
 
   if (countComputedIndices(s) < 3) return false;

@@ -367,7 +367,7 @@ class SoilSamplingNdviController {
       const hasValidPreview = Boolean(layerForGate?.preview_url || layerForGate?.previewUrl);
       const validForContrast =
         requestedVisualModeGate !== 'ndvi_contrast' ||
-        (resultVisualMode === 'ndvi_contrast' && hasValidContrast && hasValidPreview);
+        (hasValidContrast && hasValidPreview);
 
       console.log('[NDVI_FINAL_GATE]', {
         requestedVisualMode: requestedVisualModeGate,
@@ -405,11 +405,18 @@ class SoilSamplingNdviController {
         hasValidContrast &&
         Number(contrast.p95) - Number(contrast.p5) >= 0.05
       ) {
+        const lowBiomassScene =
+          contrast?.lowContrastScene === true ||
+          contrast?.usedLowContrastFallback === true;
         const buckets = contrast.colorBuckets || {};
         const greenDominance =
           Number(buckets.greenPercent ?? 0) +
           Number(buckets.darkGreenPercent ?? 0);
-        if (Number.isFinite(greenDominance) && greenDominance > 90) {
+        if (
+          !lowBiomassScene &&
+          Number.isFinite(greenDominance) &&
+          greenDominance > 90
+        ) {
           console.warn(
             `⚠️ [NDVI][HTTP] contrast_renderer_not_applied plotId=${plotId} ` +
               `range=${(Number(contrast.p95) - Number(contrast.p5)).toFixed(3)} ` +
