@@ -784,7 +784,8 @@ class SoilSamplingNdviController {
 
   async getGeeTest(req, res) {
     try {
-      if (process.env.NDVI_PROVIDER !== 'gee' || process.env.GEE_ALLOW_USAGE !== 'true') {
+      const provider = this.service.getProviderStatus();
+      if (!provider.gee_engine_requested || !provider.gee_usage_allowed) {
         return res.status(503).json({
           success: false,
           configured: false,

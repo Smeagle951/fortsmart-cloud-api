@@ -2241,16 +2241,18 @@ class SoilSamplingNdviService {
    */
   getGeeHealth() {
     const status = getNdviProviderStatus();
-    const engineLoaded = this._geeReady();
-    const effectiveProvider = engineLoaded ? 'google_earth_engine' : 'copernicus_dataspace';
+    const engineLoaded = Boolean(this.geeClient?.isImplemented?.());
+    const packageReady = this._geeReady({ packageMode: true });
+    const primaryReady = this._geeReady();
+    const effectiveProvider = primaryReady ? 'google_earth_engine' : 'copernicus_dataspace';
 
     let readiness = 'disabled_by_policy';
-    if (engineLoaded) {
+    if (packageReady || primaryReady) {
       readiness = 'ready';
-    } else if (status.gee_primary) {
-      readiness = 'enabled_engine_missing';
     } else if (status.gee_usage_allowed && !status.gee_configured) {
       readiness = 'enabled_not_configured';
+    } else if (status.gee_engine_requested && !engineLoaded) {
+      readiness = 'enabled_engine_missing';
     }
 
     return {
@@ -2261,11 +2263,13 @@ class SoilSamplingNdviService {
       gee_configured: status.gee_configured,
       gee_primary: status.gee_primary,
       gee_engine_loaded: engineLoaded,
-      copernicus_fallback: !engineLoaded,
+      gee_package_preferred: status.gee_package_preferred,
+      gee_package_ready: packageReady,
+      copernicus_fallback: !packageReady && !primaryReady,
       copernicus_configured: status.copernicus_configured,
       storage_configured: status.storage_configured,
       readiness,
-      advanced_modes_available: engineLoaded,
+      advanced_modes_available: packageReady || primaryReady,
     };
   }
 

@@ -17,6 +17,7 @@ function readPackedPixels(buffer, { decodeIndices = false } = {}) {
 
   const { data, width, height } = png;
   const pixels = [];
+  const gridValues = decodeIndices ? null : new Array(width * height).fill(null);
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -32,6 +33,9 @@ function readPackedPixels(buffer, { decodeIndices = false } = {}) {
         const ndvi = r * 2 - 1;
         const classId = decodeClassChannel(Math.round(g * 255));
         const ndre = b * 2 - 1;
+        if (classId > 0 && Number.isFinite(ndvi)) {
+          gridValues[y * width + x] = ndvi;
+        }
         pixels.push({
           valid: classId > 0,
           ndvi,
@@ -49,7 +53,7 @@ function readPackedPixels(buffer, { decodeIndices = false } = {}) {
     }
   }
 
-  return { pixels, width, height };
+  return { pixels, gridValues, width, height };
 }
 
 export function computeAgronomicStatsFromPackedPngs(
@@ -124,7 +128,7 @@ export function computeAgronomicStatsFromPackedPngs(
   };
   Object.defineProperty(base, '_ndvi_grid', {
     value: {
-      values: primary.pixels.map((p) => (p.valid && Number.isFinite(p.ndvi) ? p.ndvi : null)),
+      values: primary.gridValues,
       width: primary.width,
       height: primary.height,
     },
