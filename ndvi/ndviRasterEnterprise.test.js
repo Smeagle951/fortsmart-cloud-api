@@ -299,3 +299,29 @@ test('store/load local persiste raster real', async () => {
   const loaded = await loadInternalGrid({ plotId: 'plot-1', sceneId: 'scene-local' });
   assert.ok(loaded?.bands?.ndvi?.length === 64);
 });
+
+test('raster com hash de polígono mantém versões imutáveis', async () => {
+  const { storeInternalGrid, loadInternalGrid } = await import('./ndviRasterStore.js');
+  const polygonHash = 'a1b2c3d4e5f6';
+  const firstDoc = syntheticGrid();
+  firstDoc.metadata.polygonHash = polygonHash;
+  const first = await storeInternalGrid({
+    plotId: 'plot-qa', sceneId: 'scene-qa', document: firstDoc,
+  });
+  const secondDoc = syntheticGrid();
+  secondDoc.metadata.polygonHash = polygonHash;
+  secondDoc.bands.ndvi[0] = 0.9;
+  const second = await storeInternalGrid({
+    plotId: 'plot-qa', sceneId: 'scene-qa', document: secondDoc,
+  });
+  assert.notEqual(first.storageKey, second.storageKey);
+  const latest = await loadInternalGrid({
+    plotId: 'plot-qa', sceneId: 'scene-qa', polygonHash,
+  });
+  assert.ok(Math.abs(latest.bands.ndvi[0] - 0.9) < 0.0001);
+  const oldBytes = await fs.readFile(path.join(
+    process.cwd(), '.ndvi-raster-cache', first.storageKey,
+  ));
+  const original = deserializeInternalGridBuffer(oldBytes);
+  assert.ok(Math.abs(original.bands.ndvi[0] - 0.3) < 0.0001);
+});

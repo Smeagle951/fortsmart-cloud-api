@@ -36,8 +36,13 @@ import { isCdseSurfaceCoverMode } from './ndviSurfaceCoverCore.js';
 import { loadInternalGrid } from './ndviRasterStore.js';
 import { RASTER_SCHEMA_NUM } from './ndviRasterSerializer.js';
 
+const LAYER_PIPELINE_ALGORITHM_VERSION = 'layer_pipeline_v2_geometry_qa';
+
 function normalizeImageDate(value) {
   if (value == null) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString().slice(0, 10);
+  }
   const text = String(value).trim().slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
   return text;
@@ -77,12 +82,7 @@ function orderPackageModes(modes) {
 }
 
 function hashPolygonForPackage(polygon) {
-  const coordinates = polygon?.coordinates?.[0];
-  const raw = Array.isArray(coordinates) && coordinates.length
-    ? coordinates
-        .map((point) => `${Number(point?.[0]).toFixed(6)},${Number(point?.[1]).toFixed(6)}`)
-        .join('|')
-    : JSON.stringify(polygon || {});
+  const raw = JSON.stringify(polygon?.coordinates ?? polygon ?? {});
   return createHash('sha256').update(raw).digest('hex').slice(0, 12);
 }
 
@@ -129,6 +129,9 @@ function normalizePackageModeError(mode, error) {
   const status = error?.status === 422 ? 'unavailable' : 'failed';
   const out = {
     status,
+    layerStatus: rawCode === 'INSUFFICIENT_COVERAGE'
+      ? 'INSUFFICIENT_COVERAGE'
+      : rawCode === 'INVALID_GEOMETRY' ? 'INVALID_GEOMETRY' : 'PROVIDER_ERROR',
     code: rawCode,
     message: rawMessage,
     sourceBands: sourceBandsForMode(mode),
@@ -136,6 +139,17 @@ function normalizePackageModeError(mode, error) {
       ? error.details.missingBands
       : [],
   };
+
+  if (rawCode === 'INSUFFICIENT_COVERAGE') {
+    out.status = 'unavailable';
+    out.message = 'Cobertura válida inferior a 70% nesta data. Escolha outra imagem.';
+    return out;
+  }
+  if (rawCode === 'INVALID_GEOMETRY') {
+    out.status = 'failed';
+    out.message = 'Imagem desalinhada com o talhão; camada descartada.';
+    return out;
+  }
 
   if (
     rawCode === 'missingBands' ||
@@ -361,7 +375,7 @@ class SoilSamplingNdviService {
       source: 'sentinel_2_l2a',
       image_date: targetDate,
       cloud_coverage: targetCloud,
-      resolution_m: 10,
+      resolution_m: assets?.provenance?.resolutionM ?? 10,
       ...stats,
       visual_mode: assets?.visual_mode ?? requestedVisualMode,
       schema_version: 'ndvi_v3',
@@ -375,6 +389,9 @@ class SoilSamplingNdviService {
         classes: assets?.classes ?? stats?.classes,
         visual_mode: assets?.visual_mode ?? requestedVisualMode,
         bounds,
+        provenance: assets?.provenance ?? null,
+        layer_status: assets?.layer_status ?? 'PROVIDER_ERROR',
+        validPixelCoveragePct: assets?.raster_validation?.validPixelCoveragePct ?? null,
         renderer_version: assets?.contrast?.rendererVersion ?? null,
         spatial_metrics: assets?.spatial_metrics ?? stats?.spatial_metrics,
         zones: assets?.zones ?? stats?.zones ?? [],
@@ -382,7 +399,7 @@ class SoilSamplingNdviService {
         raster_format: assets?.raster_format ?? null,
         raster_bands: assets?.raster_bands ?? [],
         raster_bounds: assets?.raster_bounds ?? bounds,
-        raster_resolution_m: assets?.raster_resolution_m ?? 10,
+        raster_resolution_m: assets?.raster_resolution_m ?? assets?.provenance?.resolutionM ?? 10,
       },
       preview_url: assets.preview_url ?? null,
       tile_url: assets.tile_url ?? null,
@@ -403,11 +420,29 @@ class SoilSamplingNdviService {
     };
   }
 
+  _cacheMatchesRequest(row, { polygon, sceneId, mode, resolutionKind = 'final' }) {
+    const ag = row?.agronomic_stats ?? {};
+    const provenance = ag.provenance;
+    const expectedBounds = this._boundsFromPolygon(polygon);
+    if (!provenance || ag.layer_status !== 'FINAL_READY' ||
+        provenance.polygonHash !== hashPolygonForPackage(polygon) ||
+        provenance.sceneId !== String(sceneId) || provenance.mode !== mode ||
+        (row.provider && provenance.provider !== row.provider) ||
+        (row.image_date && provenance.acquisitionDate !== normalizeImageDate(row.image_date)) ||
+        !Number.isFinite(Number(provenance.resolutionM)) ||
+        provenance.resolutionKind !== resolutionKind ||
+        provenance.algorithmVersion !== LAYER_PIPELINE_ALGORITHM_VERSION ||
+        Number(ag.validPixelCoveragePct) < 70 || !expectedBounds) return false;
+    return ['west', 'south', 'east', 'north'].every((key) =>
+      Math.abs(Number(provenance.bounds?.[key]) - expectedBounds[key]) < 1e-8 &&
+      Math.abs(Number(ag.bounds?.[key]) - Number(provenance.bounds?.[key])) < 1e-8);
+  }
+
   _mergeMappedLayerFromAssets(mapped, assets, { polygon, requestedVisualMode }) {
     if (!mapped) return mapped;
-    const requestBounds = this._boundsFromPolygon(polygon);
-    const bounds =
-      requestBounds ?? assets?.bounds ?? mapped.bounds;
+    // Raster and bounds are one artifact. Never stamp a cached image with
+    // bounds from the current request.
+    const bounds = assets?.bounds ?? mapped.bounds;
     const contrast = assets?.contrast ?? mapped.contrast;
     const visualMode =
       assets?.visual_mode ?? mapped.visual_mode ?? requestedVisualMode;
@@ -668,6 +703,55 @@ class SoilSamplingNdviService {
         { plotId, sceneId: targetSceneId },
       );
     }
+    const imageBounds = assets.bounds;
+    const sameBounds = (left, right) => left && right &&
+      ['west', 'south', 'east', 'north'].every((key) =>
+        Number.isFinite(Number(left[key])) &&
+        Math.abs(Number(left[key]) - Number(right[key])) < 1e-8);
+    if (!sameBounds(imageBounds, plotBounds) ||
+        (assets.raster_bounds && !sameBounds(assets.raster_bounds, imageBounds))) {
+      throw this._error('Bounds do raster não correspondem ao talhão.',
+        'INVALID_GEOMETRY', 422, { plotId, sceneId: targetSceneId });
+    }
+    const rasterValidation = assets.raster_validation ?? null;
+    if (!rasterValidation?.ok ||
+        Number(rasterValidation.validPixelCoveragePct) < 70) {
+      throw this._error(
+        'Raster sem validação de geometria e cobertura; escolha outra cena.',
+        rasterValidation?.code ?? 'raster_validation_missing',
+        422,
+        { plotId, sceneId: targetSceneId, rasterValidation },
+      );
+    }
+    const resolutionKind = assets.resolution_kind ?? 'preview';
+    const effectiveLayerStatus = ['fast', 'fastPreview'].includes(resolutionKind)
+      ? 'PREVIEW_READY'
+      : (rasterValidation?.layerStatus ?? assets.layer_status ?? 'PROVIDER_ERROR');
+    const nativeResolutionM = Number(
+      assets.source_context?.nativeAnalysisScaleMeters ??
+      assets.sourceContext?.nativeAnalysisScaleMeters ??
+      assets.raster_resolution_m ??
+      (['ndre', 'ndmi_water_stress', 'bsi_soil', 'post_harvest_cover']
+        .includes(requestedVisualMode) ? 20 : 10),
+    );
+    const provenance = {
+      sceneId: String(targetSceneId),
+      acquisitionDate: normalizeImageDate(targetDate),
+      provider: assets.provider ?? 'copernicus_dataspace',
+      mode: assets.visual_mode ?? requestedVisualMode,
+      algorithmVersion: LAYER_PIPELINE_ALGORITHM_VERSION,
+      sourceAlgorithmVersion: assets.algorithmVersion ??
+        assets.source_context?.algorithmVersion ??
+        assets.sourceContext?.algorithmVersion ??
+        assets.rendererVersion ?? assets.renderer_version ?? null,
+      resolutionKind,
+      resolutionM: nativeResolutionM,
+      polygonHash: hashPolygonForPackage(polygon),
+      bounds: imageBounds,
+      validPixelCoveragePct: rasterValidation?.validPixelCoveragePct ?? null,
+    };
+    assets.provenance = provenance;
+    assets.layer_status = effectiveLayerStatus;
     let saved = null;
 
     if (dbReady) {
@@ -681,7 +765,7 @@ class SoilSamplingNdviService {
           source: assets.source || 'sentinel-2_l2a',
           image_date: targetDate,
           cloud_coverage: targetCloud,
-          resolution_m: 10,
+          resolution_m: nativeResolutionM,
           ...stats,
           agronomic_stats: {
             ...stats,
@@ -690,7 +774,10 @@ class SoilSamplingNdviService {
             contrast: assets.contrast ?? stats.contrast,
             classes: assets.classes ?? stats.classes,
             visual_mode: assets.visual_mode ?? requestedVisualMode,
-            bounds: plotBounds,
+            bounds: imageBounds,
+            provenance,
+            layer_status: effectiveLayerStatus,
+            validPixelCoveragePct: rasterValidation?.validPixelCoveragePct ?? null,
             renderer_version:
               assets?.rendererVersion ??
               assets?.renderer_version ??
@@ -709,8 +796,8 @@ class SoilSamplingNdviService {
             raster_available: assets.raster_available ?? false,
             raster_format: assets.raster_format ?? null,
             raster_bands: assets.raster_bands ?? [],
-            raster_bounds: assets.raster_bounds ?? plotBounds,
-            raster_resolution_m: assets.raster_resolution_m ?? 10,
+            raster_bounds: assets.raster_bounds ?? imageBounds,
+            raster_resolution_m: assets.raster_resolution_m ?? nativeResolutionM,
             raster_storage_key: assets.raster_storage_key ?? null,
             raster_storage_provider: assets.raster_storage_provider ?? null,
             raster_schema_version: assets.raster_schema_version ?? null,
@@ -726,8 +813,8 @@ class SoilSamplingNdviService {
           raster_url: assets.raster_url ?? null,
           raster_format: assets.raster_format ?? null,
           raster_bands: assets.raster_bands ?? [],
-          raster_bounds: assets.raster_bounds ?? plotBounds,
-          raster_resolution_m: assets.raster_resolution_m ?? 10,
+          raster_bounds: assets.raster_bounds ?? imageBounds,
+          raster_resolution_m: assets.raster_resolution_m ?? nativeResolutionM,
           raster_available: assets.raster_available ?? false,
           raster_storage_key: assets.raster_storage_key ?? null,
           raster_storage_provider: assets.raster_storage_provider ?? null,
@@ -754,7 +841,7 @@ class SoilSamplingNdviService {
             layerStatus,
             stats,
             assets,
-            bounds: plotBounds,
+            bounds: imageBounds,
             requestedVisualMode,
           });
         } else {
@@ -785,7 +872,7 @@ class SoilSamplingNdviService {
         layerStatus,
         stats,
         assets,
-        bounds: plotBounds,
+        bounds: imageBounds,
         requestedVisualMode,
       });
     } else {
@@ -829,6 +916,7 @@ class SoilSamplingNdviService {
     maxCloud,
     polygon,
     modes,
+    resolutionKind,
   }) {
     const layersByMode = {};
     const statusesByMode = {};
@@ -852,7 +940,8 @@ class SoilSamplingNdviService {
           maxCloud,
           visualMode: mode,
         });
-        if (!cached || !isValidNdviLayerRow(cached)) {
+        if (!cached || !isValidNdviLayerRow(cached) ||
+            !this._cacheMatchesRequest(cached, { polygon, sceneId, mode, resolutionKind })) {
           console.log('[NDVI] render cache miss', {
             plotId,
             sceneId,
@@ -881,6 +970,8 @@ class SoilSamplingNdviService {
         layersByMode[mode] = mapped;
         statusesByMode[mode] = {
           status: 'ready',
+          layerStatus: mapped.layerStatus,
+          layerResultId: mapped.layerResultId,
           elapsedMs: Date.now() - startedAt,
           preview: Boolean(mapped?.preview_url || mapped?.previewUrl),
           source: 'render_cache',
@@ -1014,7 +1105,7 @@ class SoilSamplingNdviService {
       plotId,
       modes: uniqueModes,
     });
-    const cachedPackage = await this._readCachedPackageLayers({
+    const cachedPackage = force ? { layersByMode: {}, statusesByMode: {} } : await this._readCachedPackageLayers({
       dbReady,
       farmId,
       plotId,
@@ -1023,6 +1114,7 @@ class SoilSamplingNdviService {
       maxCloud,
       polygon,
       modes: uniqueModes,
+      resolutionKind,
     });
     Object.assign(layersByMode, cachedPackage.layersByMode);
     Object.assign(statusesByMode, cachedPackage.statusesByMode);
@@ -1041,7 +1133,7 @@ class SoilSamplingNdviService {
         packageCacheKey,
         packageStatus: 'ready',
         package_version: 'scene_band_package_v1',
-        resolution_kind: 'preview',
+        resolution_kind: resolutionKind,
         generatedAt: new Date().toISOString(),
         provider: 'render_cache',
         modes: uniqueModes,
@@ -1090,6 +1182,7 @@ class SoilSamplingNdviService {
           pendingModes.map(async (mode) => {
           const modeStartedAt = Date.now();
           const assets = packageResult.layersByMode?.[mode];
+          if (assets) assets.resolution_kind = resolutionKind;
           if (!assets) {
             statusesByMode[mode] = packageResult.statusesByMode?.[mode] || {
               status: 'unavailable',
@@ -1143,6 +1236,8 @@ class SoilSamplingNdviService {
             layersByMode[mode] = mapped;
             statusesByMode[mode] = {
               status: 'ready',
+              layerStatus: mapped.layerStatus,
+              layerResultId: mapped.layerResultId,
               elapsedMs: Date.now() - modeStartedAt,
               preview: Boolean(mapped?.preview_url || mapped?.previewUrl),
               sourceBands: sourceBandsForMode(mode),
@@ -1237,11 +1332,13 @@ class SoilSamplingNdviService {
           farmId,
           plotId,
           modes: pendingModes,
+          force,
         });
         await Promise.all(
           pendingModes.map(async (mode) => {
           const modeStartedAt = Date.now();
           const assets = packageResult.layersByMode?.[mode];
+          if (assets) assets.resolution_kind = resolutionKind;
           if (!assets) {
             statusesByMode[mode] = packageResult.statusesByMode?.[mode] || {
               status: 'unavailable',
@@ -1295,6 +1392,8 @@ class SoilSamplingNdviService {
             layersByMode[mode] = mapped;
             statusesByMode[mode] = {
               status: 'ready',
+              layerStatus: mapped.layerStatus,
+              layerResultId: mapped.layerResultId,
               elapsedMs: Date.now() - modeStartedAt,
               preview: Boolean(mapped?.preview_url || mapped?.previewUrl),
               source: 'copernicus_internal_grid_package',
@@ -1422,7 +1521,7 @@ class SoilSamplingNdviService {
       packageCacheKey,
       packageStatus,
       package_version: 'scene_band_package_v1',
-      resolution_kind: 'preview',
+      resolution_kind: resolutionKind,
       generatedAt: new Date().toISOString(),
       modes: uniqueModes,
       layersByMode,
@@ -1566,6 +1665,7 @@ class SoilSamplingNdviService {
             plotId,
             sceneId: targetSceneId,
             schemaVersion: RASTER_SCHEMA_NUM,
+            polygonHash: hashPolygonForPackage(polygon),
           });
         } catch (_) {
           persistedRaster = null;
@@ -1651,7 +1751,10 @@ class SoilSamplingNdviService {
           cachedHasContrast: contrastOk,
           requestedVisualMode,
         });
-        if (contrastOk) {
+        if (contrastOk && this._cacheMatchesRequest(cached, {
+          polygon, sceneId: targetSceneId, mode: requestedVisualMode,
+          resolutionKind: 'final',
+        })) {
           mapped = this._mergeMappedLayerFromAssets(mapped, null, {
             polygon,
             requestedVisualMode,
@@ -2141,31 +2244,16 @@ class SoilSamplingNdviService {
       layer = await this.repository.getById(resolvedLayerId);
     }
 
-    if (!layer) {
-      layer = await this.repository.upsertLayer({
-        id: resolvedLayerId,
-        farm_id: farmId,
-        plot_id: plotId,
-        campaign_id: campaignId,
-        source: layerPayload.source || payload.source || 'sentinel_2_l2a',
-        image_date:
-          layerPayload.image_date ||
-          payload.image_date ||
-          new Date().toISOString().slice(0, 10),
-        cloud_coverage: layerPayload.cloud_coverage ?? payload.cloud_coverage,
-        resolution_m: layerPayload.resolution_m ?? payload.resolution_m ?? 10,
-        ndvi_mean: layerPayload.ndvi_mean ?? payload.ndvi_mean,
-        ndvi_min: layerPayload.ndvi_min ?? payload.ndvi_min,
-        ndvi_max: layerPayload.ndvi_max ?? payload.ndvi_max,
-        very_low_percent: layerPayload.very_low_percent ?? payload.very_low_percent,
-        low_percent: layerPayload.low_percent ?? payload.low_percent,
-        medium_percent: layerPayload.medium_percent ?? payload.medium_percent,
-        high_percent: layerPayload.high_percent ?? payload.high_percent,
-        preview_url: layerPayload.preview_url ?? payload.preview_url,
-        tile_url: layerPayload.tile_url ?? payload.tile_url,
-        raster_url: layerPayload.raster_url ?? payload.raster_url,
-        is_active: false,
-      });
+    if (!layer) throw this._error('Camada final não encontrada', 'layer_not_found', 404);
+    const ag = layer.agronomic_stats ?? {};
+    if (ag.layer_status !== 'FINAL_READY' ||
+        Number(ag.validPixelCoveragePct) < 70 ||
+        !ag.provenance?.polygonHash || !ag.provenance?.bounds) {
+      throw this._error('Somente camada final validada pode ser vinculada à coleta.',
+        'layer_not_final_ready', 422);
+    }
+    if (String(layer.farm_id) !== String(farmId) || String(layer.plot_id) !== String(plotId)) {
+      throw this._error('Camada pertence a outro talhão.', 'layer_scope_mismatch', 403);
     }
 
     const activated = await this.repository.setActiveLayer({
@@ -2285,7 +2373,8 @@ class SoilSamplingNdviService {
   _providerError(error, fallbackMessage) {
     if (error?.code && error?.status) {
       const err = new Error(error.message || fallbackMessage);
-      err.code = 'NDVI_PROVIDER_ERROR';
+      err.code = ['INSUFFICIENT_COVERAGE', 'INVALID_GEOMETRY'].includes(error.code)
+        ? error.code : 'NDVI_PROVIDER_ERROR';
       err.status =
         error.status === 504 ? 504 : error.status >= 500 ? 502 : error.status;
       err.details = {

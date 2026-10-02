@@ -3,6 +3,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { PNG } from 'pngjs';
 import { decodeClassChannel } from './ndviAgronomicCore.js';
 import {
@@ -14,11 +15,21 @@ import {
 
 const CACHE_DIR = path.join(process.cwd(), '.ndvi-raster-cache');
 
-export function buildStorageKey({ plotId, sceneId, schemaVersion = RASTER_SCHEMA_NUM }) {
+export function buildStorageKey({ plotId, sceneId, schemaVersion = RASTER_SCHEMA_NUM,
+  polygonHash = null, checksum = null }) {
   const pid = String(plotId || 'plot').trim();
   const sid = String(sceneId || 'scene').trim();
   const ver = Number(schemaVersion) || RASTER_SCHEMA_NUM;
-  return `ndvi/internal-grid/${pid}/${sid}/grid_v${ver}.bin`;
+  const scope = /^[a-f0-9]{12}$/.test(String(polygonHash ?? ''))
+    ? `_${polygonHash}` : '';
+  const content = scope && /^[a-f0-9]{12,64}$/.test(String(checksum ?? ''))
+    ? `_${String(checksum).slice(0, 16)}` : '';
+  return `ndvi/internal-grid/${pid}/${sid}/grid_v${ver}${scope}${content}.bin`;
+}
+
+function pointerKey({ plotId, sceneId, schemaVersion, polygonHash }) {
+  return buildStorageKey({ plotId, sceneId, schemaVersion, polygonHash })
+    .replace(/\.bin$/, '.current.json');
 }
 
 function envFirst(...names) {
@@ -142,9 +153,17 @@ export async function storeInternalGrid({
   document,
   metadata = {},
 }) {
-  const storageKey = buildStorageKey({ plotId, sceneId, schemaVersion });
   const started = Date.now();
   const serialized = serializeInternalGridDocument(document);
+  const rawPolygonHash = document?.metadata?.polygonHash;
+  const polygonHash = /^[a-f0-9]{12}$/.test(String(rawPolygonHash ?? ''))
+    ? rawPolygonHash : null;
+  const storageKey = buildStorageKey({
+    plotId, sceneId, schemaVersion, polygonHash,
+    checksum: serialized.checksum,
+  });
+  const currentPointerKey = polygonHash
+    ? pointerKey({ plotId, sceneId, schemaVersion, polygonHash }) : null;
   const durationMs = Date.now() - started;
 
   if (isS3Configured()) {
@@ -177,6 +196,15 @@ export async function storeInternalGrid({
         },
       }),
     );
+    if (currentPointerKey) {
+      await client.send(new PutObjectCommand({
+        Bucket: bucket,
+        Key: currentPointerKey,
+        Body: Buffer.from(JSON.stringify({ storageKey })),
+        ContentType: 'application/json',
+        CacheControl: 'no-store',
+      }));
+    }
     const publicBase = envFirst('FORTSMART_S3_PUBLIC_BASE_URL', 'R2_PUBLIC_BASE_URL', 'NDVI_PUBLIC_BASE_URL').replace(
       /\/+$/,
       '',
@@ -206,6 +234,12 @@ export async function storeInternalGrid({
   const localPath = localCachePath(storageKey);
   await fs.mkdir(path.dirname(localPath), { recursive: true });
   await fs.writeFile(localPath, serialized.buffer);
+  if (currentPointerKey) {
+    const pointerPath = localCachePath(currentPointerKey);
+    const pendingPath = `${pointerPath}.${process.pid}.${randomUUID()}.tmp`;
+    await fs.writeFile(pendingPath, JSON.stringify({ storageKey }));
+    await fs.rename(pendingPath, pointerPath);
+  }
   console.log('[NDVI_RASTER_STORE]', {
     sceneId,
     storageKey,
@@ -226,8 +260,13 @@ export async function storeInternalGrid({
   };
 }
 
-export async function loadInternalGrid({ plotId, sceneId, schemaVersion = RASTER_SCHEMA_NUM }) {
-  const storageKey = buildStorageKey({ plotId, sceneId, schemaVersion });
+export async function loadInternalGrid({ plotId, sceneId,
+  schemaVersion = RASTER_SCHEMA_NUM, polygonHash = null }) {
+  polygonHash = /^[a-f0-9]{12}$/.test(String(polygonHash ?? ''))
+    ? polygonHash : null;
+  let storageKey = buildStorageKey({ plotId, sceneId, schemaVersion, polygonHash });
+  const currentPointerKey = polygonHash
+    ? pointerKey({ plotId, sceneId, schemaVersion, polygonHash }) : null;
   const started = Date.now();
   let buffer = null;
 
@@ -250,6 +289,17 @@ export async function loadInternalGrid({ plotId, sceneId, schemaVersion = RASTER
         },
         forcePathStyle: true,
       });
+      if (currentPointerKey) {
+        const pointer = await client.send(new GetObjectCommand({
+          Bucket: bucket, Key: currentPointerKey,
+        }));
+        const parsed = JSON.parse(Buffer.from(
+          await pointer.Body.transformToByteArray(),
+        ).toString('utf8'));
+        if (!String(parsed.storageKey || '').startsWith(
+          storageKey.replace(/\.bin$/, '_'))) throw new Error('Invalid raster pointer');
+        storageKey = parsed.storageKey;
+      }
       const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: storageKey }));
       buffer = Buffer.from(await res.Body.transformToByteArray());
     } catch (error) {
@@ -257,6 +307,13 @@ export async function loadInternalGrid({ plotId, sceneId, schemaVersion = RASTER
     }
   } else {
     try {
+      if (currentPointerKey) {
+        const parsed = JSON.parse(await fs.readFile(
+          localCachePath(currentPointerKey), 'utf8'));
+        if (!String(parsed.storageKey || '').startsWith(
+          storageKey.replace(/\.bin$/, '_'))) throw new Error('Invalid raster pointer');
+        storageKey = parsed.storageKey;
+      }
       buffer = await fs.readFile(localCachePath(storageKey));
     } catch (error) {
       console.warn(`[NDVI_RASTER_LOAD] local miss sceneId=${sceneId} ${error.message}`);

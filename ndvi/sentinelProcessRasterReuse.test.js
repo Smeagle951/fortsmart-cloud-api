@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 
 import SentinelProcessClient from './sentinelProcess.client.js';
 import {
@@ -10,6 +11,10 @@ import {
 import { storeInternalGrid } from './ndviRasterStore.js';
 
 function syntheticRaster(w = 8, h = 8) {
+  const polygon = {
+    coordinates: [[[-54.5, -15.4], [-54.4, -15.4],
+      [-54.4, -15.3], [-54.5, -15.3], [-54.5, -15.4]]],
+  };
   const cellCount = w * h;
   const ndvi = new Float32Array(cellCount);
   const ndre = new Float32Array(cellCount);
@@ -35,7 +40,10 @@ function syntheticRaster(w = 8, h = 8) {
     crs: 'EPSG:4326',
     nodata: -9999,
     bands: { ndvi, ndre, savi, ndmi, bsi, valid_mask },
-    metadata: {},
+    metadata: {
+      polygonHash: createHash('sha256')
+        .update(JSON.stringify(polygon.coordinates)).digest('hex').slice(0, 12),
+    },
     raster_storage_key: 'ndvi/internal-grid/plot-1/scene-1/grid_v1.bin',
     raster_storage_provider: 'local',
   };
@@ -92,7 +100,13 @@ test('raster reuse nao mistura metadata de visualModes diferentes', async () => 
     farmId: 'farm-1',
     plotId: 'plot-1',
     imageDate: '2026-06-05',
-    polygon: null,
+    polygon: {
+      type: 'Polygon',
+      coordinates: [[
+        [-54.5, -15.4], [-54.4, -15.4], [-54.4, -15.3],
+        [-54.5, -15.3], [-54.5, -15.4],
+      ]],
+    },
   };
   const contrast = await client._layerFromPersistedRaster({
     ...base,

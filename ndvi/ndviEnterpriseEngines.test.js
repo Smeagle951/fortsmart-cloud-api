@@ -106,7 +106,7 @@ test('renderer v2 gera múltiplos buckets e preserva stats brutos', () => {
     height: 10,
     visualMode: 'ndvi_contrast',
   });
-  assert.equal(rendered.contrast.rendererVersion, 'agronomic_contrast_v7_inner_buffer');
+  assert.equal(rendered.contrast.rendererVersion, 'agronomic_contrast_v8_png_legend_buckets');
   assert.equal(values[0], before[0]);
   assert.equal(values.at(-1), before.at(-1));
   const activeBuckets = Object.values(rendered.contrast.colorBuckets).filter((v) => v > 0);

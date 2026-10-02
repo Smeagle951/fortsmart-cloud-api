@@ -2,6 +2,8 @@
  * Processamento NDVI multibandas via Copernicus Process API.
  */
 import { PNG } from 'pngjs';
+import { createHash } from 'node:crypto';
+import { validateRasterResult } from './validateRasterResult.js';
 import { computeAgronomicStatsFromPackedPngs } from './ndviAgronomicStats.js';
 import { computeSurfaceCoverStatsFromPackedPng } from './ndviSurfaceCoverStats.js';
 import {
@@ -36,7 +38,7 @@ import {
 } from './ndviRasterStore.js';
 import { generatePreviewFromRaster } from './ndviPreviewFromRaster.js';
 import { RASTER_SCHEMA_NUM } from './ndviRasterSerializer.js';
-import { maskValuesToPolygon } from './ndviPolygonMask.js';
+import { applyPolygonMaskToPngBuffer, maskValuesToPolygon } from './ndviPolygonMask.js';
 
 const DEFAULT_PROCESS_URL = 'https://sh.dataspace.copernicus.eu/api/v1/process';
 
@@ -81,6 +83,21 @@ function polygonToBounds(polygon) {
   }
   if (![west, east, south, north].every(Number.isFinite)) return null;
   return { south, west, north, east };
+}
+
+function polygonHash(polygon) {
+  return createHash('sha256')
+    .update(JSON.stringify(polygon?.coordinates ?? polygon ?? {}))
+    .digest('hex').slice(0, 12);
+}
+
+function rasterMatchesPolygon(raster, polygon) {
+  const expected = polygonToBounds(polygon);
+  const actual = raster?.bounds;
+  if (!expected || !actual ||
+      raster.metadata?.polygonHash !== polygonHash(polygon)) return false;
+  return ['west', 'south', 'east', 'north'].every((key) =>
+    Math.abs(Number(actual[key]) - expected[key]) < 1e-8);
 }
 
 function analyzePreviewColorBuckets(buffer) {
@@ -216,6 +233,15 @@ class SentinelProcessClient {
     });
 
     const bounds = previewGen.bounds ?? polygonToBounds(polygon);
+    const rasterValidation = validateRasterResult({
+      image: previewGen.buffer, polygon, bounds,
+      stats: previewGen.stats ?? stats, mode: resolvedVisual, final: true,
+    });
+    if (!rasterValidation.ok) {
+      throw Object.assign(new Error(`Raster inválido: ${rasterValidation.code}`), {
+        code: rasterValidation.code, status: 422, details: rasterValidation,
+      });
+    }
 
     const preview_url = await storeNdviPreviewPng({
       farmId,
@@ -261,6 +287,9 @@ class SentinelProcessClient {
     });
 
     return {
+      raster_validation: rasterValidation,
+      layer_status: rasterValidation.layerStatus,
+      resolution_kind: 'final',
       preview_url,
       tile_url: null,
       raster_url: null,
@@ -326,8 +355,9 @@ class SentinelProcessClient {
       plotId,
       sceneId,
       schemaVersion: RASTER_SCHEMA_NUM,
+      polygonHash: polygonHash(polygon),
     });
-    if (!raster?.bands?.ndvi?.length) return null;
+    if (!raster?.bands?.ndvi?.length || !rasterMatchesPolygon(raster, polygon)) return null;
     return this._layerFromPersistedRaster({
       raster,
       sceneId,
@@ -346,6 +376,7 @@ class SentinelProcessClient {
     farmId,
     plotId,
     modes = VISUAL_MODES,
+    force = false,
   }) {
     const requestedModes = [...new Set(
       (Array.isArray(modes) && modes.length ? modes : VISUAL_MODES)
@@ -387,11 +418,13 @@ class SentinelProcessClient {
       sceneId,
       key: [plotId, sceneId || '-', 'internal_grid_v1'].join('|'),
     });
-    let raster = await loadInternalGrid({
+    let raster = force ? null : await loadInternalGrid({
       plotId,
       sceneId,
       schemaVersion: RASTER_SCHEMA_NUM,
+      polygonHash: polygonHash(polygon),
     });
+    if (raster && !rasterMatchesPolygon(raster, polygon)) raster = null;
 
     if (!raster?.bands?.ndvi?.length) {
       console.log('[NDVI] raster miss', { plotId, sceneId });
@@ -406,14 +439,16 @@ class SentinelProcessClient {
         farmId,
         plotId,
         visualMode: 'ndvi_contrast',
-        forceRemote: false,
+        forceRemote: force,
       });
       if (base?.raster_storage_key || base?.raster_available) {
         raster = await loadInternalGrid({
           plotId,
           sceneId,
           schemaVersion: RASTER_SCHEMA_NUM,
+          polygonHash: polygonHash(polygon),
         });
+        if (raster && !rasterMatchesPolygon(raster, polygon)) raster = null;
       }
     } else {
       console.log('[NDVI] raster hit', { plotId, sceneId });
@@ -526,13 +561,13 @@ class SentinelProcessClient {
       elapsedMs: Date.now() - started,
     });
     console.log('[NDVI] package saved', {
-      key: [plotId, sceneId || '-', 'preview'].join('|'),
+      key: [plotId, sceneId || '-', polygonHash(polygon), 'preview'].join('|'),
       layers: Object.keys(layersByMode),
     });
 
     return {
       scene_id: sceneId,
-      packageCacheKey: [plotId, sceneId || '-', 'preview'].join('|'),
+      packageCacheKey: [plotId, sceneId || '-', polygonHash(polygon), 'preview'].join('|'),
       package_version: 'scene_band_package_v1',
       resolution_kind: 'preview',
       generatedAt: new Date().toISOString(),
@@ -773,6 +808,7 @@ class SentinelProcessClient {
         primaryBuffer: primaryBuf,
         indicesBuffer: indicesBuf,
         metadata: {
+          polygonHash: polygonHash(polygon),
           cloudPercent: null,
           acquisitionDate: date,
           rendererVersion: contrast?.rendererVersion ?? rendererV2?.contrast?.rendererVersion,
@@ -780,18 +816,12 @@ class SentinelProcessClient {
       });
 
       let rasterPersist = null;
-      if (gridDoc) {
-        rasterPersist = await storeInternalGrid({
-          plotId,
-          sceneId,
-          document: gridDoc,
-        });
-      }
-
       const persistedRaster =
         gridDoc != null
-          ? { ...gridDoc, bounds, ...rasterPersist }
-          : await loadInternalGrid({ plotId, sceneId, schemaVersion: RASTER_SCHEMA_NUM });
+          ? { ...gridDoc, bounds }
+          : await loadInternalGrid({ plotId, sceneId,
+            schemaVersion: RASTER_SCHEMA_NUM,
+            polygonHash: polygonHash(polygon) });
 
       if (!persistedRaster?.bands?.ndvi?.length) {
         return { preview_url: null, status: 'metadata_only', ...enrichedStats };
@@ -831,6 +861,24 @@ class SentinelProcessClient {
         rendererVersion: contrast?.rendererVersion ?? null,
         renderer_version: contrast?.rendererVersion ?? null,
       };
+
+      const rasterValidation = validateRasterResult({
+        image: colorBuf, polygon, bounds,
+        stats: finalStats, mode: resolvedVisual, final: true,
+      });
+      if (!rasterValidation.ok) {
+        throw Object.assign(new Error(`Raster inválido: ${rasterValidation.code}`), {
+          code: rasterValidation.code, status: 422, details: rasterValidation,
+        });
+      }
+
+      if (gridDoc) {
+        rasterPersist = await storeInternalGrid({
+          plotId,
+          sceneId,
+          document: gridDoc,
+        });
+      }
 
       const preview_url = await storeNdviPreviewPng({
         farmId,
@@ -913,6 +961,9 @@ class SentinelProcessClient {
       timing.summary(preview_url ? 'success' : 'metadata_only');
 
       return {
+        raster_validation: rasterValidation,
+        layer_status: rasterValidation.layerStatus,
+        resolution_kind: 'final',
         preview_url,
         tile_url: null,
         raster_url: rasterPersist?.rasterUrl ?? rasterMetadata.raster_url,
@@ -954,6 +1005,8 @@ class SentinelProcessClient {
         ...finalStats,
       };
     } catch (error) {
+      if (['INSUFFICIENT_COVERAGE', 'INVALID_GEOMETRY', 'INVALID_RADIOMETRY']
+          .includes(error.code)) throw error;
       console.warn(`⚠️ [NDVI][Process] falha sceneId=${sceneId}: ${error.message}`);
       return { preview_url: null, status: 'metadata_only' };
     }
@@ -1004,6 +1057,18 @@ class SentinelProcessClient {
       }
 
       const bounds = polygonToBounds(polygon);
+      const maskedPreviewBuf = applyPolygonMaskToPngBuffer(previewBuf, {
+        bounds, polygon, log: false,
+      });
+      const rasterValidation = validateRasterResult({
+        image: maskedPreviewBuf, polygon, bounds,
+        stats: coverStats, mode: visualMode, final: true,
+      });
+      if (!rasterValidation.ok) {
+        throw Object.assign(new Error(`Raster inválido: ${rasterValidation.code}`), {
+          code: rasterValidation.code, status: 422, details: rasterValidation,
+        });
+      }
       const preview_url = await storeNdviPreviewPng({
         farmId,
         plotId,
@@ -1011,7 +1076,7 @@ class SentinelProcessClient {
         imageDate: date,
         visualMode,
         rendererVersion,
-        buffer: previewBuf,
+        buffer: maskedPreviewBuf,
       });
 
       const agronomic = {
@@ -1037,6 +1102,9 @@ class SentinelProcessClient {
       };
 
       return {
+        raster_validation: rasterValidation,
+        layer_status: rasterValidation.layerStatus,
+        resolution_kind: 'final',
         preview_url,
         tile_url: null,
         bounds,
@@ -1061,6 +1129,8 @@ class SentinelProcessClient {
         ...agronomic,
       };
     } catch (error) {
+      if (['INSUFFICIENT_COVERAGE', 'INVALID_GEOMETRY', 'INVALID_RADIOMETRY']
+          .includes(error.code)) throw error;
       console.warn(
         `⚠️ [NDVI][SurfaceCover] falha sceneId=${sceneId}: ${error.message}`,
       );

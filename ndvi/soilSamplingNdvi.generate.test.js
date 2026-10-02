@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import SoilSamplingNdviService from './soilSamplingNdvi.service.js';
 import createSoilSamplingNdviRouter from './soilSamplingNdvi.routes.js';
 import * as NdviResponseMapper from './ndviResponse.mapper.js';
@@ -18,6 +19,115 @@ const polygon = {
 };
 
 const contrast = { p5: 0.35, p50: 0.62, p95: 0.81 };
+const validRaster = {
+  ok: true, layerStatus: 'FINAL_READY', validPixelCoveragePct: 100,
+  width: 64, height: 64,
+};
+const bounds = { west: -54.48, south: -15.38, east: -54.47, north: -15.37 };
+
+describe('NDVI provenance and final-layer gate', () => {
+  const polygonHash = createHash('sha256')
+    .update(JSON.stringify(polygon.coordinates)).digest('hex').slice(0, 12);
+  const service = new SoilSamplingNdviService({
+    repository: { ensureSchema: async () => {} },
+    catalogClient: { polygonToBbox: () => [-54.48, -15.38, -54.47, -15.37] },
+    processClient: {},
+    authClient: { isConfigured: () => true },
+  });
+  const row = {
+    provider: 'google_earth_engine',
+    image_date: '2026-05-25',
+    agronomic_stats: {
+      layer_status: 'FINAL_READY', validPixelCoveragePct: 90,
+      bounds,
+      provenance: {
+        sceneId: 'scene-abc', mode: 'ndvi_absolute',
+        acquisitionDate: '2026-05-25',
+        provider: 'google_earth_engine', resolutionM: 10,
+        resolutionKind: 'final', algorithmVersion: 'layer_pipeline_v2_geometry_qa',
+        polygonHash, bounds,
+      },
+    },
+  };
+
+  it('rejeita cache legado, polígono alterado e resolução divergente', () => {
+    const query = { polygon, sceneId: 'scene-abc', mode: 'ndvi_absolute',
+      resolutionKind: 'final' };
+    assert.equal(service._cacheMatchesRequest(row, query), true);
+    assert.equal(service._cacheMatchesRequest({ agronomic_stats: {} }, query), false);
+    assert.equal(service._cacheMatchesRequest(row, {
+      ...query, resolutionKind: 'preview',
+    }), false);
+    const changedPolygon = structuredClone(polygon);
+    changedPolygon.coordinates[0][1][0] += 0.001;
+    assert.equal(service._cacheMatchesRequest(row, {
+      ...query, polygon: changedPolygon,
+    }), false);
+  });
+
+  it('não vincula prévia à coleta', async () => {
+    let activated = false;
+    const gated = new SoilSamplingNdviService({
+      repository: {
+        ensureSchema: async () => {},
+        getById: async () => ({
+          id: 'layer-preview', farm_id: 'f1', plot_id: 'p1',
+          agronomic_stats: { ...row.agronomic_stats, layer_status: 'PREVIEW_READY' },
+        }),
+        setActiveLayer: async () => { activated = true; },
+      },
+      catalogClient: {}, processClient: {},
+      authClient: { isConfigured: () => true },
+    });
+    await assert.rejects(() => gated.attachLayer({
+      campaignId: 'c1', farmId: 'f1', plotId: 'p1', layerId: 'layer-preview',
+    }), (error) => error.code === 'layer_not_final_ready');
+    assert.equal(activated, false);
+  });
+
+  it('force ignora o cache de renderização', async () => {
+    let lookups = 0;
+    let renders = 0;
+    const forced = new SoilSamplingNdviService({
+      repository: {
+        ensureSchema: async () => {},
+        findRecentCache: async () => { lookups += 1; return null; },
+        upsertLayer: async (data) => ({ ...data, id: 'forced-layer' }),
+      },
+      catalogClient: { polygonToBbox: () => [-54.48, -15.38, -54.47, -15.37] },
+      processClient: {
+        generateLayerPackage: async () => {
+          renders += 1;
+          return { layersByMode: { ndvi_absolute: {
+            preview_url: 'https://cdn.example/new.png', bounds,
+            visual_mode: 'ndvi_absolute', ndvi_mean: 0.62,
+            ndvi_min: 0.35, ndvi_max: 0.81,
+            very_low_percent: 5, low_percent: 25,
+            medium_percent: 40, high_percent: 30,
+            raster_validation: validRaster,
+          } }, statusesByMode: {} };
+        },
+      },
+      authClient: { isConfigured: () => true },
+    });
+    const result = await forced.generateLayerPackage({
+      farmId: 'f1', plotId: 'p1', sceneId: 'scene-abc',
+      polygon, imageDate: '2026-05-25', modes: ['ndvi_absolute'],
+      force: true, resolutionKind: 'final',
+    });
+    assert.equal(lookups, 0);
+    assert.equal(renders, 1);
+    assert.equal(result.layersByMode.ndvi_absolute.layerStatus, 'FINAL_READY');
+
+    const preview = await forced.generateLayerPackage({
+      farmId: 'f1', plotId: 'p1', sceneId: 'scene-abc',
+      polygon, imageDate: '2026-05-25', modes: ['ndvi_absolute'],
+      force: true, resolutionKind: 'fastPreview',
+    });
+    assert.equal(renders, 2);
+    assert.equal(preview.layersByMode.ndvi_absolute.layerStatus, 'PREVIEW_READY');
+  });
+});
 
 describe('SoilSamplingNdviService.generateLayer', () => {
   it('retorna 400 sem polígono', async () => {
@@ -81,6 +191,8 @@ describe('SoilSamplingNdviService.generateLayer', () => {
           high_percent: 30,
           contrast,
           visual_mode: 'ndvi_contrast',
+          raster_validation: validRaster,
+          bounds,
           status: 'generated',
         }),
       },
@@ -148,6 +260,8 @@ describe('SoilSamplingNdviService.generateLayer', () => {
             high_percent: 30,
             contrast,
             visual_mode: params.visualMode,
+            raster_validation: validRaster,
+            bounds,
             status: 'generated',
           };
         },
@@ -214,6 +328,8 @@ describe('SoilSamplingNdviService.generateLayer', () => {
             high_percent: 30,
             contrast,
             visual_mode: 'ndmi_water_stress',
+            raster_validation: validRaster,
+            bounds,
             status: 'generated',
           };
         },
@@ -347,6 +463,8 @@ describe('SoilSamplingNdviService.generateLayer', () => {
           high_percent: 30,
           contrast,
           visual_mode: 'ndvi_contrast',
+          raster_validation: validRaster,
+          bounds,
           status: 'generated',
         }),
       },
@@ -388,6 +506,8 @@ describe('SoilSamplingNdviService.generateLayer', () => {
           high_percent: 30,
           contrast,
           visual_mode: 'ndvi_contrast',
+          raster_validation: validRaster,
+          bounds,
           status: 'generated',
         }),
       },
@@ -453,6 +573,8 @@ describe('SceneBandPackage generate-package', () => {
             high_percent: 30,
             contrast,
             visual_mode: params.visualMode,
+            raster_validation: validRaster,
+            bounds,
             status: 'generated',
           };
         },
@@ -530,6 +652,8 @@ describe('SceneBandPackage generate-package', () => {
               high_percent: 30,
               contrast,
               visual_mode: mode,
+              raster_validation: validRaster,
+              bounds,
               status: 'generated',
             });
             return {

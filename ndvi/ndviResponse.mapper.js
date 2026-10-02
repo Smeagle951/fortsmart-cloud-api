@@ -208,6 +208,10 @@ function pickAgronomic(row) {
       raw?.raster_storage_provider ?? row?.raster_storage_provider ?? null,
     raster_schema_version:
       raw?.raster_schema_version ?? row?.raster_schema_version ?? null,
+    provenance: raw?.provenance ?? row?.provenance ?? null,
+    layer_status: raw?.layer_status ?? row?.layer_status ?? null,
+    validPixelCoveragePct:
+      raw?.validPixelCoveragePct ?? row?.validPixelCoveragePct ?? null,
   };
 }
 
@@ -342,6 +346,12 @@ function mapLayer(row) {
 
   return {
     layer_id: layerId,
+    layerResultId: layerId,
+    layer_result_id: layerId,
+    layerStatus: ag.layer_status ?? 'PROVIDER_ERROR',
+    layer_status: ag.layer_status ?? 'PROVIDER_ERROR',
+    provenance: ag.provenance ?? null,
+    validPixelCoveragePct: ag.validPixelCoveragePct ?? null,
     id: layerId,
     scene_id: row.scene_id ?? null,
     farm_id: row.farm_id,

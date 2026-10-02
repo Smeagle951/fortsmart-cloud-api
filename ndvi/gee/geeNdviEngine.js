@@ -1,5 +1,6 @@
 import { storeNdviPreviewPng } from '../ndviPreviewStorage.js';
 import { NDVI_ENGINE_VERSION } from '../sentinelNdviReliability.js';
+import { validateRasterResult } from '../validateRasterResult.js';
 
 const DATASET = 'COPERNICUS/S2_SR_HARMONIZED';
 const CLOUD_SCORE_PLUS = 'GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED';
@@ -836,7 +837,7 @@ async function resolveGeeAnalysisImage(gee, {
   };
 }
 
-function buildNdviValidMask(gee, { image, ndvi, geometry }) {
+export function buildNdviValidMask(gee, { image, ndvi, geometry, fast = false }) {
   const b4 = image.select('B4');
   const b8 = image.select('B8');
   const plotMask = gee.Image.constant(1).clip(geometry).selfMask();
@@ -846,7 +847,12 @@ function buildNdviValidMask(gee, { image, ndvi, geometry }) {
     .and(b4.gt(0))
     .and(b8.gt(0));
   const ndviMask = ndvi.gte(-1).and(ndvi.lte(1));
-  return buildCombinedClearMask(gee, image)
+  // The fast preview contains B4/B8/SCL only. Cloud Score+ is loaded for
+  // final renders; selecting cs_cdf here made every fast NDVI request fail.
+  const clearMask = fast
+    ? buildSclValidMask(image)
+    : buildCombinedClearMask(gee, image);
+  return clearMask
     .and(bandMask)
     .and(ndviMask)
     .updateMask(plotMask)
@@ -1848,11 +1854,13 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         image: maskedImage,
         ndvi: rawNdvi,
         geometry: statsGeometry.geometry,
+        fast: fastContrastOnly,
       });
       const renderValidMask = buildNdviValidMask(gee, {
         image: maskedImage,
         ndvi: rawNdvi,
         geometry: plotGeometry,
+        fast: fastContrastOnly,
       });
       let statsNdreMask = null;
       let statsNdmiMask = null;
@@ -2145,6 +2153,21 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         thumbSizes: thumbSizesToUse,
       });
       const pngBuffer = renderedPng.buffer;
+      const rasterValidation = validateRasterResult({
+        image: pngBuffer,
+        polygon,
+        bounds: polygonToBounds(polygon),
+        stats,
+        mode,
+        final: !isFastLikeResolution(resolutionKind),
+      });
+      if (!rasterValidation.ok) {
+        const error = new Error(`Raster GEE rejeitado: ${rasterValidation.code}`);
+        error.code = rasterValidation.code;
+        error.status = 422;
+        error.details = rasterValidation;
+        throw error;
+      }
       const previewUrl = await storeNdviPreviewPng({
         farmId,
         plotId,
@@ -2299,6 +2322,9 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         raster_url: null,
         raster_available: false,
         bounds: polygonToBounds(polygon),
+        raster_validation: rasterValidation,
+        layer_status: rasterValidation.layerStatus,
+        resolution_kind: resolutionKind,
         polygon_masked: true,
         status: previewUrl ? 'generated' : 'metadata_only',
         visual_mode: mode,
@@ -2375,11 +2401,13 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         image: maskedImage,
         ndvi: rawNdvi,
         geometry: statsGeometry.geometry,
+        fast: fastContrastOnly,
       });
       const renderValidMask = buildNdviValidMask(gee, {
         image: maskedImage,
         ndvi: rawNdvi,
         geometry: plotGeometry,
+        fast: fastContrastOnly,
       });
       let statsNdreMask = null;
       let statsNdmiMask = null;
@@ -2699,6 +2727,21 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
               thumbSizes: packageThumbSizesToUse,
             });
             const pngBuffer = renderedPng.buffer;
+            const rasterValidation = validateRasterResult({
+              image: pngBuffer,
+              polygon,
+              bounds: polygonToBounds(polygon),
+              stats,
+              mode,
+              final: !isFastLikeResolution(resolutionKind),
+            });
+            if (!rasterValidation.ok) {
+              const error = new Error(`Raster GEE rejeitado: ${rasterValidation.code}`);
+              error.code = rasterValidation.code;
+              error.status = 422;
+              error.details = rasterValidation;
+              throw error;
+            }
             const previewUrl = await storeNdviPreviewPng({
               farmId,
               plotId,
@@ -2773,6 +2816,9 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
             };
             const layer = {
               scene_id: selectedSceneId,
+              raster_validation: rasterValidation,
+              layer_status: rasterValidation.layerStatus,
+              resolution_kind: resolutionKind,
               provider: 'google_earth_engine',
               provider_used: 'google_earth_engine',
               source: 'gee_sentinel_2_l2a',

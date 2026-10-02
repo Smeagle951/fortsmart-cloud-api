@@ -80,7 +80,10 @@ export async function storeNdviPreviewPng({
   const renderer = safePathSegment(rendererVersion, 'agronomic_contrast_v2');
   const sceneKey = safePathSegment(sceneId, stamp);
   const hash = createHash('sha256')
-    .update(`${farmId}|${plotId}|${sceneId}|${stamp}|${mode}|${renderer}`)
+    // Content address the PNG: the same scene rendered for a changed polygon
+    // must never overwrite an older URL while its old bounds remain cached.
+    .update(`${farmId}|${plotId}|${sceneId}|${stamp}|${mode}|${renderer}|`)
+    .update(buffer)
     .digest('hex')
     .slice(0, 12);
   const key = `ndvi/previews/${plotId}/${sceneKey}/${mode}_${renderer}_${hash}.png`;
