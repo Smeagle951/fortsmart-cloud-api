@@ -419,7 +419,12 @@ class SentinelProcessClient {
       sceneId,
       key: [plotId, sceneId || '-', 'internal_grid_v1'].join('|'),
     });
-    let raster = force ? null : await loadInternalGrid({
+    // `force` invalida o resultado visual/persistido, não a grade científica
+    // imutável da mesma cena + polígono. Rebaixar B04/B08 aqui transforma uma
+    // simples regeneração de cores em outra chamada pesada ao Copernicus e
+    // causa timeout no app. Se a grade exata existe, sempre a reutilizamos e
+    // apenas renderizamos/persistimos uma nova camada.
+    let raster = await loadInternalGrid({
       plotId,
       sceneId,
       schemaVersion: RASTER_SCHEMA_NUM,
@@ -466,7 +471,11 @@ class SentinelProcessClient {
       }
       raster = await baseJob;
     } else {
-      console.log('[NDVI] raster hit', { plotId, sceneId });
+      console.log('[NDVI] raster hit', {
+        plotId,
+        sceneId,
+        forceRender: Boolean(force),
+      });
     }
 
     if (!raster?.bands?.ndvi?.length) {

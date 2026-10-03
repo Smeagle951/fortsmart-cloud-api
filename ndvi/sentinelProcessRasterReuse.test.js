@@ -122,7 +122,7 @@ test('raster reuse nao mistura metadata de visualModes diferentes', async () => 
   assert.notEqual(contrast.legend.title, moisture.legend.title);
 });
 
-test('package renderer monta modos avançados a partir do raster persistido', async () => {
+test('force regera a camada mas reutiliza o raster científico persistido', async () => {
   const client = new SentinelProcessClient({ authClient: null, enableDevMock: true });
   const raster = deserializeInternalGridBuffer(
     serializeInternalGridDocument(syntheticRaster()).buffer,
@@ -154,6 +154,7 @@ test('package renderer monta modos avançados a partir do raster persistido', as
     polygon,
     imageDate: '2026-06-05',
     modes: ['ndvi_contrast', 'ndmi_water_stress', 'ndre'],
+    force: true,
   });
 
   client.generateNdviLayer = original;
@@ -169,8 +170,10 @@ test('package renderer monta modos avançados a partir do raster persistido', as
 
 test('pacotes concorrentes reutilizam a mesma geração do raster base', async () => {
   const client = new SentinelProcessClient({ authClient: null, enableDevMock: true });
-  const plotId = 'plot-inflight-v2';
-  const sceneId = 'scene-inflight-v2';
+  // Keep this test isolated from the persistent raster cache left by prior runs.
+  const cacheSuffix = `${process.pid}-${Date.now()}`;
+  const plotId = `plot-inflight-${cacheSuffix}`;
+  const sceneId = `scene-inflight-${cacheSuffix}`;
   const polygon = {
     type: 'Polygon',
     coordinates: [[
