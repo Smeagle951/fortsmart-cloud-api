@@ -255,6 +255,34 @@ test('generatePreviewFromRaster solo nu não pinta verde/amarelo falso no contra
   );
 });
 
+test('generatePreviewFromRaster contraste em cena homogênea cobre o talhão inteiro', () => {
+  const raster = syntheticGrid(8, 8);
+  for (let i = 0; i < raster.bands.ndvi.length; i += 1) {
+    raster.bands.ndvi[i] = 0.10 + (i / (raster.bands.ndvi.length - 1)) * 0.04;
+  }
+  const loaded = deserializeInternalGridBuffer(
+    serializeInternalGridDocument(raster).buffer,
+  );
+  const { west, south, east, north } = loaded.bounds;
+  const polygon = {
+    type: 'Polygon',
+    coordinates: [[[west, south], [east, south], [east, north], [west, north], [west, south]]],
+  };
+  const out = generatePreviewFromRaster({ raster: loaded, visualMode: 'ndvi_contrast', polygon });
+  assert.equal(out.contrast.lowContrastScene, true);
+
+  const png = PNG.sync.read(out.buffer);
+  let opaque = 0;
+  const total = png.width * png.height;
+  for (let i = 0; i < png.data.length; i += 4) {
+    if (png.data[i + 3] >= 128) opaque += 1;
+  }
+  assert.ok(
+    opaque / total > 0.9,
+    `contraste deve colorir o talhão inteiro (${opaque}/${total})`,
+  );
+});
+
 test('cache científico e visual têm chaves distintas', () => {
   const sci = scientificRasterCacheKey({ plotId: 'p', sceneId: 's' });
   const vis = visualPreviewCacheKey({

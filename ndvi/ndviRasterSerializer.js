@@ -97,11 +97,9 @@ export function deserializeInternalGridBuffer(buffer) {
   for (const name of BAND_ORDER) {
     const byteLen = cellCount * 4;
     if (offset + byteLen > raw.length) return null;
-    bands[name] = new Float32Array(
-      raw.buffer,
-      raw.byteOffset + offset,
-      cellCount,
-    );
+    // Float32Array exige offset múltiplo de 4; o header JSON tem tamanho livre.
+    const start = raw.byteOffset + offset;
+    bands[name] = new Float32Array(raw.buffer.slice(start, start + byteLen));
     offset += byteLen;
   }
 
