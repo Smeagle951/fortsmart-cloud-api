@@ -166,3 +166,46 @@ test('package renderer monta modos avançados a partir do raster persistido', as
   assert.equal(result.statusesByMode.ndre.status, 'ready');
   assert.equal(result.statusesByMode.ndmi_water_stress.status, 'ready');
 });
+
+test('pacotes concorrentes reutilizam a mesma geração do raster base', async () => {
+  const client = new SentinelProcessClient({ authClient: null, enableDevMock: true });
+  const plotId = 'plot-inflight-v2';
+  const sceneId = 'scene-inflight-v2';
+  const polygon = {
+    type: 'Polygon',
+    coordinates: [[
+      [-54.5, -15.4], [-54.4, -15.4], [-54.4, -15.3],
+      [-54.5, -15.3], [-54.5, -15.4],
+    ]],
+  };
+  let baseCalls = 0;
+  client.generateNdviLayer = async () => {
+    baseCalls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const document = syntheticRaster();
+    document.plot_id = plotId;
+    document.scene_id = sceneId;
+    document.metadata.polygonHash = createHash('sha256')
+      .update(JSON.stringify(polygon.coordinates)).digest('hex').slice(0, 12);
+    await storeInternalGrid({ plotId, sceneId, document });
+    return { raster_available: true };
+  };
+
+  const request = (mode) => client.generateLayerPackage({
+    sceneId,
+    farmId: 'farm-1',
+    plotId,
+    polygon,
+    imageDate: '2026-06-05',
+    modes: [mode],
+    force: true,
+  });
+  const [absolute, contrastResult] = await Promise.all([
+    request('ndvi_absolute'),
+    request('ndvi_contrast'),
+  ]);
+
+  assert.equal(baseCalls, 1);
+  assert.ok(absolute.layersByMode.ndvi_absolute);
+  assert.ok(contrastResult.layersByMode.ndvi_contrast);
+});

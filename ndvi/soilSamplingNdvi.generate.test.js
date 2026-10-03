@@ -705,6 +705,69 @@ describe('SceneBandPackage generate-package', () => {
     }
   });
 
+  it('usa Copernicus primeiro na prévia rápida de NDVI básico', async () => {
+    let geeCalls = 0;
+    let copernicusCalls = 0;
+    const service = new SoilSamplingNdviService({
+      repository: {
+        ensureSchema: async () => {},
+        findRecentCache: async () => null,
+        upsertLayer: async (data) => ({ ...data, id: 'fast-preview-layer' }),
+      },
+      catalogClient: { polygonToBbox: () => [-54.48, -15.38, -54.47, -15.37] },
+      geeClient: {
+        isImplemented: () => true,
+        generateLayerPackage: async () => {
+          geeCalls += 1;
+          throw new Error('GEE não deve bloquear a prévia rápida');
+        },
+      },
+      processClient: {
+        generateLayerPackage: async () => {
+          copernicusCalls += 1;
+          return {
+            scene_id: 'scene-fast',
+            provider: 'copernicus_dataspace',
+            layersByMode: {
+              ndvi_absolute: {
+                preview_url: 'https://cdn.example/copernicus-fast.png',
+                ndvi_mean: 0.62,
+                ndvi_min: 0.35,
+                ndvi_max: 0.81,
+                very_low_percent: 5,
+                low_percent: 25,
+                medium_percent: 40,
+                high_percent: 30,
+                visual_mode: 'ndvi_absolute',
+                raster_validation: validRaster,
+                bounds,
+                status: 'generated',
+              },
+            },
+            statusesByMode: {},
+          };
+        },
+      },
+      authClient: { isConfigured: () => true },
+    });
+
+    const result = await service.generateLayerPackage({
+      farmId: 'f1',
+      plotId: 'p1',
+      campaignId: '16',
+      sceneId: 'scene-fast',
+      polygon,
+      imageDate: '2026-06-08',
+      modes: ['ndvi_absolute'],
+      resolutionKind: 'fastPreview',
+    });
+
+    assert.equal(copernicusCalls, 1);
+    assert.equal(geeCalls, 0);
+    assert.equal(result.provider, 'copernicus_dataspace');
+    assert.equal(result.layersByMode.ndvi_absolute.layerStatus, 'PREVIEW_READY');
+  });
+
   it('marca pacote como failed quando nenhum modo fica pronto', async () => {
     const service = new SoilSamplingNdviService({
       repository: {

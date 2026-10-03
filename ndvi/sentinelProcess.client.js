@@ -41,6 +41,7 @@ import { RASTER_SCHEMA_NUM } from './ndviRasterSerializer.js';
 import { applyPolygonMaskToPngBuffer, maskValuesToPolygon } from './ndviPolygonMask.js';
 
 const DEFAULT_PROCESS_URL = 'https://sh.dataspace.copernicus.eu/api/v1/process';
+const baseRasterInflight = new Map();
 
 function resolveProcessUrl(raw) {
   const value = String(raw || '').trim();
@@ -428,28 +429,42 @@ class SentinelProcessClient {
 
     if (!raster?.bands?.ndvi?.length) {
       console.log('[NDVI] raster miss', { plotId, sceneId });
-      console.log('[NDVI][Process][package] raster miss; generating base raster', {
-        sceneId,
-        plotId,
-      });
-      const base = await this.generateNdviLayer({
-        sceneId,
-        polygon,
-        imageDate: date,
-        farmId,
-        plotId,
-        visualMode: 'ndvi_contrast',
-        forceRemote: force,
-      });
-      if (base?.raster_storage_key || base?.raster_available) {
-        raster = await loadInternalGrid({
-          plotId,
+      const baseKey = [plotId, sceneId || '-', polygonHash(polygon)].join('|');
+      let baseJob = baseRasterInflight.get(baseKey);
+      if (!baseJob) {
+        console.log('[NDVI][Process][package] raster miss; generating base raster', {
           sceneId,
-          schemaVersion: RASTER_SCHEMA_NUM,
-          polygonHash: polygonHash(polygon),
+          plotId,
+          baseKey,
         });
-        if (raster && !rasterMatchesPolygon(raster, polygon)) raster = null;
+        baseJob = (async () => {
+          const base = await this.generateNdviLayer({
+            sceneId,
+            polygon,
+            imageDate: date,
+            farmId,
+            plotId,
+            visualMode: 'ndvi_contrast',
+            forceRemote: force,
+          });
+          if (!base?.raster_storage_key && !base?.raster_available) return null;
+          const loaded = await loadInternalGrid({
+            plotId,
+            sceneId,
+            schemaVersion: RASTER_SCHEMA_NUM,
+            polygonHash: polygonHash(polygon),
+          });
+          return loaded && rasterMatchesPolygon(loaded, polygon) ? loaded : null;
+        })();
+        baseRasterInflight.set(baseKey, baseJob);
+        baseJob.then(
+          () => baseRasterInflight.delete(baseKey),
+          () => baseRasterInflight.delete(baseKey),
+        );
+      } else {
+        console.log('[NDVI_RASTER_JOB_REUSED]', { plotId, sceneId, baseKey });
       }
+      raster = await baseJob;
     } else {
       console.log('[NDVI] raster hit', { plotId, sceneId });
     }

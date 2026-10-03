@@ -1149,7 +1149,23 @@ class SoilSamplingNdviService {
       readyModes: Object.keys(layersByMode),
       pendingModes,
     });
-    if (this._geeReady({ packageMode: true, preferredProvider }) && this.geeClient?.generateLayerPackage) {
+    // A prévia precisa chegar antes dos reducers e thumbnails mais caros do
+    // GEE. Para NDVI básico, usa primeiro o Process API do Copernicus; a
+    // versão final continua preferindo GEE e o fallback por modo permanece.
+    const preferCopernicusFastPreview =
+      ['fast', 'fastPreview'].includes(resolutionKind) &&
+      pendingModes.every((mode) =>
+        ['ndvi_absolute', 'ndvi_contrast'].includes(mode));
+    if (preferCopernicusFastPreview) {
+      console.log('[NDVI_PACKAGE_PROVIDER_STRATEGY]', {
+        strategy: 'copernicus_fast_preview_first',
+        resolutionKind,
+        modes: pendingModes,
+      });
+    }
+    if (!preferCopernicusFastPreview &&
+        this._geeReady({ packageMode: true, preferredProvider }) &&
+        this.geeClient?.generateLayerPackage) {
       try {
         const pendingBands = bandsRequestedForModes(pendingModes);
         console.log('[NDVI_PACKAGE_BANDS]', {
