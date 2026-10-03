@@ -1028,7 +1028,16 @@ class SoilSamplingNdviService {
     const requestedModes = Array.isArray(modes) && modes.length
       ? modes.map((mode) => resolveRequestedVisualMode(mode)).filter(Boolean)
       : defaultModes;
-    const uniqueModes = orderPackageModes([...new Set(requestedModes)]);
+    const fastNdviPackage = ['fast', 'fastPreview'].includes(resolutionKind) &&
+      requestedModes.some((mode) =>
+        ['ndvi_absolute', 'ndvi_contrast'].includes(mode));
+    // Absoluto e contraste usam exatamente a mesma grade B04/B08. Gerá-los
+    // juntos evita que um toque em Contraste durante o primeiro download abra
+    // outro processamento pesado (possivelmente em outra instância do serviço).
+    const packageModes = fastNdviPackage
+      ? [...requestedModes, 'ndvi_absolute', 'ndvi_contrast']
+      : requestedModes;
+    const uniqueModes = orderPackageModes([...new Set(packageModes)]);
     const startedAt = Date.now();
     const layersByMode = {};
     const statusesByMode = {};

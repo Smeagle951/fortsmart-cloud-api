@@ -708,6 +708,7 @@ describe('SceneBandPackage generate-package', () => {
   it('usa Copernicus primeiro na prévia rápida de NDVI básico', async () => {
     let geeCalls = 0;
     let copernicusCalls = 0;
+    let copernicusModes = [];
     const service = new SoilSamplingNdviService({
       repository: {
         ensureSchema: async () => {},
@@ -723,26 +724,30 @@ describe('SceneBandPackage generate-package', () => {
         },
       },
       processClient: {
-        generateLayerPackage: async () => {
+        generateLayerPackage: async (params) => {
           copernicusCalls += 1;
+          copernicusModes = params.modes;
+          const layerFor = (mode) => ({
+            preview_url: `https://cdn.example/copernicus-${mode}.png`,
+            ndvi_mean: 0.62,
+            ndvi_min: 0.35,
+            ndvi_max: 0.81,
+            very_low_percent: 5,
+            low_percent: 25,
+            medium_percent: 40,
+            high_percent: 30,
+            contrast,
+            visual_mode: mode,
+            raster_validation: validRaster,
+            bounds,
+            status: 'generated',
+          });
           return {
             scene_id: 'scene-fast',
             provider: 'copernicus_dataspace',
             layersByMode: {
-              ndvi_absolute: {
-                preview_url: 'https://cdn.example/copernicus-fast.png',
-                ndvi_mean: 0.62,
-                ndvi_min: 0.35,
-                ndvi_max: 0.81,
-                very_low_percent: 5,
-                low_percent: 25,
-                medium_percent: 40,
-                high_percent: 30,
-                visual_mode: 'ndvi_absolute',
-                raster_validation: validRaster,
-                bounds,
-                status: 'generated',
-              },
+              ndvi_absolute: layerFor('ndvi_absolute'),
+              ndvi_contrast: layerFor('ndvi_contrast'),
             },
             statusesByMode: {},
           };
@@ -764,8 +769,10 @@ describe('SceneBandPackage generate-package', () => {
 
     assert.equal(copernicusCalls, 1);
     assert.equal(geeCalls, 0);
+    assert.deepEqual(copernicusModes, ['ndvi_contrast', 'ndvi_absolute']);
     assert.equal(result.provider, 'copernicus_dataspace');
     assert.equal(result.layersByMode.ndvi_absolute.layerStatus, 'PREVIEW_READY');
+    assert.equal(result.layersByMode.ndvi_contrast.layerStatus, 'PREVIEW_READY');
   });
 
   it('marca pacote como failed quando nenhum modo fica pronto', async () => {
