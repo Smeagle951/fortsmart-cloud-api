@@ -39,6 +39,7 @@ import {
 import { generatePreviewFromRaster } from './ndviPreviewFromRaster.js';
 import { RASTER_SCHEMA_NUM } from './ndviRasterSerializer.js';
 import { applyPolygonMaskToPngBuffer, maskValuesToPolygon } from './ndviPolygonMask.js';
+import { canRenderFromPersistedRaster } from './ndviVisualModeGate.js';
 
 const DEFAULT_PROCESS_URL = 'https://sh.dataspace.copernicus.eu/api/v1/process';
 const baseRasterInflight = new Map();
@@ -432,9 +433,26 @@ class SentinelProcessClient {
     });
     if (raster && !rasterMatchesPolygon(raster, polygon)) raster = null;
 
-    if (!raster?.bands?.ndvi?.length) {
-      console.log('[NDVI] raster miss', { plotId, sceneId });
-      const baseKey = [plotId, sceneId || '-', polygonHash(polygon)].join('|');
+    const rasterModes = requestedModes.filter((mode) => !isCdseSurfaceCoverMode(mode));
+    const modesMissingRasterBands = rasterModes.filter(
+      (mode) => !canRenderFromPersistedRaster(mode, raster),
+    );
+    if (!raster?.bands?.ndvi?.length || modesMissingRasterBands.length > 0) {
+      const generationMode = modesMissingRasterBands.find(
+        (mode) => !isNdviOnlyVisualMode(mode),
+      ) ?? 'ndvi_contrast';
+      const rasterProfile = isNdviOnlyVisualMode(generationMode) ? 'ndvi_only' : 'full';
+      console.log('[NDVI] raster miss or incomplete', {
+        plotId,
+        sceneId,
+        generationMode,
+        rasterProfile,
+        modesMissingRasterBands,
+      });
+      // Não compartilha uma geração B04/B08 com um pedido multibanda: o
+      // primeiro produz uma grade válida só para NDVI e faria NDRE/NDMI
+      // reaproveitarem pixels nodata.
+      const baseKey = [plotId, sceneId || '-', polygonHash(polygon), rasterProfile].join('|');
       let baseJob = baseRasterInflight.get(baseKey);
       if (!baseJob) {
         console.log('[NDVI][Process][package] raster miss; generating base raster', {
@@ -449,7 +467,7 @@ class SentinelProcessClient {
             imageDate: date,
             farmId,
             plotId,
-            visualMode: 'ndvi_contrast',
+            visualMode: generationMode,
             forceRemote: force,
           });
           if (!base?.raster_storage_key && !base?.raster_available) return null;

@@ -64,27 +64,44 @@ export function normalizeVisualModeKey(value) {
 export function canRenderFromPersistedRaster(visualMode, raster) {
   const mode = normalizeVisualModeKey(visualMode);
   if (!RASTER_VISUAL_MODES.includes(mode)) return false;
-  if (!raster?.bands?.ndvi?.length) return false;
-  if (mode === 'ndre' && !raster.bands?.ndre?.length) return false;
-  if (mode === 'savi' && !raster.bands?.savi?.length) return false;
-  if (mode === 'bsi_soil' && !raster.bands?.bsi?.length) return false;
-  if (mode === 'ndmi_water_stress' && !raster.bands?.ndmi?.length) return false;
+  if (!hasUsableRasterBand(raster, 'ndvi')) return false;
+  if (mode === 'ndre' && !hasUsableRasterBand(raster, 'ndre')) return false;
+  if (mode === 'savi' && !hasUsableRasterBand(raster, 'savi')) return false;
+  if (mode === 'bsi_soil' && !hasUsableRasterBand(raster, 'bsi')) return false;
+  if (mode === 'ndmi_water_stress' && !hasUsableRasterBand(raster, 'ndmi')) return false;
   return true;
+}
+
+// O formato internal_grid sempre serializa todas as bandas. Em uma prévia
+// NDVI rápida as bandas avançadas existem no buffer, mas são só nodata (-9999).
+// Testar apenas `length` fazia NDRE/NDMI/BSI reutilizarem uma grade sem dados.
+export function hasUsableRasterBand(raster, bandName) {
+  const values = raster?.bands?.[bandName];
+  if (!values?.length) return false;
+  const mask = raster?.bands?.valid_mask;
+  const nodata = Number(raster?.nodata ?? -9999);
+  for (let i = 0; i < values.length; i += 1) {
+    if (mask?.length === values.length && mask[i] === 0) continue;
+    const value = Number(values[i]);
+    if (Number.isFinite(value) && value !== nodata && value >= -1 && value <= 1) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function missingBandsForVisualMode(visualMode, raster) {
   const mode = normalizeVisualModeKey(visualMode);
-  const bands = raster?.bands || {};
   const missing = [];
-  if (!bands.ndvi?.length) missing.push('B04/B08');
-  if (mode === 'ndre' && !bands.ndre?.length) missing.push('B05/B8A');
-  if (mode === 'savi' && !bands.savi?.length) missing.push('B04/B08');
-  if (mode === 'bsi_soil' && !bands.bsi?.length) missing.push('B04/B08/B11');
-  if (mode === 'ndmi_water_stress' && !bands.ndmi?.length) missing.push('B08/B11');
+  if (!hasUsableRasterBand(raster, 'ndvi')) missing.push('B04/B08');
+  if (mode === 'ndre' && !hasUsableRasterBand(raster, 'ndre')) missing.push('B05/B8A');
+  if (mode === 'savi' && !hasUsableRasterBand(raster, 'savi')) missing.push('B04/B08');
+  if (mode === 'bsi_soil' && !hasUsableRasterBand(raster, 'bsi')) missing.push('B04/B08/B11');
+  if (mode === 'ndmi_water_stress' && !hasUsableRasterBand(raster, 'ndmi')) missing.push('B08/B11');
   if (mode === 'post_harvest_cover') {
-    if (!bands.ndvi?.length) missing.push('B04/B08');
-    if (!bands.bsi?.length) missing.push('B02/B11');
-    if (!bands.ndmi?.length) missing.push('B11');
+    if (!hasUsableRasterBand(raster, 'ndvi')) missing.push('B04/B08');
+    if (!hasUsableRasterBand(raster, 'bsi')) missing.push('B02/B11');
+    if (!hasUsableRasterBand(raster, 'ndmi')) missing.push('B11');
   }
   return missing;
 }

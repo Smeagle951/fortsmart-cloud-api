@@ -168,6 +168,55 @@ test('force regera a camada mas reutiliza o raster científico persistido', asyn
   assert.equal(result.statusesByMode.ndmi_water_stress.status, 'ready');
 });
 
+test('NDRE atualiza grade NDVI rápida sem bandas avançadas antes de renderizar', async () => {
+  const client = new SentinelProcessClient({ authClient: null, enableDevMock: true });
+  const cacheSuffix = `${process.pid}-${Date.now()}`;
+  const plotId = `plot-upgrade-${cacheSuffix}`;
+  const sceneId = `scene-upgrade-${cacheSuffix}`;
+  const polygon = {
+    type: 'Polygon',
+    coordinates: [[
+      [-54.5, -15.4], [-54.4, -15.4], [-54.4, -15.3],
+      [-54.5, -15.3], [-54.5, -15.4],
+    ]],
+  };
+  const ndviOnly = syntheticRaster();
+  ndviOnly.plot_id = plotId;
+  ndviOnly.scene_id = sceneId;
+  ndviOnly.metadata.polygonHash = createHash('sha256')
+    .update(JSON.stringify(polygon.coordinates)).digest('hex').slice(0, 12);
+  // `internal_grid_v1` mantém o layout de todas as bandas; a prévia rápida
+  // preenche as avançadas com nodata, que não pode ser confundido com dado.
+  for (const band of ['ndre', 'savi', 'ndmi', 'bsi']) {
+    ndviOnly.bands[band].fill(-9999);
+  }
+  await storeInternalGrid({ plotId, sceneId, document: ndviOnly });
+
+  let generationMode = null;
+  client.generateNdviLayer = async ({ visualMode }) => {
+    generationMode = visualMode;
+    const full = syntheticRaster();
+    full.plot_id = plotId;
+    full.scene_id = sceneId;
+    full.metadata.polygonHash = ndviOnly.metadata.polygonHash;
+    await storeInternalGrid({ plotId, sceneId, document: full });
+    return { raster_available: true };
+  };
+
+  const result = await client.generateLayerPackage({
+    sceneId,
+    farmId: 'farm-1',
+    plotId,
+    polygon,
+    imageDate: '2026-06-05',
+    modes: ['ndre'],
+  });
+
+  assert.equal(generationMode, 'ndre');
+  assert.equal(result.statusesByMode.ndre.status, 'ready');
+  assert.ok(result.layersByMode.ndre?.preview_url);
+});
+
 test('pacotes concorrentes reutilizam a mesma geração do raster base', async () => {
   const client = new SentinelProcessClient({ authClient: null, enableDevMock: true });
   // Keep this test isolated from the persistent raster cache left by prior runs.
