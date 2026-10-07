@@ -624,6 +624,7 @@ describe('SceneBandPackage generate-package', () => {
     process.env.GEE_PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\\ntest\\n-----END PRIVATE KEY-----';
 
     const geeCalls = [];
+    const copernicusCalls = [];
     try {
       const service = new SoilSamplingNdviService({
         repository: {
@@ -633,7 +634,29 @@ describe('SceneBandPackage generate-package', () => {
         },
         catalogClient: { polygonToBbox: () => [-54.48, -15.38, -54.47, -15.37] },
         processClient: {
-          generateLayerPackage: async () => assert.fail('Copernicus package should not be called'),
+          generateLayerPackage: async (params) => {
+            copernicusCalls.push(params);
+            return {
+              layersByMode: {
+                ndre: {
+                  preview_url: 'https://cdn.example/copernicus-ndre.png',
+                  ndvi_mean: 0.62,
+                  ndvi_min: 0.35,
+                  ndvi_max: 0.81,
+                  very_low_percent: 5,
+                  low_percent: 25,
+                  medium_percent: 40,
+                  high_percent: 30,
+                  contrast,
+                  visual_mode: 'ndre',
+                  raster_validation: validRaster,
+                  bounds,
+                  status: 'generated',
+                },
+              },
+              statusesByMode: {},
+            };
+          },
           generateNdviLayer: async () => assert.fail('Copernicus per-mode fallback should not be called'),
         },
         authClient: { isConfigured: () => false },
@@ -691,12 +714,13 @@ describe('SceneBandPackage generate-package', () => {
         'ndmi_water_stress',
         'ndre',
       ]);
-      assert.equal(result.provider, 'google_earth_engine');
-      assert.equal(result.packageStatus, 'partial');
-      assert.equal(result.packageCacheKey, 'gee-package-key');
+      assert.equal(copernicusCalls.length, 1);
+      assert.deepEqual(copernicusCalls[0].modes, ['ndre']);
+      assert.equal(result.provider, 'copernicus_dataspace');
+      assert.equal(result.packageStatus, 'ready');
       assert.equal(result.statusesByMode.ndvi_absolute.status, 'ready');
       assert.equal(result.statusesByMode.ndmi_water_stress.status, 'ready');
-      assert.equal(result.statusesByMode.ndre.status, 'unavailable');
+      assert.equal(result.statusesByMode.ndre.status, 'ready');
     } finally {
       for (const [key, value] of Object.entries(previousEnv)) {
         if (value === undefined) delete process.env[key];
@@ -809,6 +833,45 @@ describe('SceneBandPackage generate-package', () => {
     assert.equal(result.packageStatus, 'failed');
     assert.deepEqual(Object.keys(result.layersByMode), []);
     assert.equal(result.statusesByMode.ndre.status, 'failed');
+  });
+
+  it('não repete geração por modo após falha explícita do pacote Copernicus', async () => {
+    let packageCalls = 0;
+    const service = new SoilSamplingNdviService({
+      repository: {
+        ensureSchema: async () => {},
+        findRecentCache: async () => null,
+      },
+      catalogClient: { polygonToBbox: () => [-54.48, -15.38, -54.47, -15.37] },
+      processClient: {
+        generateLayerPackage: async () => {
+          packageCalls += 1;
+          return {
+            layersByMode: {},
+            statusesByMode: {
+              ndre: {
+                status: 'failed',
+                code: 'providerError',
+                message: 'Copernicus indisponível.',
+              },
+            },
+          };
+        },
+        generateNdviLayer: async () => assert.fail('não deve refazer a mesma chamada'),
+      },
+      authClient: { isConfigured: () => true },
+    });
+    const result = await service.generateLayerPackage({
+      farmId: 'f1',
+      plotId: 'p1',
+      sceneId: 'scene-abc',
+      polygon,
+      imageDate: '2026-05-25',
+      modes: ['ndre'],
+    });
+    assert.equal(packageCalls, 1);
+    assert.equal(result.packageStatus, 'failed');
+    assert.equal(result.statusesByMode.ndre.code, 'providerError');
   });
 });
 

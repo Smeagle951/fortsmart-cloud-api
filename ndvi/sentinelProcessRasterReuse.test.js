@@ -116,10 +116,16 @@ test('raster reuse nao mistura metadata de visualModes diferentes', async () => 
     ...base,
     visualMode: 'ndmi_water_stress',
   });
+  const redEdge = await client._layerFromPersistedRaster({
+    ...base,
+    visualMode: 'ndre',
+  });
   assert.equal(contrast.visual_mode, 'ndvi_contrast');
   assert.equal(moisture.visual_mode, 'ndmi_water_stress');
   assert.notEqual(contrast.cacheTag, moisture.cacheTag);
   assert.notEqual(contrast.legend.title, moisture.legend.title);
+  assert.equal(moisture.rendererVersion, 'ndmi_water_stress_v5_absolute_cdse_20m');
+  assert.equal(redEdge.rendererVersion, 'ndre_v5_absolute_cdse_20m');
 });
 
 test('force regera a camada mas reutiliza o raster científico persistido', async () => {

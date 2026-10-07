@@ -423,6 +423,15 @@ export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast'
       pLow: at(5),
       pHigh: at(95),
       lowContrastScene: false,
+      // A escala é absoluta no CDSE. Identificar o renderizador do índice
+      // evita que o app descarte NDRE/NDMI como se fossem NDVI legado.
+      rendererVersion: mode === 'ndre'
+        ? 'ndre_v5_absolute_cdse_20m'
+        : mode === 'ndmi_water_stress'
+          ? 'ndmi_water_stress_v5_absolute_cdse_20m'
+          : mode === 'bsi_soil'
+            ? 'bsi_soil_v6_absolute_cdse_20m'
+            : null,
     };
     colorValues = maskedRawValues;
     valuesAreVisual = false;

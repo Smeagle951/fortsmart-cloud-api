@@ -1315,7 +1315,9 @@ class SoilSamplingNdviService {
           elapsedMs: Date.now() - startedAt,
           provider: 'google_earth_engine',
         });
-        if (Object.keys(layersByMode).length > 0 || packageStatus === 'unavailable') {
+        // Um pacote parcialmente pronto não encerra a solicitação: os modos
+        // ausentes ainda podem ser renderizados pelo Copernicus.
+        if (pendingModes.every((mode) => Boolean(layersByMode[mode]))) {
           return {
             scene_id: packageResult.scene_id || sceneId,
             packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
@@ -1350,17 +1352,18 @@ class SoilSamplingNdviService {
           scene: sceneId,
           modes: pendingModes,
         });
+        const copernicusModes = pendingModes.filter((mode) => !layersByMode[mode]);
         const packageResult = await this.processClient.generateLayerPackage({
           sceneId,
           polygon,
           imageDate: effectiveImageDate || normalizedImageDate || imageDate,
           farmId,
           plotId,
-          modes: pendingModes,
-          force,
+          modes: copernicusModes,
+          force: false,
         });
         await Promise.all(
-          pendingModes.map(async (mode) => {
+          copernicusModes.map(async (mode) => {
           const modeStartedAt = Date.now();
           const assets = packageResult.layersByMode?.[mode];
           if (assets) assets.resolution_kind = resolutionKind;
@@ -1435,7 +1438,13 @@ class SoilSamplingNdviService {
           }),
         );
         const packageStatus = resolvePackageStatus(layersByMode, statusesByMode);
-        if (Object.keys(layersByMode).length > 0 || packageStatus !== 'failed') {
+        // O pacote já tentou cada modo ausente e devolveu um estado explícito.
+        // Repetir imediatamente as mesmas chamadas por modo pode dobrar o
+        // tempo de espera (e continuar a processar após o timeout do app).
+        const attemptedEveryMode = copernicusModes.every(
+          (mode) => Boolean(statusesByMode[mode]),
+        );
+        if (attemptedEveryMode || Object.keys(layersByMode).length > 0) {
           return {
             scene_id: packageResult.scene_id || sceneId,
             packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
@@ -1508,8 +1517,9 @@ class SoilSamplingNdviService {
     // Fallback per-mode com concorrência limitada (evita 5 Process/GEE em série
     // e também evita saturar o provedor com 5 em paralelo).
     const fallbackConcurrency = 2;
-    for (let i = 0; i < pendingModes.length; i += fallbackConcurrency) {
-      const chunk = pendingModes.slice(i, i + fallbackConcurrency);
+    const fallbackModes = pendingModes.filter((mode) => !layersByMode[mode]);
+    for (let i = 0; i < fallbackModes.length; i += fallbackConcurrency) {
+      const chunk = fallbackModes.slice(i, i + fallbackConcurrency);
       await Promise.all(chunk.map((mode) => runModeFallback(mode)));
     }
 
