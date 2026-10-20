@@ -1,6 +1,40 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildNdviValidMask, prepareAnalysisImage } from './geeNdviEngine.js';
+import { attachCloudScorePlus, buildNdviValidMask, prepareAnalysisImage } from './geeNdviEngine.js';
+
+test('cena recente sem Cloud Score+ mantém máscara SCL sem selecionar imagem nula', () => {
+  const selected = [];
+  const cloudFallback = {
+    rename: () => cloudFallback,
+    select: (bands) => {
+      selected.push(bands);
+      return cloudFallback;
+    },
+  };
+  const image = {
+    get: () => 'recent-scene',
+    addBands: (bands) => {
+      assert.equal(bands, cloudFallback);
+      return image;
+    },
+  };
+  const gee = {
+    Image: Object.assign((value) => value, {
+      constant: () => cloudFallback,
+    }),
+    ImageCollection: () => ({ filter: () => ({ first: () => null }) }),
+    Filter: { eq: () => ({}) },
+    Algorithms: {
+      If: (candidate, match, fallback) => {
+        assert.equal(candidate, null);
+        assert.equal(match, null);
+        return fallback;
+      },
+    },
+  };
+  assert.equal(attachCloudScorePlus(gee, image), image);
+  assert.deepEqual(selected, [['cs', 'cs_cdf']]);
+});
 
 test('máscara rápida usa SCL sem solicitar cs_cdf ausente', () => {
   const requested = [];
@@ -42,15 +76,17 @@ test('preparo GEE converte copyProperties de Element para Image antes da máscar
   };
   let casts = 0;
   const gee = {
-    Image: (value) => {
+    Image: Object.assign((value) => {
+      if (value === image) return image;
       assert.equal(value.kind, 'element_without_image_methods');
       casts += 1;
       return image;
-    },
+    }, { constant: () => ({ rename: () => image }) }),
     ImageCollection: () => ({
       filter: () => ({ first: () => image }),
     }),
     Filter: { eq: () => ({}) },
+    Algorithms: { If: (_, match) => match },
   };
 
   assert.equal(prepareAnalysisImage(gee, image, { fast: true }), image);

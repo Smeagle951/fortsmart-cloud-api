@@ -637,12 +637,20 @@ function buildCombinedClearMask(gee, image) {
   );
 }
 
-function attachCloudScorePlus(gee, image) {
+export function attachCloudScorePlus(gee, image) {
   const csMatch = gee
     .ImageCollection(CLOUD_SCORE_PLUS)
     .filter(gee.Filter.eq('system:index', image.get('system:index')))
     .first();
-  return image.addBands(csMatch.select(['cs', 'cs_cdf']), ['cs', 'cs_cdf'], true);
+  // Cloud Score+ can lag behind a newly published Sentinel scene. Keep the
+  // SCL mask usable instead of evaluating Image.select on a null match.
+  const sclOnlyFallback = gee.Image.constant([1, 1]).rename(['cs', 'cs_cdf']);
+  const cloudScore = gee.Image(gee.Algorithms.If(
+    csMatch,
+    csMatch,
+    sclOnlyFallback,
+  ));
+  return image.addBands(cloudScore.select(['cs', 'cs_cdf']), ['cs', 'cs_cdf'], true);
 }
 
 function toReflectance(gee, image) {
