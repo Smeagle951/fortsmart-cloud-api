@@ -81,6 +81,14 @@ function orderPackageModes(modes) {
   });
 }
 
+export function cacheProviderMatchesPreference(cached, requireGeeProvider) {
+  if (!requireGeeProvider) return true;
+  const provider = String(
+    cached?.provider || cached?.agronomic_stats?.provenance?.provider || '',
+  ).toLowerCase();
+  return provider === 'gee' || provider === 'google_earth_engine';
+}
+
 function hashPolygonForPackage(polygon) {
   const raw = JSON.stringify(polygon?.coordinates ?? polygon ?? {});
   return createHash('sha256').update(raw).digest('hex').slice(0, 12);
@@ -917,6 +925,7 @@ class SoilSamplingNdviService {
     polygon,
     modes,
     resolutionKind,
+    requireGeeProvider = false,
   }) {
     const layersByMode = {};
     const statusesByMode = {};
@@ -940,13 +949,15 @@ class SoilSamplingNdviService {
           maxCloud,
           visualMode: mode,
         });
-        if (!cached || !isValidNdviLayerRow(cached) ||
+        const providerMatches = cacheProviderMatchesPreference(cached, requireGeeProvider);
+        if (!cached || !providerMatches || !isValidNdviLayerRow(cached) ||
             !this._cacheMatchesRequest(cached, { polygon, sceneId, mode, resolutionKind })) {
           console.log('[NDVI] render cache miss', {
             plotId,
             sceneId,
             mode,
-            reason: cached ? invalidNdviStatsReason(cached) : 'not_found',
+            reason: !cached ? 'not_found' :
+              !providerMatches ? 'provider_mismatch' : invalidNdviStatsReason(cached),
           });
           continue;
         }
@@ -1052,6 +1063,11 @@ class SoilSamplingNdviService {
     });
 
     const providerStatus = getNdviProviderStatus();
+    const requestedProvider = String(preferredProvider || '').toLowerCase();
+    const explicitlyRequestedGee =
+      requestedProvider === 'gee' || requestedProvider === 'google_earth_engine';
+    const requireGeeProvider = explicitlyRequestedGee &&
+      this._geeReady({ packageMode: true, preferredProvider });
     console.log('[NDVI_PACKAGE_BACKEND_START]', {
       farmId,
       plotId,
@@ -1119,6 +1135,7 @@ class SoilSamplingNdviService {
       polygon,
       modes: uniqueModes,
       resolutionKind,
+      requireGeeProvider,
     });
     Object.assign(layersByMode, cachedPackage.layersByMode);
     Object.assign(statusesByMode, cachedPackage.statusesByMode);
@@ -1156,10 +1173,6 @@ class SoilSamplingNdviService {
     // A prévia precisa chegar antes dos reducers e thumbnails mais caros do
     // GEE. Para NDVI básico, usa primeiro o Process API do Copernicus; a
     // versão final continua preferindo GEE e o fallback por modo permanece.
-    const requestedProvider = String(preferredProvider || '').toLowerCase();
-    const explicitlyRequestedGee =
-      requestedProvider === 'gee' ||
-      requestedProvider === 'google_earth_engine';
     const preferCopernicusFastPreview =
       !explicitlyRequestedGee &&
       ['fast', 'fastPreview'].includes(resolutionKind) &&

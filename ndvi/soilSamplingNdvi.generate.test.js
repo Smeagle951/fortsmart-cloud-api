@@ -1,7 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import SoilSamplingNdviService from './soilSamplingNdvi.service.js';
+import SoilSamplingNdviService, {
+  cacheProviderMatchesPreference,
+} from './soilSamplingNdvi.service.js';
 import createSoilSamplingNdviRouter from './soilSamplingNdvi.routes.js';
 import * as NdviResponseMapper from './ndviResponse.mapper.js';
 
@@ -24,6 +26,14 @@ const validRaster = {
   width: 64, height: 64,
 };
 const bounds = { west: -54.48, south: -15.38, east: -54.47, north: -15.37 };
+
+describe('preferência de provedor no cache', () => {
+  it('não entrega Copernicus como GEE após solicitação explícita', () => {
+    assert.equal(cacheProviderMatchesPreference({ provider: 'copernicus_dataspace' }, true), false);
+    assert.equal(cacheProviderMatchesPreference({ provider: 'google_earth_engine' }, true), true);
+    assert.equal(cacheProviderMatchesPreference({ provider: 'copernicus_dataspace' }, false), true);
+  });
+});
 
 describe('NDVI provenance and final-layer gate', () => {
   const polygonHash = createHash('sha256')

@@ -645,14 +645,14 @@ function attachCloudScorePlus(gee, image) {
   return image.addBands(csMatch.select(['cs', 'cs_cdf']), ['cs', 'cs_cdf'], true);
 }
 
-function toReflectance(image) {
+function toReflectance(gee, image) {
   const optical = image
     .select(['B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B11', 'B12'])
     .multiply(REFLECTANCE_SCALE);
-  return optical
+  return gee.Image(optical
     .addBands(image.select('SCL'), null, true)
     .addBands(image.select(['cs', 'cs_cdf']), ['cs', 'cs_cdf'], true)
-    .copyProperties(image, image.propertyNames());
+    .copyProperties(image, image.propertyNames()));
 }
 
 /**
@@ -662,18 +662,18 @@ function toReflectance(image) {
  * 3) reflectância 0.0001 nas bandas ópticas.
  * Fast: só B4/B8/SCL — sem Cloud Score+ (muito mais rápido para preview).
  */
-function prepareAnalysisImage(gee, image, { fast = false } = {}) {
+export function prepareAnalysisImage(gee, image, { fast = false } = {}) {
   if (fast) {
     const optical = image
       .select(['B4', 'B8'])
       .multiply(REFLECTANCE_SCALE);
-    const withScl = optical
+    const withScl = gee.Image(optical
       .addBands(image.select('SCL'), null, true)
-      .copyProperties(image, image.propertyNames());
+      .copyProperties(image, image.propertyNames()));
     return withScl.updateMask(buildSclValidMask(image));
   }
   const withCs = attachCloudScorePlus(gee, image);
-  const reflectance = toReflectance(withCs);
+  const reflectance = toReflectance(gee, withCs);
   return reflectance.updateMask(buildCombinedClearMask(gee, withCs));
 }
 
@@ -925,13 +925,13 @@ function sentinelCollection(gee, { geometry, startDate, endDate, maxCloud }) {
   return linked
     .map((image) => {
       const clear = buildCombinedClearMask(gee, image);
-      return image
+      return gee.Image(image
         .updateMask(clear)
         .copyProperties(image, [
           'system:time_start',
           'system:index',
           'CLOUDY_PIXEL_PERCENTAGE',
-        ]);
+        ]));
     })
     // Preferência: cena individual com menos nuvem na metadata; scoring fino no polígono depois.
     .sort('CLOUDY_PIXEL_PERCENTAGE')
