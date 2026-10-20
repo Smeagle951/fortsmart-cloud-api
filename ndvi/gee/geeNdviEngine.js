@@ -1,6 +1,8 @@
 import { storeNdviPreviewPng } from '../ndviPreviewStorage.js';
 import { NDVI_ENGINE_VERSION } from '../sentinelNdviReliability.js';
 import { validateRasterResult } from '../validateRasterResult.js';
+import { PNG } from 'pngjs';
+import { colorBucketsFromRgbaPixels } from '../ndviColormap.js';
 
 const DATASET = 'COPERNICUS/S2_SR_HARMONIZED';
 const CLOUD_SCORE_PLUS = 'GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED';
@@ -1645,6 +1647,24 @@ function visualizationFor({ mode = VISUAL_MODES.NDVI_CONTRAST, stats = {} } = {}
   };
 }
 
+export function attachPreviewColorBuckets(stats, pngBuffer, mode) {
+  if (mode !== VISUAL_MODES.NDVI_CONTRAST || !pngBuffer?.length) return;
+  try {
+    const png = PNG.sync.read(pngBuffer);
+    const colorBuckets = colorBucketsFromRgbaPixels(png.data);
+    if (!colorBuckets) return;
+    stats.contrast = {
+      ...(stats.contrast || {}),
+      colorBuckets,
+    };
+    Object.assign(stats, colorBuckets);
+  } catch (error) {
+    console.warn('[NDVI_GEE_COLOR_BUCKETS_UNAVAILABLE]', {
+      reason: error?.message || String(error),
+    });
+  }
+}
+
 async function downloadPng(url, fetchImpl, { timeoutMs = 90_000 } = {}) {
   const response = await fetchImpl(url, {
     method: 'GET',
@@ -2168,6 +2188,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         thumbSizes: thumbSizesToUse,
       });
       const pngBuffer = renderedPng.buffer;
+      attachPreviewColorBuckets(stats, pngBuffer, mode);
       const rasterValidation = validateRasterResult({
         image: pngBuffer,
         polygon,
@@ -2744,6 +2765,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
               thumbSizes: packageThumbSizesToUse,
             });
             const pngBuffer = renderedPng.buffer;
+            attachPreviewColorBuckets(stats, pngBuffer, mode);
             const rasterValidation = validateRasterResult({
               image: pngBuffer,
               polygon,

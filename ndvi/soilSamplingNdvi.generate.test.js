@@ -54,7 +54,7 @@ describe('NDVI provenance and final-layer gate', () => {
         sceneId: 'scene-abc', mode: 'ndvi_absolute',
         acquisitionDate: '2026-05-25',
         provider: 'google_earth_engine', resolutionM: 10,
-        resolutionKind: 'final', algorithmVersion: 'layer_pipeline_v3_nodata_temporal_mosaic',
+        resolutionKind: 'final', algorithmVersion: 'layer_pipeline_v4_relative_contrast',
         polygonHash, bounds,
       },
     },

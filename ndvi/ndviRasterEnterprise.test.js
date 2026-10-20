@@ -265,7 +265,7 @@ test('generatePreviewFromRaster NDRE com valores baixos pinta vermelho/amarelo, 
   );
 });
 
-test('generatePreviewFromRaster solo nu não pinta verde/amarelo falso no contraste', () => {
+test('generatePreviewFromRaster mantém diferenças relativas em superfície de baixo NDVI', () => {
   const raster = syntheticGrid(8, 8);
   for (let i = 0; i < raster.bands.ndvi.length; i += 1) {
     raster.bands.ndvi[i] = 0.10 + (i / (raster.bands.ndvi.length - 1)) * 0.04;
@@ -274,24 +274,14 @@ test('generatePreviewFromRaster solo nu não pinta verde/amarelo falso no contra
     serializeInternalGridDocument(raster).buffer,
   );
   const out = generatePreviewFromRaster({ raster: loaded, visualMode: 'ndvi_contrast' });
-  assert.equal(out.contrast.lowContrastScene, true);
+  assert.equal(out.contrast.lowBiomassSurface, true);
+  assert.equal(out.contrast.lowContrastScene, false);
+  assert.equal(out.contrast.stretchMode, 'p5_p95');
 
-  const png = PNG.sync.read(out.buffer);
-  let greenPixels = 0;
-  let visiblePixels = 0;
-  for (let i = 0; i < png.data.length; i += 4) {
-    if (png.data[i + 3] < 40) continue;
-    visiblePixels += 1;
-    const r = png.data[i];
-    const g = png.data[i + 1];
-    const b = png.data[i + 2];
-    if (g > r + 25 && g > b + 10) greenPixels += 1;
-  }
-  assert.ok(visiblePixels > 0);
-  assert.ok(
-    greenPixels / visiblePixels < 0.15,
-    `solo nu não deve ser majoritariamente verde (${greenPixels}/${visiblePixels})`,
-  );
+  const buckets = out.contrast.colorBuckets;
+  const activeBuckets = Object.values(buckets).filter((value) => value > 0);
+  assert.ok(activeBuckets.length >= 4, JSON.stringify(buckets));
+  assert.ok(Number(buckets.redPercent) < 80, JSON.stringify(buckets));
 });
 
 test('generatePreviewFromRaster contraste em cena homogênea cobre o talhão inteiro', () => {
@@ -308,7 +298,7 @@ test('generatePreviewFromRaster contraste em cena homogênea cobre o talhão int
     coordinates: [[[west, south], [east, south], [east, north], [west, north], [west, south]]],
   };
   const out = generatePreviewFromRaster({ raster: loaded, visualMode: 'ndvi_contrast', polygon });
-  assert.equal(out.contrast.lowContrastScene, true);
+  assert.equal(out.contrast.lowContrastScene, false);
 
   const png = PNG.sync.read(out.buffer);
   let opaque = 0;

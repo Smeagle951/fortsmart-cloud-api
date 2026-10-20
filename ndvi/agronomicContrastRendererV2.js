@@ -4,7 +4,7 @@ import {
 } from './ndviContrastEngine.js';
 import { bilinearUpscale } from './ndviSpatialSmoothing.js';
 
-const RENDERER_VERSION = 'agronomic_contrast_v9_nodata_temporal_mosaic';
+const RENDERER_VERSION = 'agronomic_contrast_v10_relative_low_biomass';
 
 function finiteNdviValues(values) {
   return Array.isArray(values)
@@ -31,33 +31,30 @@ function std(values) {
 
 const LOW_BIOMASS_MEAN_MAX = 0.30;
 const LOW_BIOMASS_P95_MAX = 0.40;
+const MIN_ROBUST_RELATIVE_SPAN = 0.01;
 
 function resolveStretch(percentiles) {
   const p5 = Number(percentiles.p5);
   const p50 = Number(percentiles.p50);
   const p95 = Number(percentiles.p95);
   const mean = Number(percentiles.mean ?? p50);
-  if (
+  const lowBiomassSurface =
     Number.isFinite(mean) &&
     mean < LOW_BIOMASS_MEAN_MAX &&
     Number.isFinite(p95) &&
-    p95 < LOW_BIOMASS_P95_MAX
+    p95 < LOW_BIOMASS_P95_MAX;
+  if (
+    Number.isFinite(p5) &&
+    Number.isFinite(p95) &&
+    p95 - p5 >= MIN_ROBUST_RELATIVE_SPAN
   ) {
-    return {
-      pLow: -0.1,
-      pHigh: 0.5,
-      stretchMode: 'low_biomass_absolute',
-      lowContrastScene: true,
-      usedLowContrastFallback: true,
-    };
-  }
-  if (Number.isFinite(p5) && Number.isFinite(p95) && p95 - p5 >= 0.01) {
     return {
       pLow: p5,
       pHigh: p95,
       stretchMode: 'p5_p95',
       lowContrastScene: false,
       usedLowContrastFallback: false,
+      lowBiomassSurface,
     };
   }
   const center = Number.isFinite(p50) ? p50 : Number(percentiles.mean ?? 0.5);
@@ -67,6 +64,7 @@ function resolveStretch(percentiles) {
     stretchMode: 'mean_window_0_06',
     lowContrastScene: true,
     usedLowContrastFallback: true,
+    lowBiomassSurface,
   };
 }
 
@@ -123,9 +121,13 @@ export function renderAgronomicContrastV2({
     const n = Number(value);
     return Number.isFinite(n) && n >= -1 && n <= 1 ? n : null;
   });
-  const stretched = sourceValues.map((value) =>
-    value == null ? null : applyContrastStretch(value, stretch.pLow, stretch.pHigh),
-  );
+  const stretched = sourceValues.map((value) => {
+    if (value == null) return null;
+    // Sem amplitude robusta, uma classe neutra é mais fiel do que amplificar
+    // ruído e fabricar extremos relativos vermelhos/verdes.
+    if (stretch.usedLowContrastFallback) return 0.55;
+    return applyContrastStretch(value, stretch.pLow, stretch.pHigh);
+  });
   const visualValues = stretched.map((value) =>
     value == null ? null : round(Math.pow(value, gamma), 4),
   );
@@ -144,6 +146,7 @@ export function renderAgronomicContrastV2({
     pLow: round(stretch.pLow, 4),
     pHigh: round(stretch.pHigh, 4),
     usedLowContrastFallback: stretch.usedLowContrastFallback,
+    lowBiomassSurface: stretch.lowBiomassSurface,
     rendererVersion: RENDERER_VERSION,
     gamma,
     equalization: {

@@ -36,7 +36,7 @@ import { isCdseSurfaceCoverMode } from './ndviSurfaceCoverCore.js';
 import { loadInternalGrid } from './ndviRasterStore.js';
 import { RASTER_SCHEMA_NUM } from './ndviRasterSerializer.js';
 
-const LAYER_PIPELINE_ALGORITHM_VERSION = 'layer_pipeline_v3_nodata_temporal_mosaic';
+const LAYER_PIPELINE_ALGORITHM_VERSION = 'layer_pipeline_v4_relative_contrast';
 
 function normalizeImageDate(value) {
   if (value == null) return null;

@@ -1,4 +1,4 @@
-export const NDVI_ENGINE_VERSION = 'sentinel_ndvi_reliable_v3';
+export const NDVI_ENGINE_VERSION = 'sentinel_ndvi_reliable_v4_relative_legend';
 
 export function normalizeReflectance(value) {
   const n = Number(value);

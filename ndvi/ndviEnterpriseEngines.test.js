@@ -106,7 +106,7 @@ test('renderer v2 gera múltiplos buckets e preserva stats brutos', () => {
     height: 10,
     visualMode: 'ndvi_contrast',
   });
-  assert.equal(rendered.contrast.rendererVersion, 'agronomic_contrast_v9_nodata_temporal_mosaic');
+  assert.equal(rendered.contrast.rendererVersion, 'agronomic_contrast_v10_relative_low_biomass');
   assert.equal(values[0], before[0]);
   assert.equal(values.at(-1), before.at(-1));
   const activeBuckets = Object.values(rendered.contrast.colorBuckets).filter((v) => v > 0);
@@ -126,6 +126,24 @@ test('renderer v2 marca lowContrastScene quando range é muito baixo', () => {
   assert.ok(Math.min(...rendered.visualValues.filter(Number.isFinite)) >= 0);
   assert.ok(Math.max(...rendered.visualValues.filter(Number.isFinite)) <= 1);
   assert.equal(rendered.contrast.equalization.enabled, false);
+});
+
+test('renderer mantém contraste relativo em baixa biomassa com amplitude real', () => {
+  const values = Array.from({ length: 100 }, (_, i) => 0.02 + (i / 99) * 0.24);
+  const rendered = renderAgronomicContrastV2({
+    values,
+    width: 10,
+    height: 10,
+    visualMode: 'ndvi_contrast',
+  });
+
+  assert.equal(rendered.contrast.lowBiomassSurface, true);
+  assert.equal(rendered.contrast.lowContrastScene, false);
+  assert.equal(rendered.contrast.usedLowContrastFallback, false);
+  assert.equal(rendered.contrast.stretchMode, 'p5_p95');
+  const activeBuckets = Object.values(rendered.contrast.colorBuckets)
+    .filter((value) => value > 0);
+  assert.ok(activeBuckets.length >= 5);
 });
 
 test('renderer contraste usa percentis internos para normalizar visual', () => {

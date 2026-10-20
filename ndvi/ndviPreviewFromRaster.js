@@ -396,18 +396,13 @@ export function generatePreviewFromRaster({ raster, visualMode = 'ndvi_contrast'
       visualMode: mode,
     });
     contrast = rendered.contrast;
-    // Cena homogênea / baixa biomassa: usar NDVI bruto com escala absoluta.
-    // visualValues esticados (0–1) + colormap absoluto geravam verde/amarelo falso.
-    const useRawNdviForColor =
-      contrast?.lowContrastScene === true ||
-      contrast?.usedLowContrastFallback === true;
-    colorValues = useRawNdviForColor ? maskedRawValues : rendered.visualValues;
-    valuesAreVisual = !useRawNdviForColor;
-    // visualValues vêm reamostrados (upscale); o NDVI bruto mantém a grade
-    // original. Dimensão do PNG precisa casar com o array colorido, senão só
-    // a faixa superior do talhão recebe cor (INSUFFICIENT_COVERAGE).
-    outWidth = useRawNdviForColor ? width : rendered.width || width;
-    outHeight = useRawNdviForColor ? height : rendered.height || height;
+    // Contraste é sempre relativo à distribuição do talhão. Baixa biomassa é
+    // uma interpretação do NDVI físico, não autorização para trocar
+    // silenciosamente a camada solicitada por uma escala absoluta.
+    colorValues = rendered.visualValues;
+    valuesAreVisual = true;
+    outWidth = rendered.width || width;
+    outHeight = rendered.height || height;
   } else if (isAbsoluteIndexVisualMode(mode)) {
     // NDRE/NDMI/BSI/SAVI: colorir índice bruto com limiares absolutos.
     // NÃO reaplicar stretch relativo (isso pintava NDRE ~0,17 de verde chapado).

@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { attachCloudScorePlus, buildNdviValidMask, prepareAnalysisImage } from './geeNdviEngine.js';
+import { PNG } from 'pngjs';
+import {
+  attachCloudScorePlus,
+  attachPreviewColorBuckets,
+  buildNdviValidMask,
+  prepareAnalysisImage,
+} from './geeNdviEngine.js';
+import { ndviToPreviewRgb } from '../ndviColormap.js';
 
 test('cena recente sem Cloud Score+ mantém máscara SCL sem selecionar imagem nula', () => {
   const selected = [];
@@ -92,4 +99,33 @@ test('preparo GEE converte copyProperties de Element para Image antes da máscar
   assert.equal(prepareAnalysisImage(gee, image, { fast: true }), image);
   assert.equal(prepareAnalysisImage(gee, image), image);
   assert.equal(casts, 2);
+});
+
+test('preview GEE publica buckets relativos calculados da mesma imagem exibida', () => {
+  const values = [0.12, 0.35, 0.5, 0.65, 0.8, 0.95];
+  const png = new PNG({ width: values.length, height: 1 });
+  values.forEach((value, index) => {
+    const rgb = ndviToPreviewRgb(value, { mode: 'relative', vmin: 0, vmax: 1 });
+    const offset = index * 4;
+    png.data[offset] = Math.round(rgb[0] * 255);
+    png.data[offset + 1] = Math.round(rgb[1] * 255);
+    png.data[offset + 2] = Math.round(rgb[2] * 255);
+    png.data[offset + 3] = 255;
+  });
+  const stats = { contrast: { p5: 0.02, p50: 0.14, p95: 0.24 } };
+
+  attachPreviewColorBuckets(
+    stats,
+    PNG.sync.write(png),
+    'ndvi_contrast',
+  );
+
+  const buckets = stats.contrast.colorBuckets;
+  assert.ok(buckets);
+  assert.equal(
+    Object.values(buckets).reduce((sum, value) => sum + value, 0),
+    100.2,
+  );
+  assert.deepEqual(stats.redPercent, buckets.redPercent);
+  assert.ok(Object.values(buckets).every((value) => value > 0));
 });
