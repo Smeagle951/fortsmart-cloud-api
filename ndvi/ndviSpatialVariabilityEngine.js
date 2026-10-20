@@ -10,7 +10,8 @@ function round(value, digits = 3) {
 
 function entropyFromValues(values, bins = 16) {
   const valid = Array.isArray(values)
-    ? values.map(Number).filter((value) => Number.isFinite(value))
+    ? values.filter((value) => value != null).map(Number)
+      .filter((value) => Number.isFinite(value))
     : [];
   if (!valid.length) return null;
   const min = Math.min(...valid);
@@ -52,7 +53,8 @@ export function buildNdviSpatialMetrics(stats = {}, values = null) {
   const coefficientOfVariation =
     std != null && mean != null && Math.abs(mean) > 1e-6 ? std / Math.abs(mean) : null;
   const valid = Array.isArray(values)
-    ? values.map(Number).filter((value) => Number.isFinite(value))
+    ? values.filter((value) => value != null).map(Number)
+      .filter((value) => Number.isFinite(value))
     : null;
   const percentBelowP25 =
     valid?.length && p25 != null

@@ -98,6 +98,22 @@ describe('ndviPolygonMask', () => {
     assert.equal(result.values.filter((value) => value != null).length, 1);
   });
 
+  it('pixels sem dado permanecem transparentes e não viram NDVI zero', () => {
+    const polygon = {
+      type: 'Polygon',
+      coordinates: [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
+    };
+    const result = maskValuesToPolygon({
+      values: [null, 0.6, NaN, 0.8],
+      width: 2,
+      height: 2,
+      bounds: { west: 0, south: 0, east: 1, north: 1 },
+      polygon,
+    });
+    assert.deepEqual(result.values, [null, 0.6, null, 0.8]);
+    assert.equal(result.maskStats.validPixels, 2);
+  });
+
   it('applyInnerPixelBufferToValues remove borda das estatísticas', () => {
     const values = [
       0.1, 0.1, 0.1, 0.1, 0.1,

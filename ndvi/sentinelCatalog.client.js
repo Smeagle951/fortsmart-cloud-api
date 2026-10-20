@@ -68,11 +68,14 @@ class SentinelCatalogClient {
     maxCloud = 20,
   }) {
     const needsAuth = !this.isPublicStac;
-    if (
-      this.enableDevMock ||
-      (needsAuth && !this.authClient?.isConfigured())
-    ) {
+    if (this.enableDevMock) {
       return this._mockScenes({ startDate, endDate, maxCloud });
+    }
+    if (needsAuth && !this.authClient?.isConfigured()) {
+      const err = new Error('Copernicus CDSE não configurado para busca de cenas');
+      err.code = 'cdse_not_configured';
+      err.status = 503;
+      throw err;
     }
 
     const bbox = this.polygonToBbox(polygon);

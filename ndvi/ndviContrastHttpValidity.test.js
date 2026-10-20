@@ -2,11 +2,15 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import * as NdviResponseMapper from './ndviResponse.mapper.js';
 import {
+  contrastIsComplete,
   layerMeetsContrastContract,
   validateNdviContrastHttpResponse,
 } from './ndviContrastHttpValidity.js';
 
 describe('ndviContrastHttpValidity', () => {
+  it('rejeita percentis nulos em vez de convertê-los para zero', () => {
+    assert.equal(contrastIsComplete({ p5: null, p50: null, p95: null }), false);
+  });
   it('422 quando layer legacy sem contrast', () => {
     const layer = {
       layer_id: 'a',

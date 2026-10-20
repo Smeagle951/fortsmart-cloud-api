@@ -46,6 +46,7 @@ export function isLowBiomassSurfaceContrast(layer) {
 }
 
 function isFiniteNumber(value) {
+  if (value == null || value === '') return false;
   return Number.isFinite(Number(value));
 }
 

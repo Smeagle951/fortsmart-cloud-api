@@ -9,6 +9,20 @@ const INPUT_BANDS_FULL =
 /** NDVI V1: apenas o necessário para (B8−B4)/(B8+B4) + máscara. */
 const INPUT_BANDS_NDVI_ONLY = '["B04","B08","SCL","dataMask"]';
 
+// Composição temporal: escolher, por pixel, a primeira observação clara.
+// SIMPLE escolhe uma única cena e deixa buracos no talhão mesmo quando outra
+// passagem Sentinel no período contém o pixel válido.
+const TILE_MOSAIC_HELPERS = `
+function selectClearSample(samples){
+  for(let i=0;i<samples.length;i++){
+    const s=samples[i];
+    if(s.dataMask!==0 && [4,5,7].indexOf(s.SCL)>=0 &&
+       isFinite(s.B04) && isFinite(s.B08) && s.B04+s.B08>0) return s;
+  }
+  return null;
+}
+`;
+
 const NDVI_ONLY_HELPERS = `
 function normalizeReflectance(v){if(!isFinite(v))return NaN;return v>2?v/10000:v;}
 function safeDiv(a,b){return Math.abs(b)<0.000001?NaN:a/b;}
@@ -74,13 +88,15 @@ function colorForClass(cid){
 `;
 
 /** NDVI V1 — PNG stats com B04+B08+SCL apenas. R=NDVI, G=classe simples, B=0. */
-export function buildNdviOnlyPackedStatsEvalscript() {
+export function buildNdviOnlyPackedStatsEvalscript({ mosaicTiles = false } = {}) {
   return `//VERSION=3
 ${NDVI_ONLY_HELPERS}
+${mosaicTiles ? TILE_MOSAIC_HELPERS : ''}
 function setup(){
-  return {input:${INPUT_BANDS_NDVI_ONLY},output:{bands:4,sampleType:'AUTO'}};
+  return {input:${INPUT_BANDS_NDVI_ONLY},output:{bands:4,sampleType:'AUTO'}${mosaicTiles ? ",mosaicking:'TILE'" : ''}};
 }
-function evaluatePixel(sample){
+function evaluatePixel(${mosaicTiles ? 'samples' : 'sample'}){
+  ${mosaicTiles ? 'const sample=selectClearSample(samples);if(!sample)return [0,0,0,0];' : ''}
   if(sample.dataMask===0) return [0,0,0,0];
   const n=ndvi(sample);
   if(!isFinite(n)) return [0,0,0,0];
@@ -103,13 +119,15 @@ export function isNdviOnlyVisualMode(mode) {
 }
 
 /** PNG stats: R=NDVI, G=classe, B=NDRE (pacote completo — legado/avançado). */
-export function buildAgronomicPackedStatsEvalscript() {
+export function buildAgronomicPackedStatsEvalscript({ mosaicTiles = false } = {}) {
   return `//VERSION=3
 ${INDEX_HELPERS}
+${mosaicTiles ? TILE_MOSAIC_HELPERS : ''}
 function setup(){
-  return {input:${INPUT_BANDS_FULL},output:{bands:4,sampleType:'AUTO'}};
+  return {input:${INPUT_BANDS_FULL},output:{bands:4,sampleType:'AUTO'}${mosaicTiles ? ",mosaicking:'TILE'" : ''}};
 }
-function evaluatePixel(sample){
+function evaluatePixel(${mosaicTiles ? 'samples' : 'sample'}){
+  ${mosaicTiles ? 'const sample=selectClearSample(samples);if(!sample)return [0,0,0,0];' : ''}
   if(sample.dataMask===0) return [0,0,0,0];
   const n=ndvi(sample);
   if(!isFinite(n)) return [0,0,0,0];
@@ -124,13 +142,15 @@ function evaluatePixel(sample){
 }
 
 /** PNG índices: R=SAVI, G=BSI, B=NDMI */
-export function buildIndicesPackedStatsEvalscript() {
+export function buildIndicesPackedStatsEvalscript({ mosaicTiles = false } = {}) {
   return `//VERSION=3
 ${INDEX_HELPERS}
+${mosaicTiles ? TILE_MOSAIC_HELPERS : ''}
 function setup(){
-  return {input:${INPUT_BANDS_FULL},output:{bands:4,sampleType:'AUTO'}};
+  return {input:${INPUT_BANDS_FULL},output:{bands:4,sampleType:'AUTO'}${mosaicTiles ? ",mosaicking:'TILE'" : ''}};
 }
-function evaluatePixel(sample){
+function evaluatePixel(${mosaicTiles ? 'samples' : 'sample'}){
+  ${mosaicTiles ? 'const sample=selectClearSample(samples);if(!sample)return [0,0,0,0];' : ''}
   if(sample.dataMask===0) return [0,0,0,0];
   const cid=classify(sample);
   if(cid===0 || cid===1) return [0,0,0,0];

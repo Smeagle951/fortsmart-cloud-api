@@ -6,7 +6,9 @@ export function medianFilter3x3(values, width, height) {
       const neighbors = [];
       for (let yy = Math.max(0, y - 1); yy <= Math.min(height - 1, y + 1); yy += 1) {
         for (let xx = Math.max(0, x - 1); xx <= Math.min(width - 1, x + 1); xx += 1) {
-          const value = Number(values[yy * width + xx]);
+          const raw = values[yy * width + xx];
+          if (raw == null) continue;
+          const value = Number(raw);
           if (Number.isFinite(value)) neighbors.push(value);
         }
       }
@@ -38,10 +40,15 @@ export function bilinearUpscale(values, width, height, factor = 4) {
       const x0 = Math.floor(gx);
       const x1 = Math.min(width - 1, x0 + 1);
       const tx = gx - x0;
-      const v00 = Number(at(x0, y0));
-      const v10 = Number(at(x1, y0));
-      const v01 = Number(at(x0, y1));
-      const v11 = Number(at(x1, y1));
+      const raw00 = at(x0, y0);
+      const raw10 = at(x1, y0);
+      const raw01 = at(x0, y1);
+      const raw11 = at(x1, y1);
+      if ([raw00, raw10, raw01, raw11].some((value) => value == null)) continue;
+      const v00 = Number(raw00);
+      const v10 = Number(raw10);
+      const v01 = Number(raw01);
+      const v11 = Number(raw11);
       if (![v00, v10, v01, v11].every(Number.isFinite)) continue;
       out[y * outWidth + x] =
         v00 * (1 - tx) * (1 - ty) +

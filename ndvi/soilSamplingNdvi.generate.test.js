@@ -44,7 +44,7 @@ describe('NDVI provenance and final-layer gate', () => {
         sceneId: 'scene-abc', mode: 'ndvi_absolute',
         acquisitionDate: '2026-05-25',
         provider: 'google_earth_engine', resolutionM: 10,
-        resolutionKind: 'final', algorithmVersion: 'layer_pipeline_v2_geometry_qa',
+        resolutionKind: 'final', algorithmVersion: 'layer_pipeline_v3_nodata_temporal_mosaic',
         polygonHash, bounds,
       },
     },
@@ -54,6 +54,14 @@ describe('NDVI provenance and final-layer gate', () => {
     const query = { polygon, sceneId: 'scene-abc', mode: 'ndvi_absolute',
       resolutionKind: 'final' };
     assert.equal(service._cacheMatchesRequest(row, query), true);
+    assert.equal(service._cacheMatchesRequest({
+      ...row,
+      agronomic_stats: {
+        ...row.agronomic_stats,
+        provenance: { ...row.agronomic_stats.provenance,
+          algorithmVersion: 'layer_pipeline_v2_geometry_qa' },
+      },
+    }, query), false);
     assert.equal(service._cacheMatchesRequest({ agronomic_stats: {} }, query), false);
     assert.equal(service._cacheMatchesRequest(row, {
       ...query, resolutionKind: 'preview',
@@ -621,7 +629,7 @@ describe('SceneBandPackage generate-package', () => {
     process.env.GEE_ALLOW_USAGE = 'true';
     delete process.env.GEE_ENABLED;
     process.env.GEE_CLIENT_EMAIL = 'gee@example.com';
-    process.env.GEE_PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\\ntest\\n-----END PRIVATE KEY-----';
+    process.env.GEE_PRIVATE_KEY = 'test-private-key-not-a-secret';
 
     const geeCalls = [];
     const copernicusCalls = [];
@@ -793,10 +801,99 @@ describe('SceneBandPackage generate-package', () => {
 
     assert.equal(copernicusCalls, 1);
     assert.equal(geeCalls, 0);
-    assert.deepEqual(copernicusModes, ['ndvi_contrast', 'ndvi_absolute']);
+    assert.deepEqual(copernicusModes, ['ndvi_absolute']);
     assert.equal(result.provider, 'copernicus_dataspace');
     assert.equal(result.layersByMode.ndvi_absolute.layerStatus, 'PREVIEW_READY');
-    assert.equal(result.layersByMode.ndvi_contrast.layerStatus, 'PREVIEW_READY');
+    assert.equal(result.layersByMode.ndvi_contrast, undefined);
+  });
+
+  it('respeita GEE explícito na prévia rápida e renderiza somente o contraste', async () => {
+    const previousEnv = {
+      NDVI_PACKAGE_PROVIDER: process.env.NDVI_PACKAGE_PROVIDER,
+      GEE_ALLOW_USAGE: process.env.GEE_ALLOW_USAGE,
+      GEE_ENABLED: process.env.GEE_ENABLED,
+      GEE_CLIENT_EMAIL: process.env.GEE_CLIENT_EMAIL,
+      GEE_PRIVATE_KEY: process.env.GEE_PRIVATE_KEY,
+    };
+    process.env.NDVI_PACKAGE_PROVIDER = 'gee';
+    process.env.GEE_ALLOW_USAGE = 'true';
+    process.env.GEE_ENABLED = 'true';
+    process.env.GEE_CLIENT_EMAIL = 'gee@example.com';
+    process.env.GEE_PRIVATE_KEY = 'test-private-key-not-a-secret';
+
+    let copernicusCalls = 0;
+    const geeCalls = [];
+    try {
+      const service = new SoilSamplingNdviService({
+        repository: {
+          ensureSchema: async () => {},
+          findRecentCache: async () => null,
+          upsertLayer: async (data) => ({ ...data, id: 'gee-fast-layer' }),
+        },
+        catalogClient: {
+          polygonToBbox: () => [-54.48, -15.38, -54.47, -15.37],
+        },
+        geeClient: {
+          isImplemented: () => true,
+          generateLayerPackage: async (params) => {
+            geeCalls.push(params);
+            return {
+              scene_id: params.sceneId,
+              provider: 'google_earth_engine',
+              layersByMode: {
+                ndvi_contrast: {
+                  preview_url: 'https://cdn.example/gee-contrast.png',
+                  ndvi_mean: 0.52,
+                  ndvi_min: 0.15,
+                  ndvi_max: 0.82,
+                  very_low_percent: 10,
+                  low_percent: 20,
+                  medium_percent: 40,
+                  high_percent: 30,
+                  contrast,
+                  visual_mode: 'ndvi_contrast',
+                  raster_validation: validRaster,
+                  bounds,
+                  status: 'generated',
+                },
+              },
+              statusesByMode: {},
+            };
+          },
+        },
+        processClient: {
+          generateLayerPackage: async () => {
+            copernicusCalls += 1;
+            throw new Error('Copernicus não deve anteceder GEE explícito');
+          },
+        },
+        authClient: { isConfigured: () => true },
+      });
+
+      const result = await service.generateLayerPackage({
+        farmId: 'f1',
+        plotId: 'p1',
+        campaignId: '16',
+        sceneId: 'scene-fast-gee',
+        polygon,
+        imageDate: '2026-06-08',
+        modes: ['ndvi_contrast'],
+        resolutionKind: 'fastPreview',
+        preferredProvider: 'gee',
+      });
+
+      assert.equal(geeCalls.length, 1);
+      assert.deepEqual(geeCalls[0].modes, ['ndvi_contrast']);
+      assert.equal(copernicusCalls, 0);
+      assert.equal(result.provider, 'google_earth_engine');
+      assert.equal(result.layersByMode.ndvi_contrast.layerStatus, 'PREVIEW_READY');
+      assert.equal(result.layersByMode.ndvi_absolute, undefined);
+    } finally {
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   it('marca pacote como failed quando nenhum modo fica pronto', async () => {
@@ -889,7 +986,7 @@ describe('SoilSamplingNdviService.searchScenes', () => {
     process.env.GEE_ALLOW_USAGE = 'true';
     process.env.GEE_CLIENT_EMAIL = 'gee@example.com';
     process.env.GEE_PRIVATE_KEY =
-      '-----BEGIN PRIVATE KEY-----\\ntest\\n-----END PRIVATE KEY-----';
+      'test-private-key-not-a-secret';
 
     try {
       const service = new SoilSamplingNdviService({

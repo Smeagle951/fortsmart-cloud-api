@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { runInNewContext } from 'node:vm';
 import { PNG } from 'pngjs';
 
 import {
@@ -12,6 +13,8 @@ import {
   RASTER_SCHEMA_VERSION,
 } from './ndviRasterSerializer.js';
 import { generatePreviewFromRaster } from './ndviPreviewFromRaster.js';
+import { buildNdviOnlyPackedStatsEvalscript } from './ndviAgronomicEvalscript.js';
+import SentinelProcessClient from './sentinelProcess.client.js';
 import {
   scientificRasterCacheKey,
   visualPreviewCacheKey,
@@ -95,6 +98,42 @@ test('generatePreviewFromRaster produz PNG sem Sentinel', () => {
   assert.equal(out.sourceContext.statsRecomputed, true);
   assert.equal(out.sourceContext.cloudMaskVersion, 'scl_v2');
   assert.equal(out.sourceContext.statsVersion, 'stats_v2_inner_pixel_buffer');
+});
+
+test('preview com nuvens não transforma nodata em cor nem em estatística', () => {
+  const raster = syntheticGrid(8, 8);
+  for (let i = 0; i < 32; i += 1) raster.bands.valid_mask[i] = 0;
+  const out = generatePreviewFromRaster({ raster, visualMode: 'ndvi_contrast' });
+  const png = PNG.sync.read(out.buffer);
+  const visible = Array.from({ length: png.width * png.height }, (_, i) =>
+    png.data[i * 4 + 3] >= 128).filter(Boolean).length;
+  assert.equal(out.stats.validPixelCount, 32);
+  assert.ok(visible < png.width * png.height);
+  assert.ok(out.stats.ndvi_min > 0.3);
+});
+
+test('fallback temporal escolhe observação clara por pixel, sem pedir cultura', () => {
+  const script = buildNdviOnlyPackedStatsEvalscript({ mosaicTiles: true });
+  assert.match(script, /mosaicking:'TILE'/);
+  assert.match(script, /selectClearSample\(samples\)/);
+  assert.match(script, /\[4,5,7\]/);
+  assert.doesNotMatch(script, /cropId|cultura|plantingId/);
+  const choosePixel = runInNewContext(`${script}\nevaluatePixel`);
+  const cloud = { B04: 0.1, B08: 0.5, SCL: 9, dataMask: 1 };
+  const clear = { B04: 0.1, B08: 0.5, SCL: 4, dataMask: 1 };
+  assert.equal(choosePixel([cloud, clear])[3], 1);
+  assert.deepEqual(Array.from(choosePixel([cloud])), [0, 0, 0, 0]);
+});
+
+test('Copernicus sem credenciais falha explicitamente, sem imagem fictícia', async () => {
+  const client = new SentinelProcessClient({
+    authClient: { isConfigured: () => false },
+    enableDevMock: false,
+  });
+  await assert.rejects(
+    client.generateNdviLayer({ imageDate: '2026-09-16' }),
+    (error) => error.code === 'cdse_not_configured' && error.status === 503,
+  );
 });
 
 test('generatePreviewFromRaster recalcula stats completas no reuse de raster', () => {

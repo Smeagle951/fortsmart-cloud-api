@@ -42,7 +42,8 @@ function percentile(sorted, p) {
 
 function statsForValues(values) {
   const valid = Array.isArray(values)
-    ? values.map(Number).filter((value) => Number.isFinite(value) && value >= -1 && value <= 1)
+    ? values.filter((value) => value != null).map(Number)
+      .filter((value) => Number.isFinite(value) && value >= -1 && value <= 1)
     : [];
   if (!valid.length) return null;
   valid.sort((a, b) => a - b);
@@ -72,7 +73,8 @@ function percent(count, total) {
 }
 
 function classPercents(values) {
-  const valid = values.map(Number).filter((value) => Number.isFinite(value));
+  const valid = values.filter((value) => value != null).map(Number)
+    .filter((value) => Number.isFinite(value));
   const total = valid.length;
   if (!total) return {};
   let veryLow = 0;

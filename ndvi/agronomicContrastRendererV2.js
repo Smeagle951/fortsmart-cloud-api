@@ -4,11 +4,12 @@ import {
 } from './ndviContrastEngine.js';
 import { bilinearUpscale } from './ndviSpatialSmoothing.js';
 
-const RENDERER_VERSION = 'agronomic_contrast_v8_png_legend_buckets';
+const RENDERER_VERSION = 'agronomic_contrast_v9_nodata_temporal_mosaic';
 
 function finiteNdviValues(values) {
   return Array.isArray(values)
     ? values
+        .filter((value) => value != null)
         .map((value) => Number(value))
         .filter((value) => Number.isFinite(value) && value >= -1 && value <= 1)
     : [];
@@ -118,6 +119,7 @@ export function renderAgronomicContrastV2({
   const stretch = resolveStretch(percentiles);
   const gamma = visualMode === 'ndvi_contrast' ? 1 : gammaForDistribution(percentiles);
   const sourceValues = values.map((value) => {
+    if (value == null) return null;
     const n = Number(value);
     return Number.isFinite(n) && n >= -1 && n <= 1 ? n : null;
   });

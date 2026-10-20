@@ -5,13 +5,16 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { jsonOk } from '../utils/response.js';
 
 /** Versão de capacidades — subir quando expor novas rotas (ex.: upload de imagens). */
-export const API_CAPABILITIES_VERSION = 5;
+export const API_CAPABILITIES_VERSION = 6;
 
 /** Versão da validação NDVI HTTP (v3 = ready agronômico multibandas). */
 export const NDVI_VALIDATION_VERSION = 'v3';
 
 /** Versão do gate do /generate para ndvi_contrast (bloqueia 201 legacy). */
 export const NDVI_GENERATE_CONTRAST_GATE_VERSION = 'gate_v1';
+
+/** Smoke real: autenticação, Sentinel-2, NDVI B8/B4, stats e PNG. */
+export const NDVI_GEE_SMOKE_VERSION = 'gee_smoke_v2';
 
 export const healthRouter = Router();
 
@@ -23,6 +26,15 @@ function formatUptime(seconds: number): string {
   if (h > 0) return `${h}h ${m}m ${s}s`;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
+}
+
+function buildRevision(): string {
+  const raw = String(
+    process.env.RENDER_GIT_COMMIT ||
+      process.env.FORTSMART_BUILD_REVISION ||
+      'local',
+  ).trim();
+  return raw === 'local' ? raw : raw.slice(0, 12);
 }
 
 async function probeDatabase(): Promise<'ok' | 'missing' | 'error'> {
@@ -45,8 +57,10 @@ healthRouter.get(
       environment: process.env.NODE_ENV || 'development',
       uptime: formatUptime(process.uptime()),
       capabilities_version: API_CAPABILITIES_VERSION,
+      build_revision: buildRevision(),
       ndvi_validation_version: NDVI_VALIDATION_VERSION,
       ndvi_generate_contrast_gate_version: NDVI_GENERATE_CONTRAST_GATE_VERSION,
+      ndvi_gee_smoke_version: NDVI_GEE_SMOKE_VERSION,
       database,
       r2: isObjectStorageConfigured() ? 'ok' : 'missing',
       image_routes: true,
@@ -65,6 +79,8 @@ healthRouter.get('/ping', (_req, res) => {
   jsonOk(res, {
     status: 'ok',
     capabilities_version: API_CAPABILITIES_VERSION,
+    build_revision: buildRevision(),
     ndvi_generate_contrast_gate_version: NDVI_GENERATE_CONTRAST_GATE_VERSION,
+    ndvi_gee_smoke_version: NDVI_GEE_SMOKE_VERSION,
   });
 });

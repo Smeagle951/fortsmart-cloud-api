@@ -39,10 +39,31 @@ import {
 import { generatePreviewFromRaster } from './ndviPreviewFromRaster.js';
 import { RASTER_SCHEMA_NUM } from './ndviRasterSerializer.js';
 import { applyPolygonMaskToPngBuffer, maskValuesToPolygon } from './ndviPolygonMask.js';
+import { buildPolygonMask } from './ndviPolygonMask.js';
 import { canRenderFromPersistedRaster } from './ndviVisualModeGate.js';
 
 const DEFAULT_PROCESS_URL = 'https://sh.dataspace.copernicus.eu/api/v1/process';
+const TARGET_COVERAGE_PCT = 90;
 const baseRasterInflight = new Map();
+
+function previousDate(date, days) {
+  const value = new Date(`${date}T12:00:00Z`);
+  value.setUTCDate(value.getUTCDate() - days);
+  return value.toISOString().slice(0, 10);
+}
+
+function gridCoverage(grid, polygon, bounds) {
+  if (!grid?.values?.length) return 0;
+  const mask = buildPolygonMask({
+    width: grid.width, height: grid.height, polygon, bounds,
+  });
+  if (!mask?.insidePolygonPixels) return 0;
+  let valid = 0;
+  for (let i = 0; i < grid.values.length; i += 1) {
+    if (mask.mask[i] && grid.values[i] != null && Number.isFinite(grid.values[i])) valid += 1;
+  }
+  return (100 * valid) / mask.insidePolygonPixels;
+}
 
 function resolveProcessUrl(raw) {
   const value = String(raw || '').trim();
@@ -154,6 +175,7 @@ class SentinelProcessClient {
     height,
     sceneId,
     label,
+    fromDate = date,
   }) {
     const payload = {
       input: {
@@ -166,7 +188,7 @@ class SentinelProcessClient {
             type: 'sentinel-2-l2a',
             dataFilter: {
               timeRange: {
-                from: `${date}T00:00:00Z`,
+                from: `${fromDate}T00:00:00Z`,
                 to: `${date}T23:59:59Z`,
               },
               mosaickingOrder: 'leastCC',
@@ -205,7 +227,10 @@ class SentinelProcessClient {
       console.warn(
         `⚠️ [NDVI][Process][${label}] HTTP ${response.status} body=${errText.slice(0, 200)}`,
       );
-      return null;
+      const error = new Error(`Copernicus Process API respondeu HTTP ${response.status} (${label})`);
+      error.code = 'copernicus_process_error';
+      error.status = 502;
+      throw error;
     }
 
     const buffer = Buffer.from(await response.arrayBuffer());
@@ -266,6 +291,8 @@ class SentinelProcessClient {
     });
     const sourceContext = {
       ...(previewGen.sourceContext || {}),
+      compositeFromDate: raster.metadata?.compositeFromDate ?? null,
+      compositeToDate: raster.metadata?.compositeToDate ?? null,
       cacheHit: true,
       cacheTag: `${plotId}|${sceneId}|${resolvedVisual}|${rendererVersion}`,
       rendererVersion,
@@ -631,17 +658,12 @@ class SentinelProcessClient {
     visualMode = null,
     forceRemote = false,
   }) {
-    const isProd = process.env.NODE_ENV === 'production';
     if (!this.authClient?.isConfigured()) {
-      if (isProd && !this.enableDevMock) {
-        const err = new Error(
-          'Copernicus CDSE não configurado (CDSE_CLIENT_ID/SECRET)',
-        );
-        err.code = 'cdse_not_configured';
-        err.status = 503;
-        throw err;
-      }
-      return this._mockAssets({ farmId, plotId, imageDate });
+      if (this.enableDevMock) return this._mockAssets({ farmId, plotId, imageDate });
+      const err = new Error('Copernicus CDSE não configurado (CDSE_CLIENT_ID/SECRET)');
+      err.code = 'cdse_not_configured';
+      err.status = 503;
+      throw err;
     }
 
     if (this.enableDevMock) {
@@ -696,67 +718,63 @@ class SentinelProcessClient {
       timing.mark('cdse_auth_ok');
 
       const ndviOnly = isNdviOnlyVisualMode(resolvedVisual);
-      let primaryBuf;
-      let indicesBuf = null;
-
-      if (ndviOnly) {
-        // NDVI V1: uma chamada Process com B04+B08+SCL — sem B05/B8A/B11/B12.
-        timing.mark('bands_selected', { bands: 'B04,B08,SCL', path: 'ndvi_v1' });
-        timing.mark('download_started', { calls: 1, size: '256x256' });
-        primaryBuf = await this._postProcessPng({
-          token,
-          polygon,
-          date,
-          evalscript: buildNdviOnlyPackedStatsEvalscript(),
-          width: 256,
-          height: 256,
-          sceneId,
-          label: 'ndvi_v1_stats',
-        });
-        timing.mark('download_completed', {
-          primaryBytes: primaryBuf?.length ?? 0,
-          indicesBytes: 0,
-        });
-      } else {
-        timing.mark('bands_selected', {
-          bands: 'B02,B03,B04,B05,B06,B07,B08,B8A,B11,B12,SCL',
-          path: 'full_package',
-        });
-        timing.mark('download_started', { calls: 2, size: '256x256' });
-        // Avançado: primary + indices em paralelo.
-        const pair = await Promise.all([
+      timing.mark('bands_selected', {
+        bands: ndviOnly ? 'B04,B08,SCL' : 'B02,B03,B04,B05,B06,B07,B08,B8A,B11,B12,SCL',
+        path: ndviOnly ? 'ndvi_v1' : 'full_package',
+      });
+      const fetchPacked = async (composite) => {
+        const fromDate = composite ? previousDate(date, 14) : date;
+        const shared = { token, polygon, date, fromDate, width: 256,
+          height: 256, sceneId };
+        if (ndviOnly) {
+          return [await this._postProcessPng({
+            ...shared,
+            evalscript: buildNdviOnlyPackedStatsEvalscript({ mosaicTiles: composite }),
+            label: composite ? 'ndvi_temporal_composite' : 'ndvi_v1_stats',
+          }), null];
+        }
+        return Promise.all([
           this._postProcessPng({
-            token,
-            polygon,
-            date,
-            evalscript: buildAgronomicPackedStatsEvalscript(),
-            width: 256,
-            height: 256,
-            sceneId,
-            label: 'agro_stats_primary',
+            ...shared,
+            evalscript: buildAgronomicPackedStatsEvalscript({ mosaicTiles: composite }),
+            label: composite ? 'agro_composite_primary' : 'agro_stats_primary',
           }),
           this._postProcessPng({
-            token,
-            polygon,
-            date,
-            evalscript: buildIndicesPackedStatsEvalscript(),
-            width: 256,
-            height: 256,
-            sceneId,
-            label: 'agro_stats_indices',
+            ...shared,
+            evalscript: buildIndicesPackedStatsEvalscript({ mosaicTiles: composite }),
+            label: composite ? 'agro_composite_indices' : 'agro_stats_indices',
           }),
         ]);
-        primaryBuf = pair[0];
-        indicesBuf = pair[1];
-        timing.mark('download_completed', {
-          primaryBytes: primaryBuf?.length ?? 0,
-          indicesBytes: indicesBuf?.length ?? 0,
-        });
-      }
-
+      };
+      timing.mark('download_started', { calls: ndviOnly ? 1 : 2, size: '256x256' });
+      let [primaryBuf, indicesBuf] = await fetchPacked(false);
       timing.mark('processing_started');
-      const stats = computeAgronomicStatsFromPackedPngs(primaryBuf, indicesBuf, {
-        sceneId,
+      let stats = computeAgronomicStatsFromPackedPngs(primaryBuf, indicesBuf, { sceneId });
+      let compositeFromDate = null;
+      const singleCoverage = gridCoverage(stats?._ndvi_grid, polygon, polygonToBounds(polygon));
+      if (!stats || singleCoverage < TARGET_COVERAGE_PCT) {
+        console.log('[NDVI_TEMPORAL_FALLBACK]', {
+          sceneId, singleDateCoveragePct: Number(singleCoverage.toFixed(1)),
+          from: previousDate(date, 14), to: date,
+        });
+        const [compositePrimary, compositeIndices] = await fetchPacked(true);
+        const compositeStats = computeAgronomicStatsFromPackedPngs(
+          compositePrimary, compositeIndices, { sceneId },
+        );
+        const compositeCoverage = gridCoverage(
+          compositeStats?._ndvi_grid, polygon, polygonToBounds(polygon),
+        );
+        if (compositeStats && compositeCoverage > singleCoverage) {
+          primaryBuf = compositePrimary;
+          indicesBuf = compositeIndices;
+          stats = compositeStats;
+          compositeFromDate = previousDate(date, 14);
+        }
+      }
+      timing.mark('download_completed', {
+        primaryBytes: primaryBuf?.length ?? 0,
+        indicesBytes: indicesBuf?.length ?? 0,
+        composite: Boolean(compositeFromDate),
       });
       timing.mark('ndvi_calculated', {
         mean: stats?.ndvi_mean ?? '-',
@@ -766,7 +784,9 @@ class SentinelProcessClient {
       if (!stats) {
         timing.summary('stats_empty');
         console.warn(`⚠️ [NDVI][Process] stats agronômicas indisponíveis sceneId=${sceneId}`);
-        return { preview_url: null, status: 'metadata_only' };
+        throw Object.assign(new Error('Nenhum pixel Sentinel válido na cena ou na composição temporal.'), {
+          code: 'INSUFFICIENT_COVERAGE', status: 422,
+        });
       }
 
       let contrast = {
@@ -853,6 +873,8 @@ class SentinelProcessClient {
           polygonHash: polygonHash(polygon),
           cloudPercent: null,
           acquisitionDate: date,
+          compositeFromDate,
+          compositeToDate: compositeFromDate ? date : null,
           rendererVersion: contrast?.rendererVersion ?? rendererV2?.contrast?.rendererVersion,
         },
       });
@@ -898,8 +920,18 @@ class SentinelProcessClient {
         zones: previewGen.zones ?? zoneResult.zones,
         diagnosis: previewGen.diagnosis ?? null,
         legend: previewGen.legend ?? null,
-        sourceContext: previewGen.sourceContext ?? null,
-        source_context: previewGen.sourceContext ?? null,
+        sourceContext: {
+          ...(previewGen.sourceContext ?? {}),
+          compositeFromDate,
+          compositeToDate: compositeFromDate ? date : null,
+        },
+        source_context: {
+          ...(previewGen.sourceContext ?? {}),
+          compositeFromDate,
+          compositeToDate: compositeFromDate ? date : null,
+        },
+        composite_from_date: compositeFromDate,
+        composite_to_date: compositeFromDate ? date : null,
         rendererVersion: contrast?.rendererVersion ?? null,
         renderer_version: contrast?.rendererVersion ?? null,
       };
@@ -1032,8 +1064,10 @@ class SentinelProcessClient {
         zones: finalStats.zones,
         diagnosis: previewGen.diagnosis ?? null,
         legend: previewGen.legend ?? null,
-        sourceContext: previewGen.sourceContext ?? null,
-        source_context: previewGen.sourceContext ?? null,
+        sourceContext: finalStats.sourceContext,
+        source_context: finalStats.sourceContext,
+        composite_from_date: compositeFromDate,
+        composite_to_date: compositeFromDate ? date : null,
         rendererVersion: contrast?.rendererVersion ?? null,
         renderer_version: contrast?.rendererVersion ?? null,
         cacheTag: previewGen.sourceContext
@@ -1047,10 +1081,8 @@ class SentinelProcessClient {
         ...finalStats,
       };
     } catch (error) {
-      if (['INSUFFICIENT_COVERAGE', 'INVALID_GEOMETRY', 'INVALID_RADIOMETRY']
-          .includes(error.code)) throw error;
       console.warn(`⚠️ [NDVI][Process] falha sceneId=${sceneId}: ${error.message}`);
-      return { preview_url: null, status: 'metadata_only' };
+      throw error;
     }
   }
 

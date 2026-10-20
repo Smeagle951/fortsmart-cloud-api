@@ -36,7 +36,7 @@ import { isCdseSurfaceCoverMode } from './ndviSurfaceCoverCore.js';
 import { loadInternalGrid } from './ndviRasterStore.js';
 import { RASTER_SCHEMA_NUM } from './ndviRasterSerializer.js';
 
-const LAYER_PIPELINE_ALGORITHM_VERSION = 'layer_pipeline_v2_geometry_qa';
+const LAYER_PIPELINE_ALGORITHM_VERSION = 'layer_pipeline_v3_nodata_temporal_mosaic';
 
 function normalizeImageDate(value) {
   if (value == null) return null;
@@ -1028,16 +1028,11 @@ class SoilSamplingNdviService {
     const requestedModes = Array.isArray(modes) && modes.length
       ? modes.map((mode) => resolveRequestedVisualMode(mode)).filter(Boolean)
       : defaultModes;
-    const fastNdviPackage = ['fast', 'fastPreview'].includes(resolutionKind) &&
-      requestedModes.some((mode) =>
-        ['ndvi_absolute', 'ndvi_contrast'].includes(mode));
-    // Absoluto e contraste usam exatamente a mesma grade B04/B08. Gerá-los
-    // juntos evita que um toque em Contraste durante o primeiro download abra
-    // outro processamento pesado (possivelmente em outra instância do serviço).
-    const packageModes = fastNdviPackage
-      ? [...requestedModes, 'ndvi_absolute', 'ndvi_contrast']
-      : requestedModes;
-    const uniqueModes = orderPackageModes([...new Set(packageModes)]);
+    // A prévia rápida deve renderizar somente o modo solicitado. Forçar
+    // absoluto + contraste aqui desativava o plano mínimo do GEE (uma camada)
+    // e duplicava reducers, persistência e transferência antes do primeiro
+    // mapa colorido aparecer no app.
+    const uniqueModes = orderPackageModes([...new Set(requestedModes)]);
     const startedAt = Date.now();
     const layersByMode = {};
     const statusesByMode = {};
@@ -1161,7 +1156,12 @@ class SoilSamplingNdviService {
     // A prévia precisa chegar antes dos reducers e thumbnails mais caros do
     // GEE. Para NDVI básico, usa primeiro o Process API do Copernicus; a
     // versão final continua preferindo GEE e o fallback por modo permanece.
+    const requestedProvider = String(preferredProvider || '').toLowerCase();
+    const explicitlyRequestedGee =
+      requestedProvider === 'gee' ||
+      requestedProvider === 'google_earth_engine';
     const preferCopernicusFastPreview =
+      !explicitlyRequestedGee &&
       ['fast', 'fastPreview'].includes(resolutionKind) &&
       pendingModes.every((mode) =>
         ['ndvi_absolute', 'ndvi_contrast'].includes(mode));

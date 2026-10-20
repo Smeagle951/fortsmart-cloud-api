@@ -115,11 +115,13 @@ export function maskValuesToPolygon({
   const polygonMask = buildPolygonMask({ width, height, bounds, polygon });
   if (!polygonMask) {
     const validPixels = values.filter((value) => {
+      if (value == null) return false;
       const n = Number(value);
       return Number.isFinite(n) && n >= -1 && n <= 1;
     }).length;
     return {
       values: values.map((value) => {
+        if (value == null) return null;
         const n = Number(value);
         return Number.isFinite(n) && n >= -1 && n <= 1 ? n : null;
       }),
@@ -136,6 +138,10 @@ export function maskValuesToPolygon({
   let validPixels = 0;
   let transparentPixels = 0;
   const masked = values.map((value, idx) => {
+    if (value == null) {
+      transparentPixels += 1;
+      return null;
+    }
     const n = Number(value);
     const inside = polygonMask.mask[idx] === 1;
     if (!inside || !Number.isFinite(n) || n < -1 || n > 1) {
@@ -175,6 +181,7 @@ export function applyInnerPixelBufferToValues({
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const idx = y * width + x;
+      if (values[idx] == null) continue;
       const value = Number(values[idx]);
       if (!Number.isFinite(value) || value < -1 || value > 1) {
         continue;
@@ -187,7 +194,12 @@ export function applyInnerPixelBufferToValues({
             touchesBoundary = true;
             break;
           }
-          const neighbor = Number(values[yy * width + xx]);
+          const rawNeighbor = values[yy * width + xx];
+          if (rawNeighbor == null) {
+            touchesBoundary = true;
+            break;
+          }
+          const neighbor = Number(rawNeighbor);
           if (!Number.isFinite(neighbor) || neighbor < -1 || neighbor > 1) {
             touchesBoundary = true;
             break;

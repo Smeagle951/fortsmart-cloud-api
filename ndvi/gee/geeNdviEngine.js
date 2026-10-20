@@ -586,6 +586,7 @@ function smoothForPreview(image, geometry, { categorical = false } = {}) {
 }
 
 function roundOrNull(value) {
+  if (value == null || value === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? Number(number.toFixed(4)) : null;
 }
@@ -1237,7 +1238,9 @@ async function calculateGeeSingleIndexStatsFast(gee, { indexImage, geometry }) {
 async function calculateGeeContrastStatsFast(gee, { ndvi, geometry }) {
   const basicStats = await getInfo(
     ndvi.reduceRegion({
-      reducer: gee.Reducer.percentile([5, 50, 95]).combine(gee.Reducer.mean(), '', true),
+      reducer: gee.Reducer.percentile([5, 50, 95])
+        .combine(gee.Reducer.mean(), '', true)
+        .combine(gee.Reducer.minMax(), '', true),
       geometry,
       scale: 20, // preview rápido
       maxPixels: 1e8,
@@ -1255,6 +1258,8 @@ async function calculateGeeContrastStatsFast(gee, { ndvi, geometry }) {
   const homogeneity = homogeneityScore({ std: approxStd, p5, p95 });
   return {
     ndvi_mean: roundOrNull(basicStats.NDVI_mean ?? basicStats.NDVI),
+    ndvi_min: roundOrNull(basicStats.NDVI_min),
+    ndvi_max: roundOrNull(basicStats.NDVI_max),
     ndvi_p5: p5,
     ndvi_p50: p50,
     ndvi_p95: p95,
@@ -2002,7 +2007,9 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
 
       if (mode === VISUAL_MODES.NDVI_CONTRAST) {
         const validContrast =
-          [p5, p50, p95].every((value) => Number.isFinite(Number(value))) &&
+          [p5, p50, p95].every(
+            (value) => value != null && Number.isFinite(Number(value)),
+          ) &&
           Number(p5) <= Number(p50) &&
           Number(p50) <= Number(p95);
         if (!validContrast) {
@@ -2547,10 +2554,12 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       const p95 = baseStats.ndvi_p95 ?? baseStats.contrast?.p95;
       const contrastStretch = resolveContrastStretch(baseStats);
       const validContrast =
-        [p5, p50, p95].every((value) => Number.isFinite(Number(value))) &&
+        [p5, p50, p95].every(
+          (value) => value != null && Number.isFinite(Number(value)),
+        ) &&
         Number(p5) <= Number(p50) &&
         Number(p50) <= Number(p95);
-      if (uniqueModes.includes(VISUAL_MODES.NDVI_CONTRAST) && !fastContrastOnly && !validContrast) {
+      if (uniqueModes.includes(VISUAL_MODES.NDVI_CONTRAST) && !validContrast) {
         const err = new Error('invalid_or_missing_percentiles');
         err.code = 'ndvi_contrast_not_computed';
         err.status = 422;
