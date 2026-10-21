@@ -12,7 +12,10 @@ import {
   gridDocumentFromStatsGrid,
   RASTER_SCHEMA_VERSION,
 } from './ndviRasterSerializer.js';
-import { generatePreviewFromRaster } from './ndviPreviewFromRaster.js';
+import {
+  generatePreviewFromRaster,
+  rasterValuesToPngBuffer,
+} from './ndviPreviewFromRaster.js';
 import { buildNdviOnlyPackedStatsEvalscript } from './ndviAgronomicEvalscript.js';
 import SentinelProcessClient from './sentinelProcess.client.js';
 import {
@@ -229,6 +232,27 @@ test('generatePreviewFromRaster evita vermelho falso em cena homogênea alta', (
   }
   assert.ok(visiblePixels > 0);
   assert.ok(redPixels / visiblePixels < 0.05);
+});
+
+test('lowContrastScene não troca ndvi_contrast para paleta absoluta', () => {
+  const buffer = rasterValuesToPngBuffer({
+    values: [0.10, 0.20],
+    width: 2,
+    height: 1,
+    visualMode: 'ndvi_contrast',
+    contrast: {
+      pLow: 0.10,
+      pHigh: 0.20,
+      lowContrastScene: true,
+      colormapMode: 'absolute',
+    },
+  });
+  const png = PNG.sync.read(buffer);
+  const first = [png.data[0], png.data[1], png.data[2]];
+  const second = [png.data[4], png.data[5], png.data[6]];
+
+  assert.ok(first[0] > first[1], `primeiro pixel deveria ser relativo baixo: ${first}`);
+  assert.ok(second[1] > second[0], `segundo pixel deveria ser relativo alto: ${second}`);
 });
 
 test('generatePreviewFromRaster NDRE com valores baixos pinta vermelho/amarelo, não verde chapado', () => {

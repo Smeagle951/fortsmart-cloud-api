@@ -189,8 +189,7 @@ export function rasterValuesToPngBuffer({
   const png = new PNG({ width, height });
   const mode = String(visualMode || 'ndvi_contrast');
   const absoluteIndex = isAbsoluteIndexVisualMode(mode);
-  const lowContrastScene = contrast?.lowContrastScene === true;
-  const colormapMode = absoluteIndex || mode === 'ndvi_absolute' || lowContrastScene
+  const colormapMode = absoluteIndex || mode === 'ndvi_absolute'
     ? 'absolute'
     : pickPreviewColormapMode(contrast, 'relative');
   const vmin = valuesAreVisual ? 0 : (contrast?.pLow ?? contrast?.p5 ?? 0);
@@ -209,7 +208,7 @@ export function rasterValuesToPngBuffer({
     const rgb = ndviToPreviewRgb(v, {
       mode: absoluteIndex
         ? 'absolute'
-        : (CONTRAST_MODES.has(mode) && !lowContrastScene && !valuesAreVisual
+        : (CONTRAST_MODES.has(mode) && !valuesAreVisual
           ? 'relative'
           : (valuesAreVisual ? 'relative' : colormapMode)),
       vmin: valuesAreVisual ? 0 : vmin,

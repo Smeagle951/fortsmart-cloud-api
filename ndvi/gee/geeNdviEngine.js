@@ -1187,33 +1187,92 @@ function isFinalLikeResolution(resolutionKind) {
   return resolutionKind === 'final' || resolutionKind === 'preview';
 }
 
-function resolveFastPackagePlan({ resolutionKind, modes }) {
+export function resolveFastPackagePlan({ resolutionKind, modes }) {
   const unique = [...new Set(Array.isArray(modes) ? modes : [])];
-  if (isFastLikeResolution(resolutionKind) && unique.length === 1) {
-    const mode = unique[0];
-    // Absolute/relative/contrast: caminho leve (B04+B08+SCL + stats p5/p50/p95).
-    if (
-      mode === VISUAL_MODES.NDVI_CONTRAST ||
-      mode === VISUAL_MODES.NDVI_ABSOLUTE ||
-      mode === VISUAL_MODES.NDVI_RELATIVE
-    ) {
-      return { minimalIndices: true, fastContrastOnly: true, fastSingleMode: mode };
-    }
-    const fastSingleModes = new Set([
+  if (isFastLikeResolution(resolutionKind) && unique.length > 0) {
+    const fastSupportedModes = new Set([
+      VISUAL_MODES.NDVI_CONTRAST,
+      VISUAL_MODES.NDVI_ABSOLUTE,
+      VISUAL_MODES.NDVI_RELATIVE,
       VISUAL_MODES.NDRE,
       VISUAL_MODES.NDMI_WATER_STRESS,
-      // BSI_SOIL categórico precisa NDVI+SAVI+NDRE+NDMI+BSI — sem fast single.
     ]);
-    if (fastSingleModes.has(mode)) {
-      return { minimalIndices: true, fastContrastOnly: false, fastSingleMode: mode };
+    if (!unique.every((mode) => fastSupportedModes.has(mode))) {
+      return {
+        minimalIndices: false,
+        fastContrastOnly: false,
+        fastNeedsContrastStats: false,
+        fastSingleMode: null,
+        fastIndexModes: [],
+      };
     }
+    const mode = unique.length === 1 ? unique[0] : null;
+    const ndviOnly = unique.every((item) =>
+      item === VISUAL_MODES.NDVI_CONTRAST ||
+      item === VISUAL_MODES.NDVI_ABSOLUTE ||
+      item === VISUAL_MODES.NDVI_RELATIVE);
+    // Absolute/relative/contrast: caminho leve (B04+B08+SCL + stats p5/p50/p95).
+    if (ndviOnly) {
+      return {
+        minimalIndices: true,
+        fastContrastOnly: true,
+        fastNeedsContrastStats: true,
+        fastSingleMode: mode,
+        fastIndexModes: ['ndvi'],
+      };
+    }
+    return {
+      minimalIndices: true,
+      fastContrastOnly: false,
+      fastNeedsContrastStats: unique.includes(VISUAL_MODES.NDVI_CONTRAST),
+      fastSingleMode: mode,
+      fastIndexModes: [
+        'ndvi',
+        ifMode(unique.includes(VISUAL_MODES.NDRE), 'ndre'),
+        ifMode(unique.includes(VISUAL_MODES.NDMI_WATER_STRESS), 'ndmi'),
+      ].filter(Boolean),
+    };
   }
-  return { minimalIndices: false, fastContrastOnly: false, fastSingleMode: null };
+  return {
+    minimalIndices: false,
+    fastContrastOnly: false,
+    fastNeedsContrastStats: false,
+    fastSingleMode: null,
+    fastIndexModes: [],
+  };
+}
+
+function ifMode(condition, value) {
+  return condition ? value : null;
+}
+
+function bandsForFastPlan(plan) {
+  if (!plan?.minimalIndices) {
+    return ['B02', 'B04', 'B05', 'B08', 'B8A', 'B11', 'SCL'];
+  }
+  const indices = new Set(plan.fastIndexModes || []);
+  const bands = new Set(['SCL']);
+  if (indices.has('ndvi')) {
+    bands.add('B04');
+    bands.add('B08');
+  }
+  if (indices.has('ndre')) {
+    bands.add('B05');
+    bands.add('B8A');
+  }
+  if (indices.has('ndmi')) {
+    bands.add('B08');
+    bands.add('B11');
+  }
+  return [...bands];
 }
 
 function indexNeededForFastPlan(plan, indexName) {
   if (!plan?.minimalIndices) return true;
   if (plan.fastContrastOnly) return indexName === 'ndvi';
+  if (Array.isArray(plan.fastIndexModes) && plan.fastIndexModes.length > 0) {
+    return plan.fastIndexModes.includes(indexName);
+  }
   switch (plan.fastSingleMode) {
     case VISUAL_MODES.NDRE:
       return indexName === 'ndvi' || indexName === 'ndre';
@@ -1243,6 +1302,28 @@ async function calculateGeeSingleIndexStatsFast(gee, { indexImage, geometry }) {
   const firstKey = Object.keys(stats)[0];
   const mean = roundOrNull(firstKey ? stats[firstKey] : null);
   return mean;
+}
+
+async function calculateGeeRequestedIndexStatsFast(
+  gee,
+  { ndvi, ndre, ndmi, geometry, fastIndexModes = [] },
+) {
+  const requested = new Set(fastIndexModes);
+  const entries = [
+    ['ndvi_mean', 'ndvi', ndvi],
+    ['ndre_mean', 'ndre', ndre],
+    ['ndmi_mean', 'ndmi', ndmi],
+  ].filter(([, key, image]) => requested.has(key) && image);
+  const values = await Promise.all(
+    entries.map(([, , image]) =>
+      calculateGeeSingleIndexStatsFast(gee, {
+        indexImage: image,
+        geometry,
+      })),
+  );
+  return Object.fromEntries(
+    entries.map(([field], index) => [field, values[index]]),
+  );
 }
 
 async function calculateGeeContrastStatsFast(gee, { ndvi, geometry }) {
@@ -2394,7 +2475,8 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
       const uniqueModes = [...new Set(requestedModes)];
       const fastPlan = resolveFastPackagePlan({ resolutionKind, modes: uniqueModes });
       const fastContrastOnly = fastPlan.fastContrastOnly;
-      const fastSingleMode = fastPlan.fastSingleMode;
+      const fastNeedsContrastStats = fastPlan.fastNeedsContrastStats;
+      const fastIndexModes = fastPlan.fastIndexModes;
       const minimalIndices = fastPlan.minimalIndices;
       const geometry = geometryFromPolygon(gee, polygon);
       const statsGeometry = await safeStatsGeometry(gee, geometry);
@@ -2522,34 +2604,25 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
             ndvi,
             geometry: statsGeometry.geometry,
           })
-        : fastSingleMode === VISUAL_MODES.NDRE && ndre
+        : fastIndexModes.length > 0
           ? await (async () => {
-              const [ndviMean, ndreMean] = await Promise.all([
-                calculateGeeSingleIndexStatsFast(gee, {
-                  indexImage: ndvi,
+              const [indexStats, contrastStats] = await Promise.all([
+                calculateGeeRequestedIndexStatsFast(gee, {
+                  ndvi,
+                  ndre,
+                  ndmi,
                   geometry: statsGeometry.geometry,
+                  fastIndexModes,
                 }),
-                calculateGeeSingleIndexStatsFast(gee, {
-                  indexImage: ndre,
-                  geometry: statsGeometry.geometry,
-                }),
+                fastNeedsContrastStats
+                  ? calculateGeeContrastStatsFast(gee, {
+                      ndvi,
+                      geometry: statsGeometry.geometry,
+                    })
+                  : Promise.resolve({}),
               ]);
-              return { ndvi_mean: ndviMean, ndre_mean: ndreMean };
+              return { ...contrastStats, ...indexStats };
             })()
-          : fastSingleMode === VISUAL_MODES.NDMI_WATER_STRESS && ndmi
-            ? await (async () => {
-                const [ndviMean, ndmiMean] = await Promise.all([
-                  calculateGeeSingleIndexStatsFast(gee, {
-                    indexImage: ndvi,
-                    geometry: statsGeometry.geometry,
-                  }),
-                  calculateGeeSingleIndexStatsFast(gee, {
-                    indexImage: ndmi,
-                    geometry: statsGeometry.geometry,
-                  }),
-                ]);
-                return { ndvi_mean: ndviMean, ndmi_mean: ndmiMean };
-              })()
             : await calculateGeeNdviStats(gee, {
                 ndvi,
                 ndre,
@@ -2639,7 +2712,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         scene: selectedSceneId,
         resolution: resolutionKind,
         fastContrastOnly,
-        bands: fastContrastOnly ? ['B04', 'B08', 'SCL'] : ['B02', 'B04', 'B05', 'B08', 'B8A', 'B11', 'SCL'],
+        bands: bandsForFastPlan(fastPlan),
         modes: uniqueModes,
         elapsedMs: Date.now() - startedAt,
       });
