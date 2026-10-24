@@ -46,7 +46,7 @@ function normalizeReflectance(v){if(!isFinite(v))return NaN;return v>2?v/10000:v
 function safeDiv(a,b){return Math.abs(b)<0.000001?NaN:a/b;}
 function ndvi(s){const n=normalizeReflectance(s.B08);const r=normalizeReflectance(s.B04);const v=safeDiv(n-r,n+r);return v>=-1&&v<=1?v:NaN;}
 function ndre(s){const re=normalizeReflectance(s.B05);if(!isFinite(re)||re<0.001)return NaN;const n=normalizeReflectance(isFinite(s.B8A)&&s.B8A>0?s.B8A:s.B08);const v=safeDiv(n-re,n+re);return v>=-1&&v<=1?v:NaN;}
-function savi(s){const n=normalizeReflectance(s.B08);const r=normalizeReflectance(s.B04);return safeDiv(n-r,n+r+0.5)*1.5;}
+function savi(s){const n=normalizeReflectance(s.B08);const r=normalizeReflectance(s.B04);const d=Math.pow(2*n+1,2)-8*(n-r);return d>=0?(2*n+1-Math.sqrt(d))/2:NaN;}
 function bsi(s){const sw=normalizeReflectance(s.B11);const r=normalizeReflectance(s.B04);const n=normalizeReflectance(s.B08);const b=normalizeReflectance(s.B02);return safeDiv((sw+r)-(n+b),(sw+r)+(n+b));}
 function ndmi(s){const n=normalizeReflectance(s.B08);const sw=normalizeReflectance(s.B11);const v=safeDiv(n-sw,n+sw);return v>=-1&&v<=1?v:NaN;}
 function nbr2(s){const a=normalizeReflectance(s.B11);const b=normalizeReflectance(s.B12);if(!isFinite(a)||!isFinite(b)||b<0.001)return NaN;return safeDiv(a-b,a+b);}

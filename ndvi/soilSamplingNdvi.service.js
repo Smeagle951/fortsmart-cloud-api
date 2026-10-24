@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import NdviStatsService from './ndviStats.service.js';
 import * as NdviResponseMapper from './ndviResponse.mapper.js';
-import { assertCopernicusReady, getNdviProviderStatus } from './ndviEnv.js';
+import {
+  assertCopernicusReady,
+  assertGeeIfRequired,
+  getNdviProviderStatus,
+} from './ndviEnv.js';
+import { isRecoverableProviderFailure } from './ndviImageryJobs.js';
 import {
   createNdviTimingTrace,
   logGenerateFail,
@@ -68,6 +73,7 @@ const PACKAGE_MODE_PRIORITY = Object.freeze([
   'ndvi_relative',
   'ndmi_water_stress',
   'ndre',
+  'savi',
   'bsi_soil',
 ]);
 
@@ -316,6 +322,17 @@ class SoilSamplingNdviService {
     return Boolean(envPreferred);
   }
 
+  _assertExplicitGeeReady(preferredProvider) {
+    const requested = String(preferredProvider || '').toLowerCase();
+    if (requested !== 'gee' && requested !== 'google_earth_engine') return;
+    if (this._geeReady({ packageMode: true, preferredProvider })) return;
+    assertGeeIfRequired();
+    const err = new Error('Google Earth Engine solicitado, mas o engine não foi inicializado.');
+    err.code = 'gee_engine_unavailable';
+    err.status = 503;
+    throw err;
+  }
+
   _logRequest(meta) {
     const bbox = meta.polygon ? this.catalogClient.polygonToBbox(meta.polygon) : null;
     console.log(
@@ -524,6 +541,7 @@ class SoilSamplingNdviService {
     maxCloud = 20,
     preferredProvider = null,
   }) {
+    this._assertExplicitGeeReady(preferredProvider);
     this._requireScope({ farmId, plotId });
     if (!campaignId) {
       throw this._error('campaign_id é obrigatório', 'campaign_required', 400);
@@ -553,7 +571,8 @@ class SoilSamplingNdviService {
     // Copernicus tem timeout frequente e o app corta a espera em ~55s.
     const requested = String(preferredProvider || '').toLowerCase();
     const geeSearchReady =
-      this._geeReady({ packageMode: true }) || this._geeReady();
+      this._geeReady({ packageMode: true, preferredProvider }) ||
+      this._geeReady({ preferredProvider });
     const forceCopernicus =
       requested === 'copernicus' || requested === 'copernicus_dataspace';
     const preferGeeSearch = geeSearchReady && !forceCopernicus;
@@ -575,6 +594,7 @@ class SoilSamplingNdviService {
         return scenes;
       } catch (error) {
         lastSearchError = error;
+        if (!isRecoverableProviderFailure(error)) throw error;
         console.warn(
           `⚠️ [NDVI] GEE search falhou: ${error?.message || error}`,
         );
@@ -742,6 +762,15 @@ class SoilSamplingNdviService {
       (['ndre', 'ndmi_water_stress', 'bsi_soil', 'post_harvest_cover']
         .includes(requestedVisualMode) ? 20 : 10),
     );
+    const rawCrs = assets.crs ??
+      assets.source_context?.crs ??
+      assets.sourceContext?.crs ??
+      assets.stats?.source_context?.crs ??
+      assets.stats?.sourceContext?.crs ??
+      null;
+    const canonicalCrs = String(rawCrs || '').endsWith('/4326')
+      ? 'EPSG:4326'
+      : (rawCrs ? String(rawCrs) : null);
     const provenance = {
       sceneId: String(targetSceneId),
       acquisitionDate: normalizeImageDate(targetDate),
@@ -754,6 +783,7 @@ class SoilSamplingNdviService {
         assets.rendererVersion ?? assets.renderer_version ?? null,
       resolutionKind,
       resolutionM: nativeResolutionM,
+      crs: canonicalCrs,
       polygonHash: hashPolygonForPackage(polygon),
       bounds: imageBounds,
       validPixelCoveragePct: rasterValidation?.validPixelCoveragePct ?? null,
@@ -1026,6 +1056,7 @@ class SoilSamplingNdviService {
     objective = 'recommended',
     preferredProvider = null,
   }) {
+    this._assertExplicitGeeReady(preferredProvider);
     const defaultModes = [
       'ndvi_contrast',
       'ndvi_absolute',
@@ -1033,6 +1064,7 @@ class SoilSamplingNdviService {
       'ndvi_relative',
       'ndmi_water_stress',
       'ndre',
+      'savi',
       'bsi_soil',
       'post_harvest_cover',
     ];
@@ -1140,6 +1172,7 @@ class SoilSamplingNdviService {
     Object.assign(layersByMode, cachedPackage.layersByMode);
     Object.assign(statusesByMode, cachedPackage.statusesByMode);
     const pendingModes = uniqueModes.filter((mode) => !layersByMode[mode]);
+    let copernicusFallbackModes = [...pendingModes];
     if (pendingModes.length === 0) {
       timing.mark('cache_hit', { modes: uniqueModes.join(',') });
       timing.summary('cache_hit');
@@ -1345,12 +1378,38 @@ class SoilSamplingNdviService {
             elapsedMs: Date.now() - startedAt,
           };
         }
-        console.warn('[Package] GEE package returned no ready layer; falling back', {
+        copernicusFallbackModes = pendingModes.filter((mode) => {
+          if (layersByMode[mode]) return false;
+          const status = statusesByMode[mode] || {};
+          return status.status === 'failed' && isRecoverableProviderFailure({
+            code: status.code,
+            status: status.httpStatus || status.statusCode,
+            message: status.message,
+          });
+        });
+        if (copernicusFallbackModes.length === 0) {
+          return {
+            scene_id: packageResult.scene_id || sceneId,
+            packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
+            packageStatus,
+            package_version: packageResult.package_version || 'scene_band_package_v1',
+            resolution_kind: packageResult.resolution_kind || resolutionKind,
+            generatedAt: new Date().toISOString(),
+            provider: 'google_earth_engine',
+            modes: uniqueModes,
+            layersByMode,
+            statusesByMode,
+            elapsedMs: Date.now() - startedAt,
+          };
+        }
+        console.warn('[Package] GEE falhou de forma recuperável; usando contingência', {
           field: plotId,
           scene: sceneId,
+          fallbackModes: copernicusFallbackModes,
           statusesByMode,
         });
       } catch (error) {
+        if (!isRecoverableProviderFailure(error)) throw error;
         console.warn('[Package] single-pass GEE package failed; falling back to per-mode orchestration', {
           code: error?.code,
           message: error?.message || String(error),
@@ -1358,14 +1417,16 @@ class SoilSamplingNdviService {
       }
     }
 
-    if (this.processClient?.generateLayerPackage) {
+    if (this.processClient?.generateLayerPackage && copernicusFallbackModes.length > 0) {
       try {
         console.log('[Package] using Copernicus internal-grid package renderer', {
           field: plotId,
           scene: sceneId,
           modes: pendingModes,
         });
-        const copernicusModes = pendingModes.filter((mode) => !layersByMode[mode]);
+        const copernicusModes = copernicusFallbackModes.filter(
+          (mode) => !layersByMode[mode],
+        );
         const packageResult = await this.processClient.generateLayerPackage({
           sceneId,
           polygon,
@@ -1594,6 +1655,7 @@ class SoilSamplingNdviService {
     force = false,
     preferredProvider = null,
   }) {
+    this._assertExplicitGeeReady(preferredProvider);
     const requestedVisualMode = resolveRequestedVisualMode(
       visualMode || colormapMode || 'ndvi_contrast',
     );
@@ -1632,13 +1694,6 @@ class SoilSamplingNdviService {
       );
       const geeAvailable = this._geeReady({ preferredProvider });
       const cdseCover = isCdseSurfaceCoverMode(requestedVisualMode);
-
-      if (process.env.NDVI_PROVIDER === 'gee' && !providerStatus.gee_configured) {
-        // GEE pedido no env mas sem credenciais: segue no CDSE em vez de abortar.
-        console.warn(
-          '⚠️ [NDVI] NDVI_PROVIDER=gee sem credenciais GEE — usando Copernicus/CDSE',
-        );
-      }
 
       stage = 'validate';
     this._requireScope({ farmId, plotId });
@@ -1955,7 +2010,8 @@ class SoilSamplingNdviService {
             'post_harvest_cover',
             'bsi_soil',
           ]);
-          if (!cdseFallbackModes.has(String(requestedVisualMode))) {
+          if (!isRecoverableProviderFailure(geeError) ||
+              !cdseFallbackModes.has(String(requestedVisualMode))) {
             throw this._error(
               geeError?.message ||
                 `Modo "${requestedVisualMode}" exige Google Earth Engine.`,
@@ -2304,11 +2360,100 @@ class SoilSamplingNdviService {
       throw this._error('Camada pertence a outro talhão.', 'layer_scope_mismatch', 403);
     }
 
+    const requestedReference = payload.collection_reference || payload.collectionReference || {};
+    const provenanceBounds = ag.provenance?.bounds;
+    const bbox = [
+      provenanceBounds?.west,
+      provenanceBounds?.south,
+      provenanceBounds?.east,
+      provenanceBounds?.north,
+    ].map(Number);
+    if (bbox.some((value) => !Number.isFinite(value)) ||
+        bbox[0] < -180 || bbox[2] > 180 || bbox[1] < -90 || bbox[3] > 90 ||
+        bbox[0] >= bbox[2] || bbox[1] >= bbox[3]) {
+      throw this._error(
+        'Referência geoespacial sem bbox válido.',
+        'collection_reference_invalid',
+        422,
+      );
+    }
+    if (Array.isArray(requestedReference.bbox)) {
+      const requestedBbox = requestedReference.bbox.map(Number);
+      const matchesCanonical = requestedBbox.length === 4 &&
+        requestedBbox.every((value, index) =>
+          Number.isFinite(value) && Math.abs(value - bbox[index]) <= 1e-7);
+      if (!matchesCanonical) {
+        throw this._error(
+          'bbox informado diverge da camada processada.',
+          'collection_reference_mismatch',
+          422,
+        );
+      }
+    }
+    const canonicalCrs = ag.provenance?.crs;
+    if (!canonicalCrs) {
+      throw this._error(
+        'Camada processada sem CRS canônico.',
+        'collection_reference_invalid',
+        422,
+      );
+    }
+    const requestedCrs = requestedReference.crs == null
+      ? null
+      : String(requestedReference.crs).trim();
+    if (requestedCrs && requestedCrs.toUpperCase() !== String(canonicalCrs).toUpperCase()) {
+      throw this._error(
+        'CRS informado diverge da camada processada.',
+        'collection_reference_mismatch',
+        422,
+      );
+    }
+    const requestedVisualScale = requestedReference.visualScale ||
+      requestedReference.visual_scale || {};
+    const inspectionContrastPercent = Number(
+      requestedVisualScale.inspectionContrastPercent ?? 100,
+    );
+    if (!Number.isFinite(inspectionContrastPercent) ||
+        inspectionContrastPercent < 0 || inspectionContrastPercent > 100) {
+      throw this._error(
+        'Escala visual informada é inválida.',
+        'collection_reference_invalid',
+        422,
+      );
+    }
+    const visualScale = {
+      inspectionContrastPercent,
+      absoluteMin: -0.2,
+      absoluteMax: 1,
+      adaptiveP2: ag.ndvi_p2 ?? ag.contrast?.p2 ?? ag.ndvi_p5 ?? ag.contrast?.p5 ?? null,
+      adaptiveP98: ag.ndvi_p98 ?? ag.contrast?.p98 ?? ag.ndvi_p95 ?? ag.contrast?.p95 ?? null,
+    };
+    const collectionReference = {
+      schema: 'fortsmart.soil-collection.ndvi-reference',
+      version: 1,
+      artifactId: ag.layerResultId || ag.layer_result_id || layer.id,
+      fieldId: String(plotId),
+      campaignId: String(campaignId),
+      sceneId: layer.scene_id || layer.id,
+      index: layer.visual_mode || 'ndvi_absolute',
+      timestamp: new Date(layer.image_date).toISOString(),
+      attachedAt: new Date().toISOString(),
+      crs: canonicalCrs,
+      bbox,
+      visualScale,
+      validCoveragePercent: Number(ag.validPixelCoveragePct),
+      resolutionM: layer.resolution_m == null ? null : Number(layer.resolution_m),
+      provider: layer.provider || ag.provenance?.provider || null,
+      source: layer.source || null,
+      provenance: ag.provenance || null,
+    };
+
     const activated = await this.repository.setActiveLayer({
       campaignId,
       layerId: layer.id,
       farmId,
       plotId,
+      collectionReference,
     });
 
     if (!activated) {

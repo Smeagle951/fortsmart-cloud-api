@@ -1375,10 +1375,15 @@ function buildRawDerivedIndices(maskedImage, fastPlan) {
   let rawNbr2 = null;
   if (!fastPlan?.minimalIndices) {
     rawNdre = maskedImage.normalizedDifference(['B8A', 'B5']);
-    rawSavi = maskedImage.expression('((nir - red) / (nir + red + 0.5)) * 1.5', {
-      nir: maskedImage.select('B8'),
-      red: maskedImage.select('B4'),
-    });
+    // MSAVI2 sobre reflectância 0..1. Mantém chave interna `savi` para
+    // compatibilidade com raster/cache legado, sem alterar o valor científico.
+    rawSavi = maskedImage.expression(
+      '(2 * nir + 1 - sqrt(pow(2 * nir + 1, 2) - 8 * (nir - red))) / 2',
+      {
+        nir: maskedImage.select('B8'),
+        red: maskedImage.select('B4'),
+      },
+    );
     rawNdmi = maskedImage.normalizedDifference(['B8', 'B11']);
     rawBsi = maskedImage.expression(
       '((swir + red) - (nir + blue)) / ((swir + red) + (nir + blue))',
@@ -1397,6 +1402,15 @@ function buildRawDerivedIndices(maskedImage, fastPlan) {
   }
   if (indexNeededForFastPlan(fastPlan, 'ndmi')) {
     rawNdmi = maskedImage.normalizedDifference(['B8', 'B11']);
+  }
+  if (indexNeededForFastPlan(fastPlan, 'savi')) {
+    rawSavi = maskedImage.expression(
+      '(2 * nir + 1 - sqrt(pow(2 * nir + 1, 2) - 8 * (nir - red))) / 2',
+      {
+        nir: maskedImage.select('B8'),
+        red: maskedImage.select('B4'),
+      },
+    );
   }
   if (indexNeededForFastPlan(fastPlan, 'bsi')) {
     rawBsi = maskedImage.expression(

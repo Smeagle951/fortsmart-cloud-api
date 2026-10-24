@@ -134,14 +134,19 @@ function resolvePackageStatus({ layersByMode, statusesByMode, serviceStatus }) {
 }
 
 class SoilSamplingNdviController {
-  constructor(service, { authClient } = {}) {
+  constructor(service, { authClient, imageryJobs = null } = {}) {
     this.service = service;
     this.authClient = authClient;
+    this.imageryJobs = imageryJobs;
 
     this.getScenes = this.getScenes.bind(this);
     this.searchScenes = this.searchScenes.bind(this);
     this.generate = this.generate.bind(this);
     this.generatePackage = this.generatePackage.bind(this);
+    this.createImageryJob = this.createImageryJob.bind(this);
+    this.getImageryJob = this.getImageryJob.bind(this);
+    this.getImageryJobResult = this.getImageryJobResult.bind(this);
+    this.retryImageryJob = this.retryImageryJob.bind(this);
     this.attach = this.attach.bind(this);
     this.getActive = this.getActive.bind(this);
     this.refresh = this.refresh.bind(this);
@@ -655,6 +660,112 @@ class SoilSamplingNdviController {
     } catch (error) {
       this._sendError(res, error);
     }
+  }
+
+  async createImageryJob(req, res) {
+    try {
+      if (!this.imageryJobs) {
+        throw Object.assign(new Error('Processamento assíncrono NDVI indisponível.'), {
+          code: 'imagery_jobs_unavailable',
+          status: 503,
+        });
+      }
+      const body = req.body || {};
+      const farmId = body.farm_id || body.farmId;
+      const plotId = body.plot_id || body.plotId || body.fieldId || body.field_id;
+      if (!farmId || !plotId || !body.polygon) {
+        throw Object.assign(
+          new Error('farmId, fieldId/plotId e polygon são obrigatórios.'),
+          { code: 'imagery_job_scope_required', status: 400 },
+        );
+      }
+      const index = String(body.index || body.indice || 'ndvi').toLowerCase();
+      const indexMode = {
+        ndvi: 'ndvi_contrast',
+        ndre: 'ndre',
+        msavi: 'savi',
+        savi: 'savi',
+      }[index];
+      const modes = Array.isArray(body.modes) && body.modes.length
+        ? body.modes.map((mode) => resolveRequestedVisualMode(mode))
+        : [indexMode || index];
+      const payload = {
+        farmId,
+        plotId,
+        campaignId: body.campaign_id || body.campaignId || null,
+        sceneId: body.scene_id || body.sceneId || null,
+        polygon: body.polygon,
+        imageDate: body.image_date || body.imageDate || null,
+        cloudCoverage: body.cloud_coverage ?? body.cloudCoverage ?? null,
+        startDate: body.start_date || body.startDate || null,
+        endDate: body.end_date || body.endDate || null,
+        maxCloud: body.max_cloud ?? body.maxCloud ?? null,
+        modes,
+        resolutionKind: body.resolution_kind || body.resolutionKind || 'preview',
+        force: body.force === true,
+        preferredProvider: body.provider || body.ndvi_provider || 'gee',
+        algorithmVersion: body.algorithm_version || body.algorithmVersion,
+        maskVersion: body.mask_version || body.maskVersion,
+        ownerFarmId: req.cloudAuth?.farmId,
+      };
+      const created = this.imageryJobs.create(payload);
+      res.status(created.created ? 202 : 200).json({
+        success: true,
+        created: created.created,
+        ...created.job,
+      });
+    } catch (error) {
+      this._sendError(res, error);
+    }
+  }
+
+  async getImageryJob(req, res) {
+    const job = this.imageryJobs?.get(req.params.jobId, {
+      ownerFarmId: req.cloudAuth?.farmId,
+    });
+    if (!job) {
+      return this._sendError(
+        res,
+        Object.assign(new Error('Trabalho de imagem não encontrado.'), {
+          code: 'imagery_job_not_found',
+          status: 404,
+        }),
+      );
+    }
+    return res.json({ success: true, ...job });
+  }
+
+  async getImageryJobResult(req, res) {
+    const job = this.imageryJobs?.result(req.params.jobId, {
+      ownerFarmId: req.cloudAuth?.farmId,
+    });
+    if (!job) {
+      return this._sendError(
+        res,
+        Object.assign(new Error('Trabalho de imagem não encontrado.'), {
+          code: 'imagery_job_not_found',
+          status: 404,
+        }),
+      );
+    }
+    const httpStatus = job.status === 'READY' || job.status === 'FAILED' ? 200 : 202;
+    return res.status(httpStatus).json({ success: job.status !== 'FAILED', ...job });
+  }
+
+  async retryImageryJob(req, res) {
+    const job = this.imageryJobs?.retry(req.params.jobId, {
+      ownerFarmId: req.cloudAuth?.farmId,
+    });
+    if (!job) {
+      return this._sendError(
+        res,
+        Object.assign(new Error('Trabalho de imagem não encontrado.'), {
+          code: 'imagery_job_not_found',
+          status: 404,
+        }),
+      );
+    }
+    return res.status(202).json({ success: true, ...job });
   }
 
   async attach(req, res) {

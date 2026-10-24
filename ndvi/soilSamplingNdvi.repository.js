@@ -302,20 +302,59 @@ class SoilSamplingNdviRepository {
     );
   }
 
-  async setActiveLayer({ campaignId, layerId, farmId, plotId }) {
-    await this.deactivateByCampaign(campaignId);
-    const result = await this.pool.query(
+  async setActiveLayer({ campaignId, layerId, farmId, plotId, collectionReference = null }) {
+    const client = typeof this.pool.connect === 'function'
+      ? await this.pool.connect()
+      : this.pool;
+    const transactional = client !== this.pool;
+    try {
+      if (transactional) await client.query('BEGIN');
+      await client.query(
+        `UPDATE soil_ndvi_layers
+            SET is_active = false,
+                updated_at = NOW()
+          WHERE campaign_id = $1
+            AND farm_id = $2
+            AND plot_id = $3`,
+        [String(campaignId), String(farmId), String(plotId)],
+      );
+      const result = await client.query(
       `UPDATE soil_ndvi_layers
           SET campaign_id = $1,
               farm_id = $2,
               plot_id = $3,
               is_active = true,
+              agronomic_stats = CASE
+                WHEN $5::jsonb IS NULL THEN agronomic_stats
+                ELSE COALESCE(agronomic_stats, '{}'::jsonb) ||
+                  jsonb_build_object('collection_reference', $5::jsonb)
+              END,
               updated_at = NOW()
         WHERE id = $4
+          AND farm_id = $2
+          AND plot_id = $3
         RETURNING *`,
-      [String(campaignId), String(farmId), String(plotId), String(layerId)],
-    );
-    return result.rows[0] || null;
+      [
+        String(campaignId),
+        String(farmId),
+        String(plotId),
+        String(layerId),
+        collectionReference ? JSON.stringify(collectionReference) : null,
+      ],
+      );
+      if (!result.rows[0]) {
+        throw Object.assign(new Error('Camada NDVI alvo não encontrada no escopo.'), {
+          code: 'layer_scope_mismatch',
+        });
+      }
+      if (transactional) await client.query('COMMIT');
+      return result.rows[0];
+    } catch (error) {
+      if (transactional) await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      if (transactional) client.release();
+    }
   }
 
   async getActiveByCampaign({ campaignId, farmId, plotId }) {

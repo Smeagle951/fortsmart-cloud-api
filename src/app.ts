@@ -14,6 +14,8 @@ import { plantingMediaRouter } from './routes/plantingMedia.routes.js';
 import { createSoilSamplingNdviRouter } from './routes/soilSamplingNdvi.mount.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { createCorsOptions } from './middleware/corsPolicy.js';
+import { requireApiKey } from './middleware/apiKeyAuth.js';
+import { assertApiKeyCanAccessFarm } from './lib/resourceAccessGuard.js';
 
 export function createApp(): express.Application {
   const app = express();
@@ -34,8 +36,21 @@ export function createApp(): express.Application {
   app.use(plantingMediaRouter);
 
   const ndviRouter = createSoilSamplingNdviRouter();
-  app.use('/api/soil-sampling/ndvi', ndviRouter);
-  app.use('/soil-sampling/ndvi', ndviRouter);
+  const requireNdviFarmScope: express.RequestHandler = (req, _res, next) => {
+    try {
+      const body = req.body as Record<string, unknown> | undefined;
+      const requestedFarm = String(
+        body?.farm_id ?? body?.farmId ?? req.query.farm_id ?? req.query.farmId ?? '',
+      ).trim();
+      const authorizedFarm = String(req.cloudAuth?.farmId ?? '').trim();
+      assertApiKeyCanAccessFarm(req, requestedFarm || authorizedFarm);
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+  app.use('/api/soil-sampling/ndvi', requireApiKey, requireNdviFarmScope, ndviRouter);
+  app.use('/soil-sampling/ndvi', requireApiKey, requireNdviFarmScope, ndviRouter);
 
   app.use(errorHandler);
   return app;

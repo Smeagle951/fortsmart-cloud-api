@@ -124,8 +124,10 @@ export function computeSurfaceIndices(sample) {
     savi:
       B08 != null && B04 != null
         ? (() => {
-            const v = div(B08 - B04, B08 + B04 + 0.5);
-            return v == null ? null : v * 1.5;
+            const discriminant = (2 * B08 + 1) ** 2 - 8 * (B08 - B04);
+            return discriminant >= 0
+              ? (2 * B08 + 1 - Math.sqrt(discriminant)) / 2
+              : null;
           })()
         : null,
     bsi:

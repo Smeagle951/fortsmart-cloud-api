@@ -97,6 +97,9 @@ function normalizeVisualModeAlias(value) {
     case 'rededge':
     case 'red_edge':
       return 'ndre';
+    case 'msavi':
+    case 'msavi2':
+      return 'savi';
     case 'soilplant':
     case 'soil_plant':
     case 'soil_palhada':

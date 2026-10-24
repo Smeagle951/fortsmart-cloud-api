@@ -922,11 +922,13 @@ class SentinelProcessClient {
         legend: previewGen.legend ?? null,
         sourceContext: {
           ...(previewGen.sourceContext ?? {}),
+          crs: 'EPSG:4326',
           compositeFromDate,
           compositeToDate: compositeFromDate ? date : null,
         },
         source_context: {
           ...(previewGen.sourceContext ?? {}),
+          crs: 'EPSG:4326',
           compositeFromDate,
           compositeToDate: compositeFromDate ? date : null,
         },

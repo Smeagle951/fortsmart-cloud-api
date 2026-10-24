@@ -152,6 +152,9 @@ describe('ndviAgronomicCore', () => {
     assert.ok(Number.isFinite(idx.ndvi));
     assert.ok(Number.isFinite(idx.ndre));
     assert.ok(Number.isFinite(idx.savi));
+    const expectedMsavi =
+      (2 * 0.35 + 1 - Math.sqrt((2 * 0.35 + 1) ** 2 - 8 * (0.35 - 0.12))) / 2;
+    assert.ok(Math.abs(idx.savi - expectedMsavi) < 1e-12);
     assert.ok(Number.isFinite(idx.bsi));
     assert.ok(Number.isFinite(idx.ndmi));
     assert.equal(idx.nbr2, null);

@@ -7,6 +7,7 @@ import SentinelCatalogClient from './sentinelCatalog.client.js';
 import SentinelProcessClient from './sentinelProcess.client.js';
 import { GeeNdviProviderClient } from './NdviProviderClient.js';
 import { getNdviProviderStatus } from './ndviEnv.js';
+import { NdviImageryJobStore } from './ndviImageryJobs.js';
 
 function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
   const router = express.Router();
@@ -27,9 +28,8 @@ function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
 
   const repository = new SoilSamplingNdviRepository(pool);
 
-  // Copernicus-first: GEE fica dormente (engine=null → isImplemented()=false)
-  // para evitar custo acidental. Só carregamos o engine real com opt-in
-  // explícito em ndviEnv.
+  // GEE-first: engine carregado quando credenciais/política do servidor
+  // permitem. Copernicus permanece contingência para falha recuperável.
   const geeClient = new GeeNdviProviderClient({ engine: null });
 
   const service = new SoilSamplingNdviService({
@@ -46,15 +46,19 @@ function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
     try {
       const mod = await import('./gee/geeNdviEngine.js');
       geeClient.engine = await mod.createGeeNdviEngine({ publicBaseUrl });
-      console.log('✅ [NDVI] Google Earth Engine ativo por opt-in explícito');
+      console.log('✅ [NDVI] Google Earth Engine ativo como provedor principal');
     } catch (error) {
       console.warn(
-        `⚠️ [NDVI] GEE solicitado mas engine indisponível — usando Copernicus: ${error?.message || error}`,
+        `❌ [NDVI] GEE solicitado mas engine indisponível: ${error?.message || error}`,
       );
     }
   })();
 
-  const controller = new SoilSamplingNdviController(service, { authClient });
+  const imageryJobs = new NdviImageryJobStore({ service });
+  const controller = new SoilSamplingNdviController(service, {
+    authClient,
+    imageryJobs,
+  });
 
   let schemaAvailable = false;
   const schemaReady = repository
@@ -89,6 +93,10 @@ function createSoilSamplingNdviRouter({ pool, publicBaseUrl = '' }) {
   router.post('/plots/:plotId/generate-package', controller.generatePackage);
   router.post('/generate-package', controller.generatePackage);
   router.post('/ndvi/generate-package', controller.generatePackage);
+  router.post('/imagery/jobs', controller.createImageryJob);
+  router.get('/imagery/jobs/:jobId', controller.getImageryJob);
+  router.get('/imagery/jobs/:jobId/result', controller.getImageryJobResult);
+  router.post('/imagery/jobs/:jobId/retry', controller.retryImageryJob);
   router.post('/campaigns/:campaignId/attach', controller.attach);
   router.get('/campaigns/:campaignId/active', controller.getActive);
   router.post('/campaigns/:campaignId/refresh', controller.refresh);

@@ -55,7 +55,7 @@ describe('NDVI provenance and final-layer gate', () => {
         acquisitionDate: '2026-05-25',
         provider: 'google_earth_engine', resolutionM: 10,
         resolutionKind: 'final', algorithmVersion: 'layer_pipeline_v4_relative_contrast',
-        polygonHash, bounds,
+        polygonHash, bounds, crs: 'EPSG:4326',
       },
     },
   };
@@ -101,6 +101,65 @@ describe('NDVI provenance and final-layer gate', () => {
       campaignId: 'c1', farmId: 'f1', plotId: 'p1', layerId: 'layer-preview',
     }), (error) => error.code === 'layer_not_final_ready');
     assert.equal(activated, false);
+  });
+
+  it('persiste referência geoespacial versionada ao vincular camada final', async () => {
+    let activationArgs = null;
+    const gated = new SoilSamplingNdviService({
+      repository: {
+        ensureSchema: async () => {},
+        getById: async () => ({
+          id: 'layer-final',
+          scene_id: 'scene-abc',
+          farm_id: 'f1',
+          plot_id: 'p1',
+          image_date: '2026-05-25T00:00:00.000Z',
+          visual_mode: 'ndvi_contrast',
+          resolution_m: 10,
+          provider: 'google_earth_engine',
+          source: 'gee',
+          agronomic_stats: row.agronomic_stats,
+        }),
+        setActiveLayer: async (args) => {
+          activationArgs = args;
+          return {
+            id: 'layer-final', farm_id: 'f1', plot_id: 'p1',
+            image_date: '2026-05-25T00:00:00.000Z',
+            agronomic_stats: {
+              ...row.agronomic_stats,
+              collection_reference: args.collectionReference,
+            },
+          };
+        },
+      },
+      catalogClient: {}, processClient: {},
+      authClient: { isConfigured: () => true },
+    });
+
+    await gated.attachLayer({
+      campaignId: 'c1', farmId: 'f1', plotId: 'p1', layerId: 'layer-final',
+      payload: {
+        collection_reference: {
+          bbox: [-54.48, -15.38, -54.47, -15.37],
+          visualScale: { inspectionContrastPercent: 50 },
+        },
+      },
+    });
+
+    assert.equal(activationArgs.collectionReference.version, 1);
+    assert.equal(activationArgs.collectionReference.artifactId, 'layer-final');
+    assert.equal(activationArgs.collectionReference.fieldId, 'p1');
+    assert.equal(activationArgs.collectionReference.campaignId, 'c1');
+    assert.deepEqual(
+      activationArgs.collectionReference.visualScale,
+      {
+        inspectionContrastPercent: 50,
+        absoluteMin: -0.2,
+        absoluteMax: 1,
+        adaptiveP2: null,
+        adaptiveP98: null,
+      },
+    );
   });
 
   it('force ignora o cache de renderização', async () => {
@@ -625,7 +684,7 @@ describe('SceneBandPackage generate-package', () => {
     );
   });
 
-  it('usa GEE como provider preferencial de generate-package quando configurado', async () => {
+  it('usa GEE como provider preferencial e não faz fallback quando banda está ausente', async () => {
     const previousEnv = {
       NDVI_PROVIDER: process.env.NDVI_PROVIDER,
       NDVI_PACKAGE_PROVIDER: process.env.NDVI_PACKAGE_PROVIDER,
@@ -732,13 +791,13 @@ describe('SceneBandPackage generate-package', () => {
         'ndmi_water_stress',
         'ndre',
       ]);
-      assert.equal(copernicusCalls.length, 1);
-      assert.deepEqual(copernicusCalls[0].modes, ['ndre']);
-      assert.equal(result.provider, 'copernicus_dataspace');
-      assert.equal(result.packageStatus, 'ready');
+      assert.equal(copernicusCalls.length, 0);
+      assert.equal(result.provider, 'google_earth_engine');
+      assert.equal(result.packageStatus, 'partial');
       assert.equal(result.statusesByMode.ndvi_absolute.status, 'ready');
       assert.equal(result.statusesByMode.ndmi_water_stress.status, 'ready');
-      assert.equal(result.statusesByMode.ndre.status, 'ready');
+      assert.equal(result.statusesByMode.ndre.status, 'unavailable');
+      assert.equal(result.statusesByMode.ndre.code, 'missingBandB05');
     } finally {
       for (const [key, value] of Object.entries(previousEnv)) {
         if (value === undefined) delete process.env[key];

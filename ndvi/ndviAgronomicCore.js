@@ -51,9 +51,14 @@ export function computeIndices(sample) {
   const ndvi = B08 != null && B04 != null ? safeDiv(B08 - B04, B08 + B04) : null;
   const ndre =
     nirNarrow != null && B05 != null ? safeDiv(nirNarrow - B05, nirNarrow + B05) : null;
-  const saviNum =
-    B08 != null && B04 != null ? safeDiv(B08 - B04, B08 + B04 + 0.5) : null;
-  const savi = saviNum != null ? saviNum * 1.5 : null;
+  const msaviDiscriminant =
+    B08 != null && B04 != null
+      ? (2 * B08 + 1) ** 2 - 8 * (B08 - B04)
+      : null;
+  const savi =
+    msaviDiscriminant != null && msaviDiscriminant >= 0
+      ? (2 * B08 + 1 - Math.sqrt(msaviDiscriminant)) / 2
+      : null;
   const bsi =
     B11 != null && B04 != null && B08 != null && B02 != null
       ? safeDiv(B11 + B04 - (B08 + B02), B11 + B04 + B08 + B02)

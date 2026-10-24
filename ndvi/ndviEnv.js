@@ -1,11 +1,10 @@
 /**
  * Configuração NDVI.
  *
- * Copernicus segue como provider padrão. GEE só é usado com opt-in explícito,
- * mas pode ser habilitado apenas para pacotes multibanda com
- * NDVI_PACKAGE_PROVIDER=gee.
+ * GEE é o provider padrão. Copernicus Data Space é contingência explícita
+ * para falhas técnicas recuperáveis; credencial inválida não faz fallback.
  */
-function normalizeProvider(value, fallback = 'copernicus') {
+function normalizeProvider(value, fallback = 'gee') {
   const provider = String(value || fallback).trim().toLowerCase();
   if (provider === 'google_earth_engine') return 'gee';
   if (provider === 'earth_engine') return 'gee';
@@ -23,7 +22,7 @@ export function getNdviProviderStatus() {
   );
 
   const geeUsageAllowed =
-    process.env.GEE_ALLOW_USAGE === 'true' &&
+    process.env.GEE_ALLOW_USAGE !== 'false' &&
     (ndviProvider === 'gee' ||
       ndviProvider === 'auto' ||
       packageProvider === 'gee' ||
@@ -55,8 +54,7 @@ export function getNdviProviderStatus() {
         process.env.NDVI_PUBLIC_BASE_URL),
   );
 
-  // Copernicus-first: GEE fica dormente por padrão para evitar custo acidental.
-  // Só usa GEE quando há opt-in explícito e credenciais válidas.
+  // GEE-first: credenciais continuam obrigatórias e exclusivas do servidor.
   const geePrimary = geeEnabled && geeConfigured;
   const geePrimaryForGenerate = geePrimary && ndviProvider === 'gee';
   const geePackagePreferred =
@@ -103,9 +101,9 @@ export function assertCopernicusReady(authClient) {
 
 export function assertGeeIfRequired() {
   const status = getNdviProviderStatus();
-  if (process.env.NDVI_PROVIDER !== 'gee' && !status.gee_enabled) return status;
+  if (status.ndvi_provider !== 'gee' && !status.gee_enabled) return status;
 
-  if (process.env.NDVI_PROVIDER === 'gee' && process.env.GEE_ALLOW_USAGE !== 'true') {
+  if (status.ndvi_provider === 'gee' && !status.gee_usage_allowed) {
     const err = new Error(
       'Google Earth Engine está desativado por política. Use Copernicus Data Space como provider NDVI.',
     );
