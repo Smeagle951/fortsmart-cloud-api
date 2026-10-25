@@ -15,6 +15,12 @@ import {
   logGenerateStart,
   newNdviRequestId,
 } from './ndviGenerateLogger.js';
+import {
+  buildFastCachePackageKey,
+  buildFastCacheResponseMeta,
+  enrichStatusesWithFastCacheArtifacts,
+  hashPolygonForPackage,
+} from './ndviFastCacheKey.js';
 import { isPlaceholderPreviewUrl } from './ndviPngStats.js';
 import {
   dedupeScenesByDate,
@@ -95,41 +101,7 @@ export function cacheProviderMatchesPreference(cached, requireGeeProvider) {
   return provider === 'gee' || provider === 'google_earth_engine';
 }
 
-function hashPolygonForPackage(polygon) {
-  const raw = JSON.stringify(polygon?.coordinates ?? polygon ?? {});
-  return createHash('sha256').update(raw).digest('hex').slice(0, 12);
-}
-
-function buildScenePackageKey({
-  farmId,
-  plotId,
-  sceneId,
-  acquisitionDate,
-  polygonHash,
-  resolutionKind = 'preview',
-  cloudMaskVersion = 'cloud_score_plus_v1',
-  rendererVersion = 'spectral_objective_v1',
-  objective = 'recommended',
-  algorithmVersion = 'spectral_objective_v1',
-  classificationVersion = 'post_harvest_v0.1',
-  requestedDate,
-}) {
-  const req = String(requestedDate || acquisitionDate || '').slice(0, 10);
-  return [
-    farmId,
-    plotId,
-    sceneId || '-',
-    acquisitionDate || '-',
-    polygonHash || '-',
-    resolutionKind,
-    cloudMaskVersion,
-    rendererVersion,
-    objective,
-    algorithmVersion,
-    classificationVersion,
-    req,
-  ].join('_');
-}
+const buildScenePackageKey = buildFastCachePackageKey;
 
 function num(value) {
   if (value == null || value === '') return null;
@@ -1038,6 +1010,53 @@ class SoilSamplingNdviService {
     return { layersByMode, statusesByMode };
   }
 
+  _finalizeGeneratePackageResponse(
+    payload,
+    {
+      packageCacheKey,
+      timing = null,
+      fromCache = false,
+      geeInvoked = false,
+    } = {},
+  ) {
+    const key = packageCacheKey || payload.packageCacheKey;
+    const { artifactStates, statusesByMode } = enrichStatusesWithFastCacheArtifacts({
+      statusesByMode: { ...(payload.statusesByMode || {}) },
+      layersByMode: payload.layersByMode || {},
+      packageCacheKey: key,
+    });
+    const fastCache = buildFastCacheResponseMeta({
+      packageCacheKey: key,
+      artifactStates,
+      fromCache,
+      geeInvoked,
+      totalMs: payload.elapsedMs ?? timing?.elapsedMs?.() ?? 0,
+      requestId: timing?.requestId ?? null,
+    });
+    if (fromCache) {
+      console.log('[NDVI_FASTCACHE_HIT]', {
+        packageCacheKey: key,
+        modes: Object.keys(payload.layersByMode || {}),
+        artifactStates,
+        totalMs: fastCache.totalMs,
+      });
+    }
+    if (timing?.fastCacheSummary) {
+      timing.fastCacheSummary({
+        fromCache,
+        geeInvoked,
+        finalStatus: fromCache ? 'cache_hit' : 'done',
+        artifactStates,
+      });
+    }
+    return {
+      ...payload,
+      packageCacheKey: key,
+      statusesByMode,
+      fastCache,
+    };
+  }
+
   async generateLayerPackage({
     farmId,
     plotId,
@@ -1182,19 +1201,22 @@ class SoilSamplingNdviService {
         modes: uniqueModes,
         elapsedMs: Date.now() - startedAt,
       });
-      return {
-        scene_id: sceneId,
-        packageCacheKey,
-        packageStatus: 'ready',
-        package_version: 'scene_band_package_v1',
-        resolution_kind: resolutionKind,
-        generatedAt: new Date().toISOString(),
-        provider: 'render_cache',
-        modes: uniqueModes,
-        layersByMode,
-        statusesByMode,
-        elapsedMs: Date.now() - startedAt,
-      };
+      return this._finalizeGeneratePackageResponse(
+        {
+          scene_id: sceneId,
+          packageCacheKey,
+          packageStatus: 'ready',
+          package_version: 'scene_band_package_v1',
+          resolution_kind: resolutionKind,
+          generatedAt: new Date().toISOString(),
+          provider: 'render_cache',
+          modes: uniqueModes,
+          layersByMode,
+          statusesByMode,
+          elapsedMs: Date.now() - startedAt,
+        },
+        { packageCacheKey, timing, fromCache: true, geeInvoked: false },
+      );
     }
     timing.mark('cache_miss', { pending: pendingModes.join(',') });
     console.log('[NDVI] CACHE_PACKAGE_MISS', {
@@ -1364,19 +1386,27 @@ class SoilSamplingNdviService {
         // Um pacote parcialmente pronto não encerra a solicitação: os modos
         // ausentes ainda podem ser renderizados pelo Copernicus.
         if (pendingModes.every((mode) => Boolean(layersByMode[mode]))) {
-          return {
-            scene_id: packageResult.scene_id || sceneId,
-            packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
-            packageStatus,
-            package_version: packageResult.package_version || 'scene_band_package_v1',
-            resolution_kind: packageResult.resolution_kind || 'preview',
-            generatedAt: new Date().toISOString(),
-            provider: 'google_earth_engine',
-            modes: uniqueModes,
-            layersByMode,
-            statusesByMode,
-            elapsedMs: Date.now() - startedAt,
-          };
+          return this._finalizeGeneratePackageResponse(
+            {
+              scene_id: packageResult.scene_id || sceneId,
+              packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
+              packageStatus,
+              package_version: packageResult.package_version || 'scene_band_package_v1',
+              resolution_kind: packageResult.resolution_kind || 'preview',
+              generatedAt: new Date().toISOString(),
+              provider: 'google_earth_engine',
+              modes: uniqueModes,
+              layersByMode,
+              statusesByMode,
+              elapsedMs: Date.now() - startedAt,
+            },
+            {
+              packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
+              timing,
+              fromCache: false,
+              geeInvoked: true,
+            },
+          );
         }
         copernicusFallbackModes = pendingModes.filter((mode) => {
           if (layersByMode[mode]) return false;
@@ -1388,19 +1418,27 @@ class SoilSamplingNdviService {
           });
         });
         if (copernicusFallbackModes.length === 0) {
-          return {
-            scene_id: packageResult.scene_id || sceneId,
-            packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
-            packageStatus,
-            package_version: packageResult.package_version || 'scene_band_package_v1',
-            resolution_kind: packageResult.resolution_kind || resolutionKind,
-            generatedAt: new Date().toISOString(),
-            provider: 'google_earth_engine',
-            modes: uniqueModes,
-            layersByMode,
-            statusesByMode,
-            elapsedMs: Date.now() - startedAt,
-          };
+          return this._finalizeGeneratePackageResponse(
+            {
+              scene_id: packageResult.scene_id || sceneId,
+              packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
+              packageStatus,
+              package_version: packageResult.package_version || 'scene_band_package_v1',
+              resolution_kind: packageResult.resolution_kind || resolutionKind,
+              generatedAt: new Date().toISOString(),
+              provider: 'google_earth_engine',
+              modes: uniqueModes,
+              layersByMode,
+              statusesByMode,
+              elapsedMs: Date.now() - startedAt,
+            },
+            {
+              packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
+              timing,
+              fromCache: false,
+              geeInvoked: true,
+            },
+          );
         }
         console.warn('[Package] GEE falhou de forma recuperável; usando contingência', {
           field: plotId,
@@ -1519,19 +1557,27 @@ class SoilSamplingNdviService {
           (mode) => Boolean(statusesByMode[mode]),
         );
         if (attemptedEveryMode || Object.keys(layersByMode).length > 0) {
-          return {
-            scene_id: packageResult.scene_id || sceneId,
-            packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
-            packageStatus,
-            package_version: packageResult.package_version || 'scene_band_package_v1',
-            resolution_kind: packageResult.resolution_kind || 'preview',
-            generatedAt: packageResult.generatedAt || new Date().toISOString(),
-            provider: packageResult.provider || 'copernicus_dataspace',
-            modes: uniqueModes,
-            layersByMode,
-            statusesByMode,
-            elapsedMs: Date.now() - startedAt,
-          };
+          return this._finalizeGeneratePackageResponse(
+            {
+              scene_id: packageResult.scene_id || sceneId,
+              packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
+              packageStatus,
+              package_version: packageResult.package_version || 'scene_band_package_v1',
+              resolution_kind: packageResult.resolution_kind || 'preview',
+              generatedAt: packageResult.generatedAt || new Date().toISOString(),
+              provider: packageResult.provider || 'copernicus_dataspace',
+              modes: uniqueModes,
+              layersByMode,
+              statusesByMode,
+              elapsedMs: Date.now() - startedAt,
+            },
+            {
+              packageCacheKey: packageResult.packageCacheKey || packageCacheKey,
+              timing,
+              fromCache: false,
+              geeInvoked: false,
+            },
+          );
         }
         console.warn('[Package] Copernicus package renderer returned no ready layers; falling back', {
           field: plotId,
@@ -1625,18 +1671,21 @@ class SoilSamplingNdviService {
       elapsedMs: Date.now() - startedAt,
     });
 
-    return {
-      scene_id: sceneId,
-      packageCacheKey,
-      packageStatus,
-      package_version: 'scene_band_package_v1',
-      resolution_kind: resolutionKind,
-      generatedAt: new Date().toISOString(),
-      modes: uniqueModes,
-      layersByMode,
-      statusesByMode,
-      elapsedMs: Date.now() - startedAt,
-    };
+    return this._finalizeGeneratePackageResponse(
+      {
+        scene_id: sceneId,
+        packageCacheKey,
+        packageStatus,
+        package_version: 'scene_band_package_v1',
+        resolution_kind: resolutionKind,
+        generatedAt: new Date().toISOString(),
+        modes: uniqueModes,
+        layersByMode,
+        statusesByMode,
+        elapsedMs: Date.now() - startedAt,
+      },
+      { packageCacheKey, timing, fromCache: false, geeInvoked: false },
+    );
   }
 
   async generateLayer({

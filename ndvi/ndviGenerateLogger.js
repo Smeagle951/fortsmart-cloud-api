@@ -61,11 +61,25 @@ export function createNdviTimingTrace({
     return { requestId, totalMs, marks, status: finalStatus };
   }
 
+  function fastCacheSummary(extra = {}) {
+    const payload = summary(extra.finalStatus || extra.status || 'done');
+    console.log(
+      `[NDVI_FASTCACHE_TIMING] ${JSON.stringify({
+        requestId: payload.requestId,
+        totalMs: payload.totalMs,
+        status: payload.status,
+        ...extra,
+      })}`,
+    );
+    return payload;
+  }
+
   return {
     requestId,
     startedAt,
     mark,
     summary,
+    fastCacheSummary,
     elapsedMs: () => Date.now() - startedAt,
   };
 }
