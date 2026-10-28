@@ -35,6 +35,48 @@ describe('preferência de provedor no cache', () => {
   });
 });
 
+describe('deduplicação de pacote progressivo', () => {
+  it('reusa request ativa entre fastPreview e preview da mesma cena', async () => {
+    let calls = 0;
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const service = new SoilSamplingNdviService({
+      repository: {},
+      catalogClient: {},
+      processClient: {},
+      authClient: {},
+    });
+    service._generateLayerPackageOnce = async () => {
+      calls += 1;
+      await gate;
+      return { layersByMode: { ndvi_contrast: { preview_url: 'https://cdn.test/p.png' } } };
+    };
+    const params = {
+      farmId: 'farm-1',
+      plotId: 'plot-1',
+      campaignId: 'campaign-1',
+      sceneId: 'scene-1',
+      polygon,
+      modes: ['ndvi_contrast'],
+      resolutionKind: 'fastPreview',
+      preferredProvider: 'gee',
+    };
+
+    const fast = service.generateLayerPackage(params);
+    const preview = service.generateLayerPackage({
+      ...params,
+      resolutionKind: 'preview',
+    });
+    await Promise.resolve();
+    assert.equal(calls, 1);
+    release();
+    assert.equal(await fast, await preview);
+    assert.equal(service.packageInflight.size, 0);
+  });
+});
+
 describe('NDVI provenance and final-layer gate', () => {
   const polygonHash = createHash('sha256')
     .update(JSON.stringify(polygon.coordinates)).digest('hex').slice(0, 12);

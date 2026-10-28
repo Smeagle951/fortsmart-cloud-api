@@ -59,6 +59,33 @@ test('job é idempotente e só fica READY com artefatos obrigatórios', async ()
   assert.ok(ready.result);
 });
 
+test('preview sem estatísticas fica READY para inspeção do mapa', async () => {
+  const scheduled = [];
+  const store = new NdviImageryJobStore({
+    service: {
+      async generateLayerPackage() {
+        return {
+          layersByMode: {
+            ndvi_contrast: {
+              id: 'layer-preview',
+              preview_url: 'https://example.test/preview.png',
+            },
+          },
+          statusesByMode: { ndvi_contrast: { status: 'ready' } },
+        };
+      },
+    },
+    schedule: (callback) => scheduled.push(callback),
+  });
+  const created = store.create(payload);
+  await scheduled.shift()();
+  const ready = store.get(created.job.jobId);
+  assert.equal(ready.status, IMAGERY_JOB_STATES.READY);
+  assert.equal(ready.previewReady, true);
+  assert.equal(ready.mapReady, true);
+  assert.equal(ready.analyticsReady, false);
+});
+
 test('job falha quando pacote não retorna visualização/estatísticas', async () => {
   const scheduled = [];
   const store = new NdviImageryJobStore({

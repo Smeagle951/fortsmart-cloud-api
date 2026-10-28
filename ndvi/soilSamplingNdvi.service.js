@@ -49,6 +49,38 @@ import { RASTER_SCHEMA_NUM } from './ndviRasterSerializer.js';
 
 const LAYER_PIPELINE_ALGORITHM_VERSION = 'layer_pipeline_v4_relative_contrast';
 
+export function buildPackageInflightKey({
+  farmId,
+  plotId,
+  campaignId = null,
+  sceneId,
+  polygon,
+  modes = [],
+  resolutionKind = 'preview',
+  objective = 'recommended',
+  preferredProvider = null,
+}) {
+  const normalizedModes = [...new Set(
+    (Array.isArray(modes) ? modes : [modes])
+      .map((mode) => resolveRequestedVisualMode(mode))
+      .filter(Boolean),
+  )].sort();
+  // fast/fastPreview/preview entregam o mesmo artefato progressivo ao mapa.
+  // Uma chamada final permanece separada por exigir raster analítico.
+  const resolutionKey = resolutionKind === 'final' ? 'final' : 'preview';
+  return [
+    farmId || '',
+    plotId || '',
+    campaignId || '',
+    sceneId || '',
+    hashPolygonForPackage(polygon),
+    normalizedModes.join(','),
+    resolutionKey,
+    objective || 'recommended',
+    String(preferredProvider || 'auto').toLowerCase(),
+  ].join('|');
+}
+
 function normalizeImageDate(value) {
   if (value == null) return null;
   if (value instanceof Date) {
@@ -259,6 +291,7 @@ class SoilSamplingNdviService {
     this.processClient = processClient;
     this.authClient = authClient;
     this.geeClient = geeClient;
+    this.packageInflight = new Map();
   }
 
   /**
@@ -1057,7 +1090,29 @@ class SoilSamplingNdviService {
     };
   }
 
-  async generateLayerPackage({
+  async generateLayerPackage(params) {
+    const key = buildPackageInflightKey(params);
+    const active = this.packageInflight.get(key);
+    if (active) {
+      console.info('[NDVI_PACKAGE_INFLIGHT_HIT]', {
+        plotId: params.plotId,
+        sceneId: params.sceneId,
+        modes: params.modes,
+      });
+      return active;
+    }
+    const request = this._generateLayerPackageOnce(params);
+    this.packageInflight.set(key, request);
+    try {
+      return await request;
+    } finally {
+      if (this.packageInflight.get(key) === request) {
+        this.packageInflight.delete(key);
+      }
+    }
+  }
+
+  async _generateLayerPackageOnce({
     farmId,
     plotId,
     campaignId = null,

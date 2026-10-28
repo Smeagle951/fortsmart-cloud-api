@@ -1688,13 +1688,15 @@ function resolveContrastStretch(stats = {}) {
   };
 }
 
-function visualizationFor({ mode = VISUAL_MODES.NDVI_CONTRAST, stats = {} } = {}) {
+export function visualizationFor({ mode = VISUAL_MODES.NDVI_CONTRAST, stats = {} } = {}) {
   if (mode === VISUAL_MODES.NDVI_CONTRAST) {
     const stretch = resolveContrastStretch(stats);
     return {
       min: stretch.min,
       max: stretch.max,
-      gamma: stretch.gamma,
+      // Earth Engine rejeita gamma junto com palette em Image.visualize().
+      // O contraste científico continua definido por min/max; gamma fica só
+      // nos metadados de diagnóstico e nunca altera o índice numérico.
       palette: NDVI_AGRONOMIC_PALETTE,
       forceRgbOutput: true,
     };
@@ -1796,7 +1798,7 @@ function thumbnailSizes(areaHa) {
     .map((size) => Math.round(size));
 }
 
-function packageThumbSizes(areaHa, modeCount = 1, resolutionKind = 'preview') {
+export function packageThumbSizes(areaHa, modeCount = 1, resolutionKind = 'preview') {
   if (isFastLikeResolution(resolutionKind)) {
     const configured = numberFromEnv(
       'GEE_FAST_PREVIEW_THUMB_SIZE',
@@ -1811,15 +1813,45 @@ function packageThumbSizes(areaHa, modeCount = 1, resolutionKind = 'preview') {
   }
   const configured = numberFromEnv('GEE_PACKAGE_THUMB_SIZE', NaN);
   if (Number.isFinite(configured) && configured > 0) {
-    return [Math.round(configured)];
+    return [Math.max(384, Math.min(512, Math.round(configured)))];
   }
-  if (modeCount <= 1) {
-    return thumbnailSizes(areaHa);
-  }
-  const preferred = preferredThumbSize(areaHa);
-  const cap = Math.min(preferred, 1024);
-  const sizes = thumbnailSizes(areaHa).filter((size) => size <= cap);
-  return sizes.length ? sizes : [768, 512];
+  // Preview do mapa mobile: entrega progressiva leve. Exportações/final usam
+  // caminho próprio e não devem elevar o custo desta primeira imagem.
+  return [modeCount > 1 ? 384 : 512];
+}
+
+export function createGeeTileUrl(image, { timeoutMs = 10_000 } = {}) {
+  if (!image?.getMapId) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const error = new Error('Tempo esgotado ao criar sessao de tiles GEE.');
+      error.code = 'gee_map_session_timeout';
+      reject(error);
+    }, timeoutMs);
+    image.getMapId({}, (mapInfo, error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      const url = String(mapInfo?.urlFormat || '').trim();
+      if (!/^https:\/\//i.test(url) ||
+          !url.includes('{z}') ||
+          !url.includes('{x}') ||
+          !url.includes('{y}')) {
+        const invalid = new Error('GEE retornou formato de tile invalido.');
+        invalid.code = 'gee_map_session_invalid';
+        reject(invalid);
+        return;
+      }
+      resolve(url);
+    });
+  });
 }
 
 async function mapWithConcurrency(items, concurrency, mapper) {
@@ -1875,6 +1907,7 @@ async function renderVisualPngWithFallback({
           buffer: await downloadPng(thumbUrl, fetchImpl, {
             timeoutMs: thumbTimeoutMs,
           }),
+          visual,
           thumbSize: size,
           smoothingApplied: candidate.smoothingApplied,
         };
@@ -2282,6 +2315,15 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         fetchImpl,
         thumbSizes: thumbSizesToUse,
       });
+      const tileUrlPromise = createGeeTileUrl(renderedPng.visual).catch((error) => {
+        console.warn('[NDVI_GEE_TILE_SESSION_UNAVAILABLE]', {
+          sceneId: selectedSceneId,
+          mode,
+          code: error?.code || 'gee_map_session_failed',
+          message: error?.message || String(error),
+        });
+        return null;
+      });
       const pngBuffer = renderedPng.buffer;
       attachPreviewColorBuckets(stats, pngBuffer, mode);
       const rasterValidation = validateRasterResult({
@@ -2308,6 +2350,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         rendererVersion,
         buffer: pngBuffer,
       });
+      const tileUrl = await tileUrlPromise;
 
       console.log('[NDVI_RENDER_DISPATCH]');
       console.log('provider=google_earth_engine');
@@ -2449,7 +2492,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
         preview_url: previewUrl || (pngBuffer.length <= 900_000
           ? `data:image/png;base64,${pngBuffer.toString('base64')}`
           : null),
-        tile_url: null,
+        tile_url: tileUrl,
         raster_url: null,
         raster_available: false,
         bounds: polygonToBounds(polygon),
@@ -2851,6 +2894,15 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
               fetchImpl,
               thumbSizes: packageThumbSizesToUse,
             });
+            const tileUrlPromise = createGeeTileUrl(renderedPng.visual).catch((error) => {
+              console.warn('[NDVI_GEE_TILE_SESSION_UNAVAILABLE]', {
+                sceneId: selectedSceneId,
+                mode,
+                code: error?.code || 'gee_map_session_failed',
+                message: error?.message || String(error),
+              });
+              return null;
+            });
             const pngBuffer = renderedPng.buffer;
             attachPreviewColorBuckets(stats, pngBuffer, mode);
             const rasterValidation = validateRasterResult({
@@ -2877,6 +2929,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
               rendererVersion,
               buffer: pngBuffer,
             });
+            const tileUrl = await tileUrlPromise;
             const agronomicStats = {
               ...stats,
               schema_version: 'ndvi_v3',
@@ -2958,7 +3011,7 @@ export async function createGeeNdviEngine({ publicBaseUrl = '', fetchImpl = glob
               preview_url: previewUrl || (pngBuffer.length <= 900_000
                 ? `data:image/png;base64,${pngBuffer.toString('base64')}`
                 : null),
-              tile_url: null,
+              tile_url: tileUrl,
               raster_url: null,
               raster_available: false,
               bounds: polygonToBounds(polygon),
