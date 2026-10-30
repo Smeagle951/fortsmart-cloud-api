@@ -48,6 +48,14 @@ function modeArtifact(layer, status = {}) {
   const previewUrl = layer?.preview_url || layer?.previewUrl || null;
   const tileUrl = layer?.tile_url || layer?.tileUrl || null;
   const rasterUrl = layer?.raster_url || layer?.rasterUrl || null;
+  const rasterStorageKey =
+    layer?.raster_storage_key || layer?.rasterStorageKey || null;
+  const hasNumericRaster = Boolean(
+    rasterUrl ||
+      layer?.raster_cache_path ||
+      layer?.rasterCachePath ||
+      (layer?.raster_available === true && rasterStorageKey),
+  );
   const stats = layer?.agronomic_stats || layer?.agronomicStats || null;
   const statsReady =
     (stats && typeof stats === 'object' && Object.keys(stats).length > 0) ||
@@ -68,11 +76,11 @@ function modeArtifact(layer, status = {}) {
     typeof crs === 'string' &&
     crs.trim().length > 0;
   return {
-    numericRaster: Boolean(rasterUrl || layer?.raster_cache_path || layer?.rasterCachePath),
+    numericRaster: hasNumericRaster,
     visualization: Boolean(previewUrl || tileUrl),
     thumbnail: Boolean(previewUrl),
     statistics: Boolean(statsReady),
-    export: Boolean(previewUrl || rasterUrl),
+    export: Boolean(previewUrl || hasNumericRaster),
     soilCollectionLayer: Boolean(
       (layer?.layer_id || layer?.layerId || layer?.id || status?.layerResultId) &&
         hasGeoreference &&

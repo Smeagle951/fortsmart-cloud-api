@@ -86,6 +86,36 @@ test('preview sem estatísticas fica READY para inspeção do mapa', async () =>
   assert.equal(ready.analyticsReady, false);
 });
 
+test('raster interno persistido habilita artefato numérico e exportação', async () => {
+  const scheduled = [];
+  const store = new NdviImageryJobStore({
+    service: {
+      async generateLayerPackage() {
+        return {
+          provider: 'copernicus',
+          layersByMode: {
+            ndvi_contrast: {
+              id: 'layer-internal-grid',
+              preview_url: 'https://example.test/preview.png',
+              raster_available: true,
+              raster_storage_key: 'ndvi/internal-grid/plot-1/scene-1/grid_v1.bin',
+            },
+          },
+          statusesByMode: { ndvi_contrast: { status: 'ready' } },
+        };
+      },
+    },
+    schedule: (callback) => scheduled.push(callback),
+  });
+  const created = store.create(payload);
+  await scheduled.shift()();
+  const ready = store.get(created.job.jobId);
+  assert.equal(ready.status, IMAGERY_JOB_STATES.READY);
+  assert.equal(ready.artifacts.ndvi_contrast.numericRaster, true);
+  assert.equal(ready.artifacts.ndvi_contrast.export, true);
+  assert.equal(ready.exportReady, true);
+});
+
 test('job falha quando pacote não retorna visualização/estatísticas', async () => {
   const scheduled = [];
   const store = new NdviImageryJobStore({
