@@ -4,7 +4,7 @@ import {
 } from './ndviContrastEngine.js';
 import { bilinearUpscale } from './ndviSpatialSmoothing.js';
 
-const RENDERER_VERSION = 'agronomic_contrast_v10_relative_low_biomass';
+const RENDERER_VERSION = 'agronomic_contrast_v11_p2_p98';
 
 function finiteNdviValues(values) {
   return Array.isArray(values)
@@ -34,9 +34,9 @@ const LOW_BIOMASS_P95_MAX = 0.40;
 const MIN_ROBUST_RELATIVE_SPAN = 0.01;
 
 function resolveStretch(percentiles) {
-  const p5 = Number(percentiles.p5);
+  const p5 = Number(percentiles.p2 ?? percentiles.p5);
   const p50 = Number(percentiles.p50);
-  const p95 = Number(percentiles.p95);
+  const p95 = Number(percentiles.p98 ?? percentiles.p95);
   const mean = Number(percentiles.mean ?? p50);
   const lowBiomassSurface =
     Number.isFinite(mean) &&
@@ -49,9 +49,9 @@ function resolveStretch(percentiles) {
     p95 - p5 >= MIN_ROBUST_RELATIVE_SPAN
   ) {
     return {
-      pLow: p5,
-      pHigh: p95,
-      stretchMode: 'p5_p95',
+      pLow: (p5 + p95) / 2 - Math.max(p95 - p5, 0.08) / 2,
+      pHigh: (p5 + p95) / 2 + Math.max(p95 - p5, 0.08) / 2,
+      stretchMode: 'p2_p98_min_amplitude',
       lowContrastScene: false,
       usedLowContrastFallback: false,
       lowBiomassSurface,
@@ -59,9 +59,9 @@ function resolveStretch(percentiles) {
   }
   const center = Number.isFinite(p50) ? p50 : Number(percentiles.mean ?? 0.5);
   return {
-    pLow: center - 0.03,
-    pHigh: center + 0.03,
-    stretchMode: 'mean_window_0_06',
+    pLow: center - 0.04,
+    pHigh: center + 0.04,
+    stretchMode: 'mean_window_0_08',
     lowContrastScene: true,
     usedLowContrastFallback: true,
     lowBiomassSurface,
@@ -125,7 +125,6 @@ export function renderAgronomicContrastV2({
     if (value == null) return null;
     // Sem amplitude robusta, uma classe neutra é mais fiel do que amplificar
     // ruído e fabricar extremos relativos vermelhos/verdes.
-    if (stretch.usedLowContrastFallback) return 0.55;
     return applyContrastStretch(value, stretch.pLow, stretch.pHigh);
   });
   const visualValues = stretched.map((value) =>
