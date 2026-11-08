@@ -15,7 +15,7 @@ const DEFAULT_SMOOTHING_RADIUS_PX = 1;
 const MINIMUM_CLOUD_SCORE_CDF = Number(process.env.GEE_MIN_CS_CDF || 0.65);
 const MASK_VERSION = 'scl_csplus_v1';
 const CLOUD_MASK_VERSION = 'cloud_score_plus_v1';
-const ALGORITHM_VERSION = 'spectral_objective_v1';
+const ALGORITHM_VERSION = 'spectral_objective_v2_contrast_p2_p98';
 const CLASSIFICATION_VERSION = 'post_harvest_v0.1';
 const REFLECTANCE_SCALE = 0.0001;
 
@@ -1611,6 +1611,29 @@ function buildSceneCacheKeyParts({
 }
 
 function resolveContrastStretch(stats = {}) {
+  const low = stats.ndvi_p2 ?? stats.contrast?.p2 ?? stats.ndvi_p5 ?? stats.contrast?.p5;
+  const high = stats.ndvi_p98 ?? stats.contrast?.p98 ?? stats.ndvi_p95 ?? stats.contrast?.p95;
+  let min = low == null ? -0.2 : Number(low);
+  let max = high == null ? 1 : Number(high);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max < min) {
+    min = -0.2;
+    max = 1;
+  }
+  min = Math.max(-1, Math.min(1, min));
+  max = Math.max(-1, Math.min(1, max));
+  if (max - min < 0.08) {
+    const center = (min + max) / 2;
+    min = Math.max(-1, Math.min(0.92, center - 0.04));
+    max = min + 0.08;
+  }
+  return {
+    min, max, gamma: 1,
+    lowContrastScene: high != null && low != null && Number(high) - Number(low) < 0.08,
+    stretchMode: 'p2_p98_min_amplitude_v2',
+  };
+}
+
+function legacyResolveContrastStretch(stats = {}) {
   const p2 = Number(stats.ndvi_p2 ?? stats.contrast?.p2);
   const p98 = Number(stats.ndvi_p98 ?? stats.contrast?.p98);
   const p5 = Number(stats.ndvi_p5 ?? stats.contrast?.p5);

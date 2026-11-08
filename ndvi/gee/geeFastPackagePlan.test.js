@@ -8,6 +8,26 @@ import {
   visualizationFor,
 } from './geeNdviEngine.js';
 
+test('contraste usa P2/P98 e protege amplitude mínima inclusive percentis nulos', () => {
+  const actual = visualizationFor({mode: 'ndvi_contrast', stats: {
+    ndvi_p2: 0.1, ndvi_p98: 0.7, ndvi_p5: 0.2, ndvi_p95: 0.5,
+  }});
+  assert.equal(actual.min, 0.1);
+  assert.equal(actual.max, 0.7);
+  for (const value of [-1, 0, 0.2, 1]) {
+    const result = visualizationFor({mode: 'ndvi_contrast', stats: {
+      ndvi_p2: value, ndvi_p98: value,
+    }});
+    assert.ok(result.max - result.min >= 0.079999);
+    assert.ok(result.min >= -1 && result.max <= 1);
+  }
+  const missing = visualizationFor({mode: 'ndvi_contrast', stats: {
+    ndvi_p2: null, ndvi_p98: null,
+  }});
+  assert.equal(missing.min, -0.2);
+  assert.equal(missing.max, 1);
+});
+
 test('fastPreview NDRE + NDMI baixa somente os índices pedidos', () => {
   const plan = resolveFastPackagePlan({
     resolutionKind: 'fastPreview',
