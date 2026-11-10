@@ -1,7 +1,5 @@
 import { PNG } from 'pngjs';
 
-const MIN_FINAL_COVERAGE_PCT = 70;
-
 function pointInRing(x, y, ring) {
   let inside = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
@@ -95,8 +93,9 @@ export function validateRasterResult({ image, polygon, bounds, stats = {}, mode,
   if (!inside || outsideOpaquePct > 1) {
     return fail('INVALID_GEOMETRY', { reason: 'alpha_footprint_mismatch', ...details });
   }
-  // A partial preview must not be displayed either; only persistence differs.
-  if (validPixelCoveragePct < MIN_FINAL_COVERAGE_PCT) {
+  // Partial coverage is displayable; masked pixels remain transparent.
+  // A scene without any valid pixels cannot produce a spectral layer.
+  if (valid === 0) {
     return fail('INSUFFICIENT_COVERAGE', details);
   }
   const numeric = [stats.ndvi_mean, stats.ndre_mean, stats.ndmi_mean, stats.bsi_mean]

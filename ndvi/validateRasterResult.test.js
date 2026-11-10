@@ -28,19 +28,33 @@ test('raster completo pode ser FINAL_READY', () => {
   assert.equal(result.validPixelCoveragePct, 100);
 });
 
-test('faixa isolada no topo não vira camada final', () => {
+test('cobertura parcial permite camada final mantendo cobertura real', () => {
   const result = validateRasterResult({ image: image(32, 32, (_, y) => y < 3), polygon, bounds, stats, mode: 'ndvi_contrast', final: true });
-  assert.equal(result.ok, false);
-  assert.equal(result.layerStatus, 'INSUFFICIENT_COVERAGE');
+  assert.equal(result.ok, true);
+  assert.equal(result.layerStatus, 'FINAL_READY');
+  assert.equal(result.validPixelCoveragePct, 9.38);
   assert.ok(result.validPixelCoveragePct < 70);
 });
 
-test('faixa isolada também não vira prévia exibível', () => {
+test('cobertura parcial permite prévia exibível', () => {
   const result = validateRasterResult({
     image: image(32, 32, (_, y) => y < 3), polygon, bounds,
     stats, mode: 'ndvi_contrast', final: false,
   });
-  assert.equal(result.layerStatus, 'INSUFFICIENT_COVERAGE');
+  assert.equal(result.ok, true);
+  assert.equal(result.layerStatus, 'PREVIEW_READY');
+});
+
+test('cena totalmente mascarada continua indisponível', () => {
+  for (const final of [false, true]) {
+    const result = validateRasterResult({
+      image: image(32, 32, () => false), polygon, bounds, stats,
+      mode: 'ndvi_contrast', final,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'INSUFFICIENT_COVERAGE');
+    assert.equal(result.validPixelCoveragePct, 0);
+  }
 });
 
 test('estatísticas incompatíveis com pixels válidos são rejeitadas', () => {
