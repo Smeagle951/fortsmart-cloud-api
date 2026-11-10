@@ -160,7 +160,7 @@ function normalizePackageModeError(mode, error) {
 
   if (rawCode === 'INSUFFICIENT_COVERAGE') {
     out.status = 'unavailable';
-    out.message = 'Cobertura válida inferior a 70% nesta data. Escolha outra imagem.';
+    out.message = 'Cena sem pixels válidos para gerar a camada. Escolha outra imagem.';
     return out;
   }
   if (rawCode === 'INVALID_GEOMETRY') {
@@ -462,7 +462,7 @@ class SoilSamplingNdviService {
         !Number.isFinite(Number(provenance.resolutionM)) ||
         provenance.resolutionKind !== resolutionKind ||
         provenance.algorithmVersion !== LAYER_PIPELINE_ALGORITHM_VERSION ||
-        Number(ag.validPixelCoveragePct) < 70 || !expectedBounds) return false;
+        !(Number(ag.validPixelCoveragePct) > 0) || !expectedBounds) return false;
     return ['west', 'south', 'east', 'north'].every((key) =>
       Math.abs(Number(provenance.bounds?.[key]) - expectedBounds[key]) < 1e-8 &&
       Math.abs(Number(ag.bounds?.[key]) - Number(provenance.bounds?.[key])) < 1e-8);
@@ -748,7 +748,7 @@ class SoilSamplingNdviService {
     }
     const rasterValidation = assets.raster_validation ?? null;
     if (!rasterValidation?.ok ||
-        Number(rasterValidation.validPixelCoveragePct) < 70) {
+        !(Number(rasterValidation.validPixelCoveragePct) > 0)) {
       throw this._error(
         'Raster sem validação de geometria e cobertura; escolha outra cena.',
         rasterValidation?.code ?? 'raster_validation_missing',
