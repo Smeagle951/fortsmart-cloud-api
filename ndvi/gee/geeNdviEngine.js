@@ -787,7 +787,7 @@ async function resolveGeeAnalysisImage(gee, {
         geometry,
         scaleMeters: GEE_SWIR_SCALE_M,
       });
-      if (maskStats.validPixelPercent < 70) continue;
+      if (!(maskStats.validPixelPercent > 0)) continue;
       const dateProximity01 = Math.max(0, 1 - daysBetween(requested, acq) / Math.max(days, 1));
       const cloudScoreQuality = Math.max(0, 1 - sceneCloud / 100);
       const score = scoreGeeSceneCandidate({
