@@ -52,8 +52,8 @@ function resolveStretch(percentiles) {
       pLow: (p5 + p95) / 2 - Math.max(p95 - p5, 0.08) / 2,
       pHigh: (p5 + p95) / 2 + Math.max(p95 - p5, 0.08) / 2,
       stretchMode: 'p2_p98_min_amplitude',
-      lowContrastScene: false,
-      usedLowContrastFallback: false,
+      lowContrastScene: p95 - p5 < 0.08,
+      usedLowContrastFallback: p95 - p5 < 0.08,
       lowBiomassSurface,
     };
   }
@@ -123,8 +123,7 @@ export function renderAgronomicContrastV2({
   });
   const stretched = sourceValues.map((value) => {
     if (value == null) return null;
-    // Sem amplitude robusta, uma classe neutra é mais fiel do que amplificar
-    // ruído e fabricar extremos relativos vermelhos/verdes.
+    // A janela mínima limita amplificação de ruído sem apagar variações.
     return applyContrastStretch(value, stretch.pLow, stretch.pHigh);
   });
   const visualValues = stretched.map((value) =>

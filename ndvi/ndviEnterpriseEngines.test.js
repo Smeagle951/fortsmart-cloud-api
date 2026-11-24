@@ -106,7 +106,7 @@ test('renderer v2 gera múltiplos buckets e preserva stats brutos', () => {
     height: 10,
     visualMode: 'ndvi_contrast',
   });
-  assert.equal(rendered.contrast.rendererVersion, 'agronomic_contrast_v10_relative_low_biomass');
+  assert.equal(rendered.contrast.rendererVersion, 'agronomic_contrast_v11_p2_p98');
   assert.equal(values[0], before[0]);
   assert.equal(values.at(-1), before.at(-1));
   const activeBuckets = Object.values(rendered.contrast.colorBuckets).filter((v) => v > 0);
@@ -140,7 +140,7 @@ test('renderer mantém contraste relativo em baixa biomassa com amplitude real',
   assert.equal(rendered.contrast.lowBiomassSurface, true);
   assert.equal(rendered.contrast.lowContrastScene, false);
   assert.equal(rendered.contrast.usedLowContrastFallback, false);
-  assert.equal(rendered.contrast.stretchMode, 'p5_p95');
+  assert.equal(rendered.contrast.stretchMode, 'p2_p98_min_amplitude');
   const activeBuckets = Object.values(rendered.contrast.colorBuckets)
     .filter((value) => value > 0);
   assert.ok(activeBuckets.length >= 5);
@@ -153,7 +153,7 @@ test('renderer contraste usa percentis internos para normalizar visual', () => {
     statsValues: [0.6, 0.7, 0.8, 0.82],
     visualMode: 'ndvi_contrast',
   });
-  assert.equal(rendered.contrast.stretchMode, 'p5_p95');
+  assert.equal(rendered.contrast.stretchMode, 'p2_p98_min_amplitude');
   assert.ok(rendered.contrast.pLow >= 0.6);
   assert.ok(rendered.contrast.pHigh <= 0.82);
   assert.ok(rendered.visualValues[0] <= 0.05);

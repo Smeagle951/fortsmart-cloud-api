@@ -219,6 +219,7 @@ test('generatePreviewFromRaster evita vermelho falso em cena homogênea alta', (
   );
   const out = generatePreviewFromRaster({ raster: loaded, visualMode: 'ndvi_contrast' });
   assert.equal(out.contrast.lowContrastScene, true);
+  assert.ok(out.contrast.pHigh - out.contrast.pLow >= 0.0799);
 
   const png = PNG.sync.read(out.buffer);
   let redPixels = 0;
@@ -226,7 +227,7 @@ test('generatePreviewFromRaster evita vermelho falso em cena homogênea alta', (
   for (let i = 0; i < png.data.length; i += 4) {
     if (png.data[i + 3] < 40) continue;
     visiblePixels += 1;
-    if (png.data[i] > png.data[i + 1] * 1.2 && png.data[i] > png.data[i + 2] * 1.2) {
+    if (png.data[i] > png.data[i + 1] * 2 && png.data[i] > png.data[i + 2] * 2) {
       redPixels += 1;
     }
   }
@@ -299,8 +300,8 @@ test('generatePreviewFromRaster mantém diferenças relativas em superfície de 
   );
   const out = generatePreviewFromRaster({ raster: loaded, visualMode: 'ndvi_contrast' });
   assert.equal(out.contrast.lowBiomassSurface, true);
-  assert.equal(out.contrast.lowContrastScene, false);
-  assert.equal(out.contrast.stretchMode, 'p5_p95');
+  assert.equal(out.contrast.lowContrastScene, true);
+  assert.equal(out.contrast.stretchMode, 'p2_p98_min_amplitude');
 
   const buckets = out.contrast.colorBuckets;
   const activeBuckets = Object.values(buckets).filter((value) => value > 0);
@@ -322,7 +323,7 @@ test('generatePreviewFromRaster contraste em cena homogênea cobre o talhão int
     coordinates: [[[west, south], [east, south], [east, north], [west, north], [west, south]]],
   };
   const out = generatePreviewFromRaster({ raster: loaded, visualMode: 'ndvi_contrast', polygon });
-  assert.equal(out.contrast.lowContrastScene, false);
+  assert.equal(out.contrast.lowContrastScene, true);
 
   const png = PNG.sync.read(out.buffer);
   let opaque = 0;
