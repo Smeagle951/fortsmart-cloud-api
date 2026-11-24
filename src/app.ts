@@ -36,6 +36,16 @@ export function createApp(): express.Application {
   app.use(plantingMediaRouter);
 
   const ndviRouter = createSoilSamplingNdviRouter();
+  const authenticateNdvi: express.RequestHandler = (req, res, next) => {
+    requireApiKey(req, res, (error?: unknown) => {
+      if (error) {
+        // Only fixed authentication errors; never log tokens or headers.
+        console.warn('[NDVI_AUTH_REJECTED]',
+          error instanceof Error ? error.message : 'authentication_failed');
+      }
+      next(error);
+    });
+  };
   const requireNdviFarmScope: express.RequestHandler = (req, _res, next) => {
     try {
       const body = req.body as Record<string, unknown> | undefined;
@@ -49,8 +59,8 @@ export function createApp(): express.Application {
       next(error);
     }
   };
-  app.use('/api/soil-sampling/ndvi', requireApiKey, requireNdviFarmScope, ndviRouter);
-  app.use('/soil-sampling/ndvi', requireApiKey, requireNdviFarmScope, ndviRouter);
+  app.use('/api/soil-sampling/ndvi', authenticateNdvi, requireNdviFarmScope, ndviRouter);
+  app.use('/soil-sampling/ndvi', authenticateNdvi, requireNdviFarmScope, ndviRouter);
 
   app.use(errorHandler);
   return app;
