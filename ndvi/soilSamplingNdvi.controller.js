@@ -706,7 +706,7 @@ class SoilSamplingNdviController {
         preferredProvider: body.provider || body.ndvi_provider || 'gee',
         algorithmVersion: body.algorithm_version || body.algorithmVersion,
         maskVersion: body.mask_version || body.maskVersion,
-        ownerFarmId: req.cloudAuth?.farmId,
+        ownerFarmId: req.cloudAuth?.farmId || 'public-spectral',
       };
       const created = this.imageryJobs.create(payload);
       res.status(created.created ? 202 : 200).json({
@@ -721,7 +721,7 @@ class SoilSamplingNdviController {
 
   async getImageryJob(req, res) {
     const job = this.imageryJobs?.get(req.params.jobId, {
-      ownerFarmId: req.cloudAuth?.farmId,
+      ownerFarmId: req.cloudAuth?.farmId || 'public-spectral',
     });
     if (!job) {
       return this._sendError(
@@ -737,7 +737,7 @@ class SoilSamplingNdviController {
 
   async getImageryJobResult(req, res) {
     const job = this.imageryJobs?.result(req.params.jobId, {
-      ownerFarmId: req.cloudAuth?.farmId,
+      ownerFarmId: req.cloudAuth?.farmId || 'public-spectral',
     });
     if (!job) {
       return this._sendError(
@@ -754,7 +754,7 @@ class SoilSamplingNdviController {
 
   async retryImageryJob(req, res) {
     const job = this.imageryJobs?.retry(req.params.jobId, {
-      ownerFarmId: req.cloudAuth?.farmId,
+      ownerFarmId: req.cloudAuth?.farmId || 'public-spectral',
     });
     if (!job) {
       return this._sendError(

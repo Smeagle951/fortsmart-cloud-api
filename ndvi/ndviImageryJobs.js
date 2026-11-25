@@ -26,6 +26,7 @@ function stableObject(value) {
 
 export function imageryJobIdempotencyKey(payload = {}) {
   const relevant = {
+    ownerFarmId: payload.ownerFarmId || payload.farmId || null,
     farmId: payload.farmId,
     plotId: payload.plotId,
     campaignId: payload.campaignId || null,

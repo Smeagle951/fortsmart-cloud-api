@@ -16,6 +16,7 @@ import { errorHandler } from './middleware/errorHandler.js';
 import { createCorsOptions } from './middleware/corsPolicy.js';
 import { requireApiKey } from './middleware/apiKeyAuth.js';
 import { assertApiKeyCanAccessFarm } from './lib/resourceAccessGuard.js';
+import { ndviAccess } from './middleware/ndviAccess.js';
 
 export function createApp(): express.Application {
   const app = express();
@@ -59,8 +60,9 @@ export function createApp(): express.Application {
       next(error);
     }
   };
-  app.use('/api/soil-sampling/ndvi', authenticateNdvi, requireNdviFarmScope, ndviRouter);
-  app.use('/soil-sampling/ndvi', authenticateNdvi, requireNdviFarmScope, ndviRouter);
+  const accessNdvi = ndviAccess(authenticateNdvi, requireNdviFarmScope);
+  app.use('/api/soil-sampling/ndvi', accessNdvi, ndviRouter);
+  app.use('/soil-sampling/ndvi', accessNdvi, ndviRouter);
 
   app.use(errorHandler);
   return app;
