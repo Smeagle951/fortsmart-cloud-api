@@ -172,6 +172,7 @@ class SoilSamplingNdviController {
       } = req.body;
 
       const scenes = await this.service.searchScenes({
+        includeSavedLayers: Boolean(req.cloudAuth),
         farmId,
         plotId,
         campaignId,
@@ -290,6 +291,7 @@ class SoilSamplingNdviController {
       }
 
       const result = await this.service.generateLayer({
+        persistGenerated: Boolean(req.cloudAuth),
         farmId,
         plotId,
         campaignId,
@@ -562,6 +564,7 @@ class SoilSamplingNdviController {
       }
 
       const result = await this.service.generateLayerPackage({
+        persistGenerated: Boolean(req.cloudAuth),
         farmId: resolvedFarmId,
         plotId,
         campaignId: resolvedCampaignId,
@@ -690,6 +693,7 @@ class SoilSamplingNdviController {
         ? body.modes.map((mode) => resolveRequestedVisualMode(mode))
         : [indexMode || index];
       const payload = {
+        persistGenerated: Boolean(req.cloudAuth),
         farmId,
         plotId,
         campaignId: body.campaign_id || body.campaignId || null,

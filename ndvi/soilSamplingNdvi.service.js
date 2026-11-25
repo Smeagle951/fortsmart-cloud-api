@@ -50,6 +50,7 @@ import { RASTER_SCHEMA_NUM } from './ndviRasterSerializer.js';
 const LAYER_PIPELINE_ALGORITHM_VERSION = 'layer_pipeline_v4_relative_contrast';
 
 export function buildPackageInflightKey({
+  persistGenerated = true,
   farmId,
   plotId,
   campaignId = null,
@@ -69,6 +70,7 @@ export function buildPackageInflightKey({
   // Uma chamada final permanece separada por exigir raster analítico.
   const resolutionKey = resolutionKind === 'final' ? 'final' : 'preview';
   return [
+    persistGenerated ? 'stored' : 'spectral-only',
     farmId || '',
     plotId || '',
     campaignId || '',
@@ -537,6 +539,7 @@ class SoilSamplingNdviService {
   }
 
   async searchScenes({
+    includeSavedLayers = true,
     farmId,
     plotId,
     campaignId,
@@ -548,9 +551,6 @@ class SoilSamplingNdviService {
   }) {
     this._assertExplicitGeeReady(preferredProvider);
     this._requireScope({ farmId, plotId });
-    if (!campaignId) {
-      throw this._error('campaign_id é obrigatório', 'campaign_required', 400);
-    }
     if (!startDate || !endDate) {
       throw this._error('Período inválido para busca NDVI', 'invalid_date_range', 400);
     }
@@ -570,7 +570,7 @@ class SoilSamplingNdviService {
     });
 
     const started = Date.now();
-    await this._tryEnsureSchema('searchScenes');
+    if (includeSavedLayers) await this._tryEnsureSchema('searchScenes');
 
     // Com GEE disponível (pacote ou primary), busca GEE primeiro: o STAC
     // Copernicus tem timeout frequente e o app corta a espera em ~55s.
@@ -648,7 +648,7 @@ class SoilSamplingNdviService {
 
     let layers = [];
     try {
-      layers = await this.repository.listByPlot({ farmId, plotId });
+      if (includeSavedLayers) layers = await this.repository.listByPlot({ farmId, plotId });
     } catch (layerError) {
       console.warn(
         `⚠️ [NDVI] listByPlot ignorado plotId=${plotId}: ${layerError.message}`,
@@ -1113,6 +1113,7 @@ class SoilSamplingNdviService {
   }
 
   async _generateLayerPackageOnce({
+    persistGenerated = true,
     farmId,
     plotId,
     campaignId = null,
@@ -1202,7 +1203,7 @@ class SoilSamplingNdviService {
     if (!polygon || polygon.type !== 'Polygon') {
       throw this._error('Talhão sem polígono válido', 'plot_polygon_missing', 400);
     }
-    const dbReady = await this._tryEnsureSchema('generateLayerPackage');
+    const dbReady = persistGenerated && await this._tryEnsureSchema('generateLayerPackage');
     const normalizedImageDate = normalizeImageDate(imageDate);
     const effectiveImageDate = resolveSceneAcquisitionDate({ sceneId, imageDate });
     if (effectiveImageDate && normalizedImageDate && effectiveImageDate !== normalizedImageDate) {
@@ -1664,6 +1665,7 @@ class SoilSamplingNdviService {
           maxCloud,
           colormapMode,
           visualMode: mode,
+          persistGenerated,
           force,
         });
         layersByMode[mode] = layer;
@@ -1744,6 +1746,7 @@ class SoilSamplingNdviService {
   }
 
   async generateLayer({
+    persistGenerated = true,
     farmId,
     plotId,
     campaignId = null,
@@ -1820,7 +1823,7 @@ class SoilSamplingNdviService {
       }
 
       stage = 'ensure_schema';
-      const dbReady = await this._tryEnsureSchema('generateLayer');
+      const dbReady = persistGenerated && await this._tryEnsureSchema('generateLayer');
       logGenerateStage(meta, stage, `dbReady=${dbReady}`);
 
       let targetSceneId = sceneId ? String(sceneId).trim() : null;
